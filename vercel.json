@@ -1,0 +1,38 @@
+{
+  "buildCommand": "bun run build",
+  "outputDirectory": "dist",
+  "functions": {
+    "server-node.mjs": {
+      "runtime": "nodejs18.x"
+    }
+  },
+  "routes": [
+    {
+      "src": "/grabber/api/(.*)",
+      "dest": "/server-node.mjs"
+    },
+    {
+      "src": "/grabber/(.*)",
+      "dest": "/grabber/$1"
+    },
+    {
+      "src": "/grabber",
+      "dest": "/grabber/index.html"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/grabber/(.*)",
+      "headers": [
+        {
+          "key": "Cross-Origin-Embedder-Policy",
+          "value": "require-corp"
+        },
+        {
+          "key": "Cross-Origin-Opener-Policy",
+          "value": "same-origin"
+        }
+      ]
+    }
+  ]
+}

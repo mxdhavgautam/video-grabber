@@ -1,0 +1,103 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+.pnp.*
+.bun
+
+# Build outputs
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+*.log.*
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+.directory
+
+# Editor directories and files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+.fleet/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Testing
+coverage/
+.nyc_output/
+*.lcov
+.jest/
+*.test.js.snap
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+*.cache
+.cache/
+.tmp/
+
+# Server logs and temp files
+/tmp/
+*.pid
+*.seed
+*.pid.lock
+
+# Package manager locks (keep bun.lock if using Bun)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Vercel
+.vercel/
+
+# Misc
+*.zip
+*.tar.gz
+*.rar
+*.7z
+*.bak
+*.backup
+*.old
+*.orig
+
+# TypeScript
+*.tsbuildinfo
+
+# Optional: Keep bun.lock if using Bun as primary package manager
+# Uncomment if you want to ignore bun.lock
+# bun.lockb
