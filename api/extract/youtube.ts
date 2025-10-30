@@ -106,16 +106,22 @@ export default async function handler(
         console.log(`[Extract] Trying client: ${client}`)
         info = await yt.getInfo(videoId, { client } as any)
         
-        // Check if info has the data we need
-        if (info && (info.streaming_data || info.basic_info || info.video_details)) {
-          console.log(`[Extract] Successfully retrieved info using ${client} client`)
-          break
-        } else {
-          console.warn(`[Extract] Client ${client} returned info but missing streaming_data/basic_info`)
+        // If we got info, check if it has useful data
+        if (info) {
+          console.log(`[Extract] Got info from ${client} client, checking data...`)
+          // Check if we have any of the expected data structures
+          if (info.streaming_data || info.basic_info || info.video_details || info.adaptive_formats || info.formats) {
+            console.log(`[Extract] Successfully retrieved info using ${client} client`)
+            break
+          } else {
+            console.warn(`[Extract] Client ${client} returned info but missing expected fields, trying next client`)
+            info = null
+          }
         }
       } catch (e: any) {
         console.error(`[Extract] Client ${client} failed:`, e.message)
         lastError = e
+        info = null
         continue
       }
     }
@@ -125,6 +131,10 @@ export default async function handler(
       console.log('[Extract] Trying default client (no client specified)')
       try {
         info = await yt.getInfo(videoId)
+        if (info && !info.streaming_data && !info.basic_info && !info.video_details && !info.adaptive_formats && !info.formats) {
+          console.warn('[Extract] Default client returned info but missing expected fields')
+          info = null
+        }
       } catch (e: any) {
         console.error('[Extract] Default client also failed:', e.message)
         lastError = e
@@ -135,22 +145,7 @@ export default async function handler(
       throw new Error(`Failed to get video info: ${lastError?.message || 'All clients failed'}`)
     }
 
-    // Check if we have the minimum required data
-    const hasStreamingData = !!info.streaming_data
-    const hasBasicInfo = !!info.basic_info
-    const hasVideoDetails = !!info.video_details
-    
-    if (!hasStreamingData && !hasBasicInfo && !hasVideoDetails) {
-      console.error('[Extract] Info object missing all expected fields:', Object.keys(info))
-      throw new Error('Video info retrieved but missing streaming_data, basic_info, and video_details')
-    }
-
-    console.log(`[Extract] Successfully retrieved info for video ID: ${videoId}`, {
-      hasStreamingData,
-      hasBasicInfo,
-      hasVideoDetails,
-      keys: Object.keys(info)
-    })
+    console.log(`[Extract] Successfully retrieved info for video ID: ${videoId}`)
 
     // Handle different response structures from youtubei.js
     // Some clients return streaming_data directly, others nest it differently
@@ -223,11 +218,10 @@ export default async function handler(
       }))
 
     // Get unique audio tracks from adaptive formats (if available)
-    const adaptiveFormats = adaptive
     const audioTracksMap = new Map<string, any>()
     
     // Group audio formats by language/track
-    adaptiveFormats
+    adaptive
       .filter((f: any) => f.mimeType?.includes('audio'))
       .forEach((format: any) => {
         const language = format.language || 'default'
