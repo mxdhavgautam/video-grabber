@@ -449,7 +449,8 @@ export async function convertVideoToResolution(
   videoFormat: string,
   targetHeight: number,
   outputFormat: string = 'mp4',
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  stripAudio: boolean = false // Optional: strip audio for video-only downloads
 ): Promise<Uint8Array> {
   const ffmpeg = await loadFFmpeg()
 
@@ -466,16 +467,25 @@ export async function convertVideoToResolution(
 
   // Scale video to target height, maintaining aspect ratio
   // Using scale filter: scale=-2:height (width calculated automatically)
-  await ffmpeg.exec([
+  const args = [
     '-i', inputFileName,
     '-vf', `scale=-2:${targetHeight}`,
     '-c:v', 'libx264',
     '-crf', '23', // Good quality balance
     '-preset', 'medium',
-    '-c:a', 'aac',
-    '-b:a', '192k',
-    outputFileName,
-  ])
+  ]
+  
+  // Strip audio if requested (for video-only downloads)
+  if (stripAudio) {
+    args.push('-an') // Remove audio track
+  } else {
+    args.push('-c:a', 'aac')
+    args.push('-b:a', '192k')
+  }
+  
+  args.push(outputFileName)
+
+  await ffmpeg.exec(args)
 
   const data = await ffmpeg.readFile(outputFileName)
   await ffmpeg.deleteFile(inputFileName)

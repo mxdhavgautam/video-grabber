@@ -983,15 +983,27 @@ export function VideoGrabber() {
           setDownloadProgress(60)
           const { convertVideoToResolution } = await import('@/lib/ffmpeg')
           
-          // Upscale and/or convert format in one pass
+          // Upscale and/or convert format in one pass (strip audio for video-only)
           const processedData = await convertVideoToResolution(
             videoData,
             videoFormat.ext || 'mp4',
             targetHeight || 360, // Upscale to selected resolution (or keep 360p)
             selectedVideoOnlyFileType,
-            (progress: number) => setDownloadProgress(60 + progress * 0.3)
+            (progress: number) => setDownloadProgress(60 + progress * 0.3),
+            true // stripAudio: true - remove audio for video-only downloads
           )
           videoData = new Uint8Array(processedData)
+        } else {
+          // No upscaling/conversion needed, but still need to strip audio
+          // (Format 18 has audio, so we need to remove it)
+          setDownloadProgress(60)
+          const { extractVideoOnly } = await import('@/lib/ffmpeg')
+          const videoOnlyData = await extractVideoOnly(
+            videoData,
+            videoFormat.ext || 'mp4',
+            (progress: number) => setDownloadProgress(60 + progress * 0.3)
+          )
+          videoData = new Uint8Array(videoOnlyData)
         }
 
         setDownloadProgress(95)
