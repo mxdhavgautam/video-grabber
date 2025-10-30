@@ -195,6 +195,7 @@ export default async function handler(
         protocol: format.protocol || undefined,
         width: format.width,
         height: format.height,
+        hasVideo: true, // Explicitly mark as video format
         hasAudio: !!format.has_audio,
       }))
 
