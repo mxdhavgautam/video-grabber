@@ -102,7 +102,7 @@ export function formatViewCount(count?: number): string {
 }
 
 // Sanitize filename by removing invalid characters
-function sanitizeFilename(filename: string): string {
+export function sanitizeFilename(filename: string): string {
   // Remove or replace invalid filename characters
   // Windows: < > : " / \ | ? *
   // Unix: / (forward slash)

@@ -100,7 +100,7 @@ export async function downloadVideo(
 
       if (value) {
         chunks.push(new Uint8Array(value))
-        received += value.length
+      received += value.length
       }
 
       if (onProgress && total > 0) {

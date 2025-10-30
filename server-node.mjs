@@ -459,31 +459,31 @@ const server = createServer(async (req, res) => {
           
           // Set headers for streaming
           const responseHeaders = {
-            ...corsHeaders,
+        ...corsHeaders,
             'Content-Type': 'video/mp4',
-            'Cache-Control': 'public, max-age=3600',
+        'Cache-Control': 'public, max-age=3600',
             'Accept-Ranges': 'bytes',
             'X-Source-Format': '18',
             'X-Requested-Format': requestedItag.toString(),
           }
           
           res.writeHead(200, responseHeaders)
-          
+
           // Stream to client
           const reader = stream.getReader()
           let bytesStreamed = 0
           
           try {
-            while (true) {
-              const { done, value } = await reader.read()
-              if (done) break
-              
-              if (value) {
-                res.write(Buffer.from(value))
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        if (value) {
+          res.write(Buffer.from(value))
                 bytesStreamed += value.length
-              }
-            }
-            
+        }
+      }
+
             console.log(`✅ Streamed ${bytesStreamed} bytes (Format 18)`)
             res.end()
             return
@@ -491,14 +491,14 @@ const server = createServer(async (req, res) => {
             // If we streamed significant data, consider it success
             if (bytesStreamed > 1000 && res.headersSent) {
               console.log(`✅ Stream completed: ${bytesStreamed} bytes (ignoring post-stream metadata error)`)
-              res.end()
+      res.end()
               return
             }
             throw streamError
           } finally {
             try { reader.releaseLock() } catch (e) {}
           }
-        } catch (error) {
+    } catch (error) {
           console.error('❌ Format 18 download failed:', error.message)
           res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ 
@@ -520,9 +520,9 @@ const server = createServer(async (req, res) => {
 
     // Not using videoUrl+itag mode - not supported anymore
     res.writeHead(400, { 
-      ...corsHeaders,
-      'Content-Type': 'application/json' 
-    })
+        ...corsHeaders,
+        'Content-Type': 'application/json' 
+      })
     res.end(JSON.stringify({ error: 'Only videoUrl+itag mode is supported' }))
     return
   }

@@ -11,7 +11,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Loader2, Download, Video, Music, Link2, Info } from 'lucide-react'
 import { extractVideoInfo, detectPlatform } from '@/lib/video-extractor'
 import { extractAudioFromVideo } from '@/lib/ffmpeg'
-import { downloadBlob, formatFileSize, formatDuration, formatViewCount, type VideoInfo, type VideoFormat } from '@/lib/types'
+import { downloadBlob, formatFileSize, formatDuration, formatViewCount, sanitizeFilename, type VideoInfo, type VideoFormat } from '@/lib/types'
 
 // Detect API base URL based on current path
 function getApiBaseUrl(): string {
@@ -253,43 +253,68 @@ export function VideoGrabber() {
   const qualityOptions = useMemo(() => {
     if (!videoInfo) return []
 
-    const videoFormats = videoInfo.formats.filter(f => 
-      f.format_id && 
+    const videoFormats = videoInfo.formats.filter(f =>
+      f.format_id &&
       f.format_id.trim() !== '' &&
       // Include formats that have video properties (height/width) or has_video flag
       ((f.height && f.width) || f.hasVideo === true || (f.video_codec && f.video_codec !== 'none'))
     )
 
+    // If no formats are available from the API, provide default options for Format 18 upscaling
+    if (videoFormats.length === 0) {
+      console.log('[Frontend] No video formats from API, providing default Format 18 upscaling options')
+      return [
+        {
+          key: '720p@30fps',
+          height: 720,
+          fps: 30,
+          formats: [] // Empty formats - download will use Format 18 and upscale
+        },
+        {
+          key: '480p@30fps',
+          height: 480,
+          fps: 30,
+          formats: [] // Empty formats - download will use Format 18 and upscale
+        },
+        {
+          key: '360p@30fps', // Default Format 18 resolution
+          height: 360,
+          fps: 30,
+          formats: [] // Empty formats - download will use Format 18 directly
+        }
+      ]
+    }
+
     // Group by resolution + fps
     const qualityMap = new Map<string, QualityOption>()
-    
+
     videoFormats.forEach(format => {
       // Try to get height from format.height, or parse from resolution/format_note, or default to 360p (Format 18)
       let height = typeof format.height === 'number' && format.height > 0 ? format.height : 0
-      
+
       // If height is missing, try to parse from resolution string (e.g., "360p", "720p")
       if (height === 0 && format.resolution) {
         const match = format.resolution.match(/(\d+)p/i)
         if (match) height = parseInt(match[1], 10)
       }
-      
+
       // If still no height, try to parse from format_note
       if (height === 0 && format.format_note) {
         const match = format.format_note.match(/(\d+)p/i)
         if (match) height = parseInt(match[1], 10)
       }
-      
+
       // Default to 360p (Format 18) if height is still missing
       if (height === 0) height = 360
-      
+
       const fps = format.fps || 30
-      
+
       // Filter out resolutions above 720p (due to Format 18 limitation)
       // We download 360p source and FFmpeg can upscale to max 720p
       if (height > 720) return
-      
+
       const key = `${height}p@${fps}fps`
-      
+
       if (!qualityMap.has(key)) {
         qualityMap.set(key, {
           key,
@@ -499,8 +524,50 @@ export function VideoGrabber() {
 
       try {
         const qualityOption = qualityOptions.find(q => q.key === selectedVideoQuality)
-        if (!qualityOption || qualityOption.formats.length === 0) {
+        if (!qualityOption) {
           throw new Error('Selected quality not available')
+        }
+
+        // If no formats available from API, we use Format 18 + FFmpeg upscaling
+        if (qualityOption.formats.length === 0) {
+          console.log('📹 No API formats available, using Format 18 + FFmpeg upscaling approach')
+          // Download Format 18 and upscale to selected resolution
+          setDownloadProgress(10)
+          const videoData = await fetchYTDLStream(videoInfo.webpage_url, '18', (progress) => setDownloadProgress(10 + progress * 0.4))
+
+          setDownloadProgress(50)
+
+          // Upscale video to selected resolution using FFmpeg
+          const { convertVideoToResolution } = await import('@/lib/ffmpeg')
+          const processedData = await convertVideoToResolution(
+            new Uint8Array(await videoData.arrayBuffer()),
+            'mp4', // Format 18 is MP4
+            qualityOption.height,
+            selectedVideoFileType,
+            (progress: number) => setDownloadProgress(50 + progress * 0.45)
+          )
+
+          setDownloadProgress(95)
+
+          // Create filename and download
+          const videoTitle = videoInfo.title || 'video'
+          const filename = `${sanitizeFilename(videoTitle)}.${selectedVideoFileType}`
+
+          // Convert Uint8Array to regular ArrayBuffer to avoid SharedArrayBuffer issues
+          const regularUint8Array = new Uint8Array(processedData)
+          const processedBlob = new Blob([regularUint8Array], { type: `video/${selectedVideoFileType}` })
+          console.log('Downloaded and upscaled video:', { filename, originalSize: videoData.size, processedSize: processedBlob.size })
+
+          downloadBlob(processedBlob, filename)
+
+          toast({
+            title: 'Success',
+            description: `Video upscaled to ${qualityOption.height}p and downloaded successfully`,
+          })
+
+          setDownloading(false)
+          setDownloadProgress(0)
+          return
         }
 
         // OPTIMIZATION: If user wants exactly Format 18 specs (height, fps, format), skip FFmpeg entirely
@@ -618,7 +685,7 @@ export function VideoGrabber() {
 
         if (audioOnlyFormats.length > 0) {
           // Use best audio quality from separate stream
-            const bestAudio = audioOnlyFormats.sort((a, b) => {
+          const bestAudio = audioOnlyFormats.sort((a, b) => {
             const bitrateA = parseInt(a.format_note?.match(/(\d+)kbps/)?.[1] || '0') || 0
             const bitrateB = parseInt(b.format_note?.match(/(\d+)kbps/)?.[1] || '0') || 0
             return bitrateB - bitrateA

@@ -52,16 +52,112 @@ Platform.shim.eval = async (data: any, env: any) => {
   }
 }
 
-// Get YouTube client instance (singleton pattern)
+// Client types to try in order of preference for bypassing restrictions
+const CLIENT_TYPES = [
+  'TV_EMBEDDED', // Try TV_EMBEDDED first - often less restricted
+  'WEB', // Standard web client
+  'MWEB', // Mobile web
+  'ANDROID', // Android client
+  'IOS', // iOS client
+]
+
 let ytInstance: any = null
-async function getYT() {
-  if (!ytInstance) {
-    ytInstance = await Innertube.create({ 
-      hl: 'en',
-      gl: 'US'
-    } as any)
+let currentClientType: string = 'TV_EMBEDDED'
+
+async function getYT(clientType?: string) {
+  const targetClientType = clientType || currentClientType
+
+  // If we already have a singleton and it's using the requested client, return it
+  if (ytInstance && currentClientType === targetClientType) {
+    return ytInstance
   }
+
+  // Create new instance with specified client
+  console.log(`[Download] Creating Innertube instance with client: ${targetClientType}`)
+
+  // Use more realistic browser-like configuration to avoid bot detection
+  const clientConfig: any = {
+    hl: 'en',
+    gl: 'US',
+    client_type: targetClientType,
+    // Generate session locally to avoid YouTube API calls that might be restricted
+    generate_session_locally: true,
+  }
+
+  // Add browser-like user agent and headers based on client type
+  if (targetClientType === 'WEB') {
+    clientConfig.user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  } else if (targetClientType === 'ANDROID') {
+    clientConfig.user_agent = 'com.google.android.youtube/19.09.36 (Linux; U; Android 11; SM-G973F) gzip'
+  } else if (targetClientType === 'IOS') {
+    clientConfig.user_agent = 'com.google.ios.youtube/19.09.3 (iPhone14,3; U; CPU iOS 15_6 like Mac OS X)'
+  } else if (targetClientType === 'MWEB') {
+    clientConfig.user_agent = 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
+  } else if (targetClientType === 'TV_EMBEDDED') {
+    clientConfig.user_agent = 'Mozilla/5.0 (Linux; Android 9; SHIELD Android TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 CrKey/1.0'
+  }
+
+  // Use real YouTube cookies from browser session
+  const realCookies = [
+    'PREF=f4=4000000&tz=Asia.Calcutta',
+    'CONSISTENCY=AKreu9swyBBY9bTTtBL2-slXr37pSEUe4qNzfrKzUGgbAzF2LC2OC62oRQFigBqqZ7Hl9oGJNV310D4GgSME47ldJ8lmO9fzYEljLRpTaYA8Vryd1Ewxy9wxlmu380QdKU04Q0UsZusdVKVUVKYD6xs'
+  ].join('; ')
+
+  clientConfig.cookie = realCookies
+  clientConfig.visitor_data = 'Cgt1UzEtQ29va2llEgV1UzEt'
+
+  ytInstance = await Innertube.create(clientConfig)
+
+  currentClientType = targetClientType
   return ytInstance
+}
+
+// Try to get video info with fallback client strategy
+async function getVideoInfoWithFallback(videoId: string): Promise<any> {
+  let lastError: any = null
+
+  for (const clientType of CLIENT_TYPES) {
+    try {
+      console.log(`[Download] Trying client: ${clientType}`)
+      const yt = await getYT(clientType)
+
+      const info = await yt.getInfo(videoId, { client: clientType } as any)
+
+      if (!info) {
+        throw new Error('Failed to get video info')
+      }
+
+      // Check if we got valid streaming data
+      const streamingData = info.streaming_data || info.streamingData
+      if (!streamingData || (!streamingData.formats && !streamingData.adaptive_formats)) {
+        throw new Error('No streaming data available')
+      }
+
+      console.log(`[Download] Successfully got video info with client: ${clientType}`)
+      return info
+
+    } catch (error: any) {
+      console.error(`[Download] Client ${clientType} failed:`, error.message)
+      lastError = error
+
+      // Continue to next client for various client-specific errors
+      if (error.message.includes('LOGIN_REQUIRED') ||
+          error.message.includes('403') ||
+          error.message.includes('UNKNOWN') ||
+          error.message.includes('No streaming data') ||
+          error.message.includes('Request to') ||
+          error.message.includes('status code')) {
+        console.log(`[Download] Retrying with next client due to error: ${error.message}`)
+        continue
+      }
+
+      // For other errors, fail immediately
+      throw error
+    }
+  }
+
+  // All clients failed
+  throw new Error(`All clients failed. Last error: ${lastError?.message || 'Unknown error'}`)
 }
 
 // Extract video ID from YouTube URL
@@ -86,9 +182,9 @@ export default async function handler(
   res: VercelResponse
 ) {
   if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
     res.status(200).end()
     return
   }
@@ -110,23 +206,29 @@ export default async function handler(
         return res.status(400).json({ error: 'Could not extract video ID from URL' })
       }
 
-      const yt = await getYT()
       console.log(`📥 User requested format ${requestedItag} → Downloading Format 18 (universal source)`)
 
-      const info = await yt.getInfo(videoId, { client: 'ANDROID' } as any)
+      const info = await getVideoInfoWithFallback(videoId)
 
       if (!info) {
-        throw new Error('Failed to get video info')
+        throw new Error('getVideoInfoWithFallback returned null')
       }
+
+      console.log(`[Download] Info object keys:`, Object.keys(info))
+      console.log(`[Download] Info has download method:`, typeof info.download)
 
       // Always download Format 18 (360p combined video+audio)
       const stream = await info.download({ itag: 18 })
+
+      if (!stream) {
+        throw new Error('info.download() returned null or undefined')
+      }
 
       console.log('✅ Format 18 stream obtained successfully')
 
       // Set headers for streaming
       res.setHeader('Content-Type', 'video/mp4')
-      res.setHeader('Cache-Control', 'public, max-age=3600')
+        res.setHeader('Cache-Control', 'public, max-age=3600')
       res.setHeader('Accept-Ranges', 'bytes')
       res.setHeader('X-Source-Format', '18')
       res.setHeader('X-Requested-Format', requestedItag.toString())
@@ -155,7 +257,7 @@ export default async function handler(
         if (bytesStreamed > 1000 && res.headersSent) {
           console.log(`✅ Stream completed: ${bytesStreamed} bytes (ignoring post-stream metadata error)`)
           res.end()
-          return
+      return
         }
         throw streamError
       } finally {
@@ -172,38 +274,38 @@ export default async function handler(
 
   // Fallback: Direct URL proxy (for backwards compatibility)
   if (directUrl && typeof directUrl === 'string') {
-    try {
+  try {
       const response = await fetch(directUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': '*/*',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Referer': 'https://www.youtube.com/',
-          'Origin': 'https://www.youtube.com',
-        },
-      })
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': '*/*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://www.youtube.com/',
+        'Origin': 'https://www.youtube.com',
+      },
+    })
 
-      if (!response.ok) {
-        throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`)
-      }
+    if (!response.ok) {
+      throw new Error(`Failed to fetch: ${response.status} ${response.statusText}`)
+    }
 
-      const buffer = await response.arrayBuffer()
+    const buffer = await response.arrayBuffer()
       const contentType = response.headers.get('content-type') || 'video/mp4'
-      
-      res.setHeader('Content-Type', contentType)
+    
+    res.setHeader('Content-Type', contentType)
       res.setHeader('Content-Length', buffer.byteLength.toString())
-      res.setHeader('Cache-Control', 'public, max-age=3600')
+    res.setHeader('Cache-Control', 'public, max-age=3600')
       res.setHeader('Access-Control-Allow-Origin', '*')
 
-      return res.status(200).send(Buffer.from(buffer))
+    return res.status(200).send(Buffer.from(buffer))
     } catch (error: any) {
-      console.error('Error proxying video:', error)
-      return res.status(500).json({
-        error: 'Failed to proxy video',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      })
-    }
+    console.error('Error proxying video:', error)
+    return res.status(500).json({
+      error: 'Failed to proxy video',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    })
   }
+}
 
   return res.status(400).json({ error: 'Only videoUrl+itag mode is supported' })
 }

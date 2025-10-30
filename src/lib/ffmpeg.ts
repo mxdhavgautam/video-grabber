@@ -303,11 +303,11 @@ export async function mergeVideoAndAudio(
     // Video can be copied - only re-encode audio if needed
     if (!canCopyAudio) {
       if (isWebmOutput) {
-        audioCodec = 'libopus'
-      } else if (outputFormat === 'avi' || outputFormat === 'flv') {
-        audioCodec = 'libmp3lame'
-      } else {
-        audioCodec = 'aac'
+      audioCodec = 'libopus'
+    } else if (outputFormat === 'avi' || outputFormat === 'flv') {
+      audioCodec = 'libmp3lame'
+    } else {
+      audioCodec = 'aac'
       }
     }
   }
@@ -357,7 +357,7 @@ export async function mergeVideoAndAudio(
   args.push(outputFileName)
 
   try {
-    await ffmpeg.exec(args)
+  await ffmpeg.exec(args)
   } catch (error: any) {
     console.error('FFmpeg merge error:', error)
     
