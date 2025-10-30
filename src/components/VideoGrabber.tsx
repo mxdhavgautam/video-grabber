@@ -264,7 +264,24 @@ export function VideoGrabber() {
     const qualityMap = new Map<string, QualityOption>()
     
     videoFormats.forEach(format => {
-      const height = typeof format.height === 'number' ? format.height : 0
+      // Try to get height from format.height, or parse from resolution/format_note, or default to 360p (Format 18)
+      let height = typeof format.height === 'number' && format.height > 0 ? format.height : 0
+      
+      // If height is missing, try to parse from resolution string (e.g., "360p", "720p")
+      if (height === 0 && format.resolution) {
+        const match = format.resolution.match(/(\d+)p/i)
+        if (match) height = parseInt(match[1], 10)
+      }
+      
+      // If still no height, try to parse from format_note
+      if (height === 0 && format.format_note) {
+        const match = format.format_note.match(/(\d+)p/i)
+        if (match) height = parseInt(match[1], 10)
+      }
+      
+      // Default to 360p (Format 18) if height is still missing
+      if (height === 0) height = 360
+      
       const fps = format.fps || 30
       
       // Filter out resolutions above 720p (due to Format 18 limitation)
