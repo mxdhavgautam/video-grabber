@@ -13,11 +13,23 @@ import { extractVideoInfo, detectPlatform } from '@/lib/video-extractor'
 import { extractAudioFromVideo } from '@/lib/ffmpeg'
 import { downloadBlob, formatFileSize, formatDuration, formatViewCount, type VideoInfo, type VideoFormat } from '@/lib/types'
 
-const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || '/api'
+// Detect API base URL based on current path
+function getApiBaseUrl(): string {
+  const envUrl = (import.meta as any).env?.VITE_API_URL
+  if (envUrl) return envUrl
+  
+  if (typeof window !== 'undefined') {
+    const pathname = window.location.pathname
+    if (pathname.startsWith('/grabber')) {
+      return '/grabber/api'
+    }
+  }
+  return '/api'
+}
 
 // Helper function to fetch through proxy (bypasses CORS)
 async function fetchThroughProxy(url: string, onProgress?: (progress: number) => void): Promise<Blob> {
-  const proxyUrl = `${API_BASE_URL}/download?url=${encodeURIComponent(url)}`
+  const proxyUrl = `${getApiBaseUrl()}/download?url=${encodeURIComponent(url)}`
   const response = await fetch(proxyUrl)
   
   if (!response.ok) {
@@ -54,7 +66,7 @@ async function fetchThroughProxy(url: string, onProgress?: (progress: number) =>
 
 // Helper to stream via server - server uses youtubei.js HTTP client to avoid 403 errors
 async function fetchYTDLStream(videoPageUrl: string, itag: string, onProgress?: (progress: number) => void): Promise<Blob> {
-  const proxyUrl = `${API_BASE_URL}/download?videoUrl=${encodeURIComponent(videoPageUrl)}&itag=${encodeURIComponent(itag)}`
+  const proxyUrl = `${getApiBaseUrl()}/download?videoUrl=${encodeURIComponent(videoPageUrl)}&itag=${encodeURIComponent(itag)}`
   const response = await fetch(proxyUrl)
   
   if (!response.ok) {

@@ -27,7 +27,7 @@ Platform.shim.eval = async (data: any, env: any) => {
     
     runInNewContext(wrappedScript, createContext(sandbox), { timeout: 5000 })
     
-    const exportedVars = sandbox.__capturedExportedVars
+    const exportedVars = sandbox.__capturedExportedVars as any
     
     if (!exportedVars || typeof exportedVars !== 'object') {
       throw new Error(`Player script execution failed: exportedVars is ${typeof exportedVars}`)
@@ -57,7 +57,6 @@ let ytInstance: any = null
 async function getYT() {
   if (!ytInstance) {
     ytInstance = await Innertube.create({ 
-      client: 'ANDROID',
       hl: 'en',
       gl: 'US'
     })
@@ -86,13 +85,6 @@ export default async function handler(
   req: VercelRequest,
   res: VercelResponse
 ) {
-  // CORS headers
-  const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-  }
-
   if (req.method === 'OPTIONS') {
     res.setHeader('Access-Control-Allow-Origin', '*')
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
@@ -121,7 +113,7 @@ export default async function handler(
       const yt = await getYT()
       console.log(`📥 User requested format ${requestedItag} → Downloading Format 18 (universal source)`)
 
-      const info = await yt.getInfo(videoId, { client: 'ANDROID' })
+      const info = await yt.getInfo(videoId, { client: 'ANDROID' } as any)
 
       if (!info) {
         throw new Error('Failed to get video info')

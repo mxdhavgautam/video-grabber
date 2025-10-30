@@ -1,7 +1,20 @@
 import type { VideoInfo } from '@/lib/types'
 import { detectPlatform } from '@/lib/types'
 
-const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || '/api'
+// Detect API base URL based on current path
+// If we're at /grabber/*, use /grabber/api, otherwise use /api
+function getApiBaseUrl(): string {
+  const envUrl = (import.meta as any).env?.VITE_API_URL
+  if (envUrl) return envUrl
+  
+  if (typeof window !== 'undefined') {
+    const pathname = window.location.pathname
+    if (pathname.startsWith('/grabber')) {
+      return '/grabber/api'
+    }
+  }
+  return '/api'
+}
 
 // Re-export detectPlatform for convenience
 export { detectPlatform }
@@ -11,7 +24,7 @@ export { detectPlatform }
  */
 export async function extractVideoInfo(url: string): Promise<VideoInfo | null> {
   try {
-    const response = await fetch(`${API_BASE_URL}/extract?url=${encodeURIComponent(url)}`)
+    const response = await fetch(`${getApiBaseUrl()}/extract?url=${encodeURIComponent(url)}`)
     
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
@@ -63,7 +76,7 @@ export async function downloadVideo(
 ): Promise<Blob> {
   try {
     // Use API proxy for downloads
-    const proxyUrl = `${API_BASE_URL}/download?url=${encodeURIComponent(url)}`
+    const proxyUrl = `${getApiBaseUrl()}/download?url=${encodeURIComponent(url)}`
     
     const response = await fetch(proxyUrl)
     if (!response.ok) {

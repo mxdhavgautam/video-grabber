@@ -139,7 +139,7 @@ export default async function handler(
         language: 'Default',
         language_code: 'default',
         format_id: '0',
-        format_ids: audioFormats.map(f => f.format_id),
+        format_ids: audioFormats.map((f: any) => f.format_id),
       }]
     }
 

@@ -3,6 +3,14 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
+      "source": "/api/extract",
+      "destination": "/api/extract/youtube.ts"
+    },
+    {
+      "source": "/api/download",
+      "destination": "/api/download.ts"
+    },
+    {
       "source": "/grabber/api/extract",
       "destination": "/api/extract/youtube.ts"
     },
@@ -13,11 +21,19 @@
     {
       "source": "/grabber",
       "destination": "/grabber/index.html"
+    },
+    {
+      "source": "/grabber/(.*)",
+      "destination": "/grabber/$1"
+    },
+    {
+      "source": "/",
+      "destination": "/grabber/index.html"
     }
   ],
   "headers": [
     {
-      "source": "/grabber/(.*)",
+      "source": "/(.*)",
       "headers": [
         {
           "key": "Cross-Origin-Embedder-Policy",
