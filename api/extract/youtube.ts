@@ -121,7 +121,7 @@ export default async function handler(
     }
     
     // If all clients failed, try without specifying client
-    if (!info || (!info.streaming_data && !info.basic_info && !info.video_details)) {
+    if (!info) {
       console.log('[Extract] Trying default client (no client specified)')
       try {
         info = await yt.getInfo(videoId)
