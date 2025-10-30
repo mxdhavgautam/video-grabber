@@ -96,26 +96,96 @@ export default async function handler(
   try {
     const yt = await Innertube.create({ hl: 'en', gl: 'US' } as any)
     let info: any
-    try {
-      info = await yt.getInfo(videoId, { client: 'ANDROID' } as any)
-    } catch (e) {
-      console.error('[Extract] ANDROID client failed, trying default:', e)
-      // Fallback to default client
-      info = await yt.getInfo(videoId)
+    let lastError: any = null
+    
+    // Try multiple client types to find one that works
+    const clients = ['ANDROID', 'IOS', 'WEB', 'TV_EMBEDDED'] as const
+    
+    for (const client of clients) {
+      try {
+        console.log(`[Extract] Trying client: ${client}`)
+        info = await yt.getInfo(videoId, { client } as any)
+        
+        // Check if info has the data we need
+        if (info && (info.streaming_data || info.basic_info || info.video_details)) {
+          console.log(`[Extract] Successfully retrieved info using ${client} client`)
+          break
+        } else {
+          console.warn(`[Extract] Client ${client} returned info but missing streaming_data/basic_info`)
+        }
+      } catch (e: any) {
+        console.error(`[Extract] Client ${client} failed:`, e.message)
+        lastError = e
+        continue
+      }
+    }
+    
+    // If all clients failed, try without specifying client
+    if (!info || (!info.streaming_data && !info.basic_info && !info.video_details)) {
+      console.log('[Extract] Trying default client (no client specified)')
+      try {
+        info = await yt.getInfo(videoId)
+      } catch (e: any) {
+        console.error('[Extract] Default client also failed:', e.message)
+        lastError = e
+      }
     }
 
     if (!info) {
-      throw new Error('Failed to get video info: info is null or undefined')
+      throw new Error(`Failed to get video info: ${lastError?.message || 'All clients failed'}`)
     }
 
-    console.log(`[Extract] Successfully retrieved info for video ID: ${videoId}`)
+    // Check if we have the minimum required data
+    const hasStreamingData = !!info.streaming_data
+    const hasBasicInfo = !!info.basic_info
+    const hasVideoDetails = !!info.video_details
+    
+    if (!hasStreamingData && !hasBasicInfo && !hasVideoDetails) {
+      console.error('[Extract] Info object missing all expected fields:', Object.keys(info))
+      throw new Error('Video info retrieved but missing streaming_data, basic_info, and video_details')
+    }
 
-    const sd = info?.streaming_data || {}
-    const adaptive = sd.adaptive_formats || []
-    const formatsMuxed = sd.formats || []
+    console.log(`[Extract] Successfully retrieved info for video ID: ${videoId}`, {
+      hasStreamingData,
+      hasBasicInfo,
+      hasVideoDetails,
+      keys: Object.keys(info)
+    })
+
+    // Handle different response structures from youtubei.js
+    // Some clients return streaming_data directly, others nest it differently
+    let streamingData = info.streaming_data
+    let basicInfo = info.basic_info || info.video_details
+    let adaptiveFormats: any[] = []
+    let formatsMuxed: any[] = []
+    
+    // Try to get streaming data from various possible locations
+    if (streamingData) {
+      adaptiveFormats = streamingData.adaptive_formats || []
+      formatsMuxed = streamingData.formats || []
+    } else if (info.playability_status?.status === 'OK') {
+      // Sometimes streaming_data is nested differently
+      streamingData = info.video_details?.streaming_data || info.streaming_data
+      if (streamingData) {
+        adaptiveFormats = streamingData.adaptive_formats || []
+        formatsMuxed = streamingData.formats || []
+      }
+    }
+    
+    // If still no formats, try to get from info directly
+    if (adaptiveFormats.length === 0 && formatsMuxed.length === 0) {
+      adaptiveFormats = info.adaptive_formats || []
+      formatsMuxed = info.formats || []
+    }
+
+    console.log(`[Extract] Found ${adaptiveFormats.length} adaptive formats, ${formatsMuxed.length} muxed formats`)
+
+    const sd = streamingData || {}
+    const adaptive = adaptiveFormats
+    const formats = formatsMuxed
 
     // Get all video formats (with or without audio)
-    const videoFormats = [...adaptive, ...formatsMuxed]
+    const videoFormats = [...adaptive, ...formats]
       .filter((format: any) => format.has_video)
       .map((format: any) => ({
         format_id: String(format.itag),
@@ -226,18 +296,18 @@ export default async function handler(
       })) || []
 
     return res.status(200).json({
-      id: info?.basic_info?.id || info?.id || '',
-      title: info?.basic_info?.title || '',
-      thumbnail: (info?.basic_info?.thumbnail?.[(info?.basic_info?.thumbnail?.length || 1) - 1]?.url) || '',
-      duration: info?.basic_info?.duration || 0,
+      id: basicInfo?.id || info?.id || videoId || '',
+      title: basicInfo?.title || info?.title || '',
+      thumbnail: (basicInfo?.thumbnail?.[(basicInfo?.thumbnail?.length || 1) - 1]?.url) || info?.thumbnail?.[0]?.url || '',
+      duration: basicInfo?.duration || info?.duration || 0,
       formats: [...videoFormats, ...audioFormats],
       subtitle_tracks: subtitleTracks,
       audio_tracks: audioTracks,
       webpage_url: url,
       platform: 'youtube',
-      description: info?.basic_info?.short_description || undefined,
-      uploader: info?.basic_info?.author || undefined,
-      view_count: info?.basic_info?.view_count ? Number(info.basic_info.view_count) : undefined,
+      description: basicInfo?.short_description || basicInfo?.description || info?.description || undefined,
+      uploader: basicInfo?.author || basicInfo?.channel?.name || info?.channel?.name || undefined,
+      view_count: basicInfo?.view_count ? Number(basicInfo.view_count) : (info?.view_count ? Number(info.view_count) : undefined),
     })
   } catch (error) {
     console.error('Error fetching YouTube info:', error)
