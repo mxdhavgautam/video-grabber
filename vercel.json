@@ -6,18 +6,14 @@
       "runtime": "nodejs18.x"
     }
   },
-  "routes": [
+  "rewrites": [
     {
-      "src": "/grabber/api/(.*)",
-      "dest": "/server-node.mjs"
+      "source": "/grabber/api/:path*",
+      "destination": "/server-node.mjs"
     },
     {
-      "src": "/grabber/(.*)",
-      "dest": "/grabber/$1"
-    },
-    {
-      "src": "/grabber",
-      "dest": "/grabber/index.html"
+      "source": "/grabber",
+      "destination": "/grabber/index.html"
     }
   ],
   "headers": [
