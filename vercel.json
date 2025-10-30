@@ -1,15 +1,14 @@
 {
   "buildCommand": "bun run build",
   "outputDirectory": "dist",
-  "functions": {
-    "server-node.mjs": {
-      "runtime": "nodejs18.x"
-    }
-  },
   "rewrites": [
     {
-      "source": "/grabber/api/:path*",
-      "destination": "/server-node.mjs"
+      "source": "/grabber/api/extract",
+      "destination": "/api/extract/youtube.ts"
+    },
+    {
+      "source": "/grabber/api/download",
+      "destination": "/api/download.ts"
     },
     {
       "source": "/grabber",
@@ -32,3 +31,4 @@
     }
   ]
 }
+

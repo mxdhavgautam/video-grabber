@@ -238,31 +238,7 @@ NODE_ENV=production node server-node.mjs
 
 ### Vercel (Recommended)
 
-The project includes `vercel.json` configuration:
-
-```json
-{
-  "functions": {
-    "server-node.mjs": {
-      "runtime": "nodejs18.x"
-    }
-  },
-  "routes": [
-    { "src": "/api/(.*)", "dest": "/server-node.mjs" },
-    { "handle": "filesystem" },
-    { "src": "/(.*)", "dest": "/index.html" }
-  ],
-  "headers": [
-    {
-      "source": "/(.*)",
-      "headers": [
-        { "key": "Cross-Origin-Embedder-Policy", "value": "require-corp" },
-        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" }
-      ]
-    }
-  ]
-}
-```
+The project includes `vercel.json` configuration for subpath deployment at `/grabber`.
 
 **Deploy**:
 ```bash
@@ -270,6 +246,14 @@ vercel --prod
 ```
 
 **Important**: Headers are required for SharedArrayBuffer (FFmpeg.wasm requirement).
+
+**Cost & Limits** (Vercel Hobby Plan - FREE):
+- ✅ **100 GB bandwidth/month** (~20,000-33,000 minutes of Format 18 video)
+- ✅ **1 million function invocations/month** (each download = 1 invocation)
+- ✅ **No charges** - Service suspends if limits exceeded (doesn't auto-charge)
+- ✅ **Safe for personal use** - Limits are generous for normal usage
+
+**Note**: Vercel Hobby plan suspends service when limits are exceeded (doesn't charge). Monitor usage in Vercel dashboard if concerned about limits.
 
 ### Traditional Server
 
