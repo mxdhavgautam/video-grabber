@@ -1,4 +1,56 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
+import { createContext, runInNewContext } from 'vm'
+import { Innertube, Platform } from 'youtubei.js'
+
+// Set up JavaScript interpreter for signature deciphering (same as api/download.ts)
+Platform.shim.eval = async (data: any, env: any) => {
+  if (!data || !data.output) {
+    throw new Error('Invalid player script data: missing output')
+  }
+
+  try {
+    const originalScriptCode = data.output
+    
+    const sandbox = {
+      __capturedExportedVars: null,
+      console: {
+        log: (...args: any[]) => console.log('[Player Script]', ...args),
+        error: (...args: any[]) => console.error('[Player Script]', ...args),
+        warn: (...args: any[]) => console.warn('[Player Script]', ...args),
+      },
+      window: {},
+      document: {},
+      self: {},
+    }
+    
+    const wrappedScript = originalScriptCode + '\n__capturedExportedVars = exportedVars;'
+    
+    runInNewContext(wrappedScript, createContext(sandbox), { timeout: 5000 })
+    
+    const exportedVars = sandbox.__capturedExportedVars as any
+    
+    if (!exportedVars || typeof exportedVars !== 'object') {
+      throw new Error(`Player script execution failed: exportedVars is ${typeof exportedVars}`)
+    }
+    
+    if (!exportedVars.sigFunction || typeof exportedVars.sigFunction !== 'function') {
+      throw new Error('Player script does not export sigFunction')
+    }
+    
+    const result: any = {}
+    if (env.sig) {
+      result.sig = exportedVars.sigFunction(env.sig)
+    }
+    if (env.n) {
+      result.n = exportedVars.nFunction ? exportedVars.nFunction(env.n) : env.n
+    }
+    
+    return result
+  } catch (error: any) {
+    console.error('[Interpreter] Execution error:', error.message)
+    throw error
+  }
+}
 
 export default async function handler(
   req: VercelRequest,
@@ -30,15 +82,22 @@ export default async function handler(
     return res.status(400).json({ error: 'Invalid YouTube URL' })
   }
 
+  // Extract video ID
+  const videoIdMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/)
+  const videoId = videoIdMatch ? videoIdMatch[1] : null
+  
+  if (!videoId) {
+    return res.status(400).json({ error: 'Could not extract video ID from URL' })
+  }
+
   try {
-    // @ts-ignore - runtime import, no types needed
-    const { Innertube }: any = await import('youtubei.js')
-    const yt = await Innertube.create({ hl: 'en', gl: 'US' })
+    const yt = await Innertube.create({ hl: 'en', gl: 'US' } as any)
     let info: any
     try {
-      info = await yt.getBasicInfo(url, 'ANDROID')
+      info = await yt.getInfo(videoId, { client: 'ANDROID' } as any)
     } catch (e) {
-      info = await yt.getBasicInfo(url, 'TV')
+      // Fallback to default client
+      info = await yt.getInfo(videoId)
     }
 
     const sd = info?.streaming_data || {}
@@ -168,9 +227,13 @@ export default async function handler(
     })
   } catch (error) {
     console.error('Error fetching YouTube info:', error)
+    const errorMessage = error instanceof Error ? error.message : String(error)
+    const errorStack = error instanceof Error ? error.stack : undefined
+    console.error('Error details:', { errorMessage, errorStack })
     return res.status(500).json({
       error: 'Failed to fetch video information',
-      message: error instanceof Error ? error.message : 'Unknown error',
+      message: errorMessage,
+      stack: errorStack,
     })
   }
 }

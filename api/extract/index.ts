@@ -26,22 +26,22 @@ export default async function handler(
 
   // Route to appropriate extractor based on URL
   if (/youtube\.com|youtu\.be/i.test(url)) {
-    const youtubeHandler = (await import('./youtube')).default
+    const youtubeHandler = (await import('./youtube.js')).default
     return youtubeHandler(req, res)
   }
 
   if (/instagram\.com/i.test(url)) {
-    const instagramHandler = (await import('./instagram')).default
+    const instagramHandler = (await import('./instagram.js')).default
     return instagramHandler(req, res)
   }
 
   if (/facebook\.com|fb\.com/i.test(url)) {
-    const facebookHandler = (await import('./facebook')).default
+    const facebookHandler = (await import('./facebook.js')).default
     return facebookHandler(req, res)
   }
 
   if (/twitter\.com|x\.com/i.test(url)) {
-    const twitterHandler = (await import('./twitter')).default
+    const twitterHandler = (await import('./twitter.js')).default
     return twitterHandler(req, res)
   }
 
