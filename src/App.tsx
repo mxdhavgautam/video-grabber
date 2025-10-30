@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { VideoGrabber } from './components/VideoGrabber'
 import { Toaster } from './components/ui/toaster'
 import './index.css'

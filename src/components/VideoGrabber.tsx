@@ -401,8 +401,6 @@ export function VideoGrabber() {
     }
     
     if (videoInfo && format18 && !selectedAudioFormat) {
-      // Use Format 18's native audio format (usually 'm4a' or 'aac')
-      const format18Ext = format18.ext || 'mp4'
       // Format 18 is MP4 container with AAC audio, so M4A is the native audio format
       setSelectedAudioFormat('m4a')
     }
@@ -589,18 +587,15 @@ export function VideoGrabber() {
         let videoData: Uint8Array
         let audioData: Uint8Array
         let audioExt = 'm4a'
-        let useSeparateAudio = false
 
         if (audioOnlyFormats.length > 0) {
           // Use best audio quality from separate stream
-          const bestAudio = audioOnlyFormats.sort((a, b) => {
+            const bestAudio = audioOnlyFormats.sort((a, b) => {
             const bitrateA = parseInt(a.format_note?.match(/(\d+)kbps/)?.[1] || '0') || 0
             const bitrateB = parseInt(b.format_note?.match(/(\d+)kbps/)?.[1] || '0') || 0
             return bitrateB - bitrateA
           })[0]
 
-          useSeparateAudio = true
-          
           // Download video and audio in parallel
           const [videoBlob, audioBlob] = await Promise.all([
             downloadFormatWithFallback(
@@ -829,7 +824,15 @@ export function VideoGrabber() {
         }
 
         setDownloadProgress(95)
-        const finalBlob = new Blob([new Uint8Array(finalData)], { type: `video/${selectedVideoFileType}` })
+        // Ensure we use a regular ArrayBuffer (not SharedArrayBuffer)
+        const buffer = finalData.buffer instanceof ArrayBuffer 
+          ? finalData.buffer 
+          : new ArrayBuffer(finalData.byteLength)
+        if (!(finalData.buffer instanceof ArrayBuffer)) {
+          const view = new Uint8Array(buffer)
+          view.set(finalData)
+        }
+        const finalBlob = new Blob([buffer], { type: `video/${selectedVideoFileType}` })
         
         // Create filename from video title with proper extension
         const videoTitle = videoInfo.title || 'video'
@@ -910,7 +913,15 @@ export function VideoGrabber() {
             )
             
             setDownloadProgress(95)
-            const finalBlob = new Blob([videoOnlyData], { type: `video/${videoFileExt}` })
+            // Ensure we use a regular ArrayBuffer (not SharedArrayBuffer)
+            const buffer = videoOnlyData.buffer instanceof ArrayBuffer 
+              ? videoOnlyData.buffer 
+              : new ArrayBuffer(videoOnlyData.byteLength)
+            if (!(videoOnlyData.buffer instanceof ArrayBuffer)) {
+              const view = new Uint8Array(buffer)
+              view.set(videoOnlyData)
+            }
+            const finalBlob = new Blob([buffer], { type: `video/${videoFileExt}` })
             
             // Create filename from video title
             const videoTitle = videoInfo.title || 'video'
@@ -973,7 +984,15 @@ export function VideoGrabber() {
         }
 
         setDownloadProgress(95)
-        const finalBlob = new Blob([new Uint8Array(videoData)], { type: `video/${selectedVideoOnlyFileType}` })
+        // Ensure we use a regular ArrayBuffer (not SharedArrayBuffer)
+        const buffer = videoData.buffer instanceof ArrayBuffer 
+          ? videoData.buffer 
+          : new ArrayBuffer(videoData.byteLength)
+        if (!(videoData.buffer instanceof ArrayBuffer)) {
+          const view = new Uint8Array(buffer)
+          view.set(videoData)
+        }
+        const finalBlob = new Blob([buffer], { type: `video/${selectedVideoOnlyFileType}` })
         
         // Create filename from video title with proper extension
         const videoTitle = videoInfo.title || 'video'
@@ -1069,7 +1088,15 @@ export function VideoGrabber() {
         )
 
         setDownloadProgress(95)
-        const finalBlob = new Blob([new Uint8Array(finalAudioData)], { type: `audio/${selectedAudioFormat}` })
+        // Ensure we use a regular ArrayBuffer (not SharedArrayBuffer)
+        const buffer = finalAudioData.buffer instanceof ArrayBuffer 
+          ? finalAudioData.buffer 
+          : new ArrayBuffer(finalAudioData.byteLength)
+        if (!(finalAudioData.buffer instanceof ArrayBuffer)) {
+          const view = new Uint8Array(buffer)
+          view.set(finalAudioData)
+        }
+        const finalBlob = new Blob([buffer], { type: `audio/${selectedAudioFormat}` })
           
           // Create filename from video title with proper extension
           const videoTitle = videoInfo.title || 'audio'

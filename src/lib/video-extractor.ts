@@ -1,7 +1,7 @@
-import type { VideoInfo, VideoFormat, AudioTrack } from '@/lib/types'
+import type { VideoInfo } from '@/lib/types'
 import { detectPlatform } from '@/lib/types'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api'
+const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || '/api'
 
 // Re-export detectPlatform for convenience
 export { detectPlatform }
@@ -59,7 +59,6 @@ export async function extractTwitterInfo(url: string): Promise<VideoInfo | null>
  */
 export async function downloadVideo(
   url: string,
-  formatId: string,
   onProgress?: (progress: number) => void
 ): Promise<Blob> {
   try {
@@ -79,15 +78,17 @@ export async function downloadVideo(
       throw new Error('No response body')
     }
 
-    const chunks: Uint8Array[] = []
+    const chunks: BlobPart[] = []
     let received = 0
 
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
 
-      chunks.push(value)
-      received += value.length
+      if (value) {
+        chunks.push(new Uint8Array(value))
+        received += value.length
+      }
 
       if (onProgress && total > 0) {
         onProgress((received / total) * 100)

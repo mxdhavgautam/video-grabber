@@ -1,5 +1,3 @@
-import React from "react"
-
 export interface VideoFormat {
   format_id: string
   format_note?: string
