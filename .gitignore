@@ -101,3 +101,4 @@ pnpm-lock.yaml
 # Optional: Keep bun.lock if using Bun as primary package manager
 # Uncomment if you want to ignore bun.lock
 # bun.lockb
+.vercel

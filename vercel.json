@@ -19,16 +19,20 @@
       "destination": "/api/download.ts"
     },
     {
-      "source": "/grabber",
-      "destination": "/grabber/index.html"
+      "source": "/grabber/assets/(.*)",
+      "destination": "/assets/$1"
     },
     {
-      "source": "/grabber/(.*)",
-      "destination": "/grabber/$1"
+      "source": "/grabber/videograbber.jpeg",
+      "destination": "/videograbber.jpeg"
+    },
+    {
+      "source": "/grabber",
+      "destination": "/index.html"
     },
     {
       "source": "/",
-      "destination": "/grabber/index.html"
+      "destination": "/index.html"
     }
   ],
   "headers": [

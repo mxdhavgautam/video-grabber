@@ -59,7 +59,7 @@ async function getYT() {
     ytInstance = await Innertube.create({ 
       hl: 'en',
       gl: 'US'
-    })
+    } as any)
   }
   return ytInstance
 }
