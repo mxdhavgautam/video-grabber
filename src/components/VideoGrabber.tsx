@@ -295,12 +295,11 @@ export function VideoGrabber() {
   const audioQualityOptions = useMemo(() => {
     if (!videoInfo) return []
 
-    // Audio-only formats: hasVideo === false or no video_codec
+    // Audio-only formats: hasVideo === false (explicitly marked as audio-only)
     // Note: f.url is optional - backend will resolve URLs via /api/download endpoint
     const audioFormats = videoInfo.formats.filter(f => 
       f.format_id && // Must have format_id for backend resolution
-      f.audio_codec && 
-      (f.hasVideo === false || (!f.video_codec && !f.vcodec && !f.hasVideo))
+      f.hasVideo === false // Explicitly marked as audio-only format
     )
 
     // Create a map of format_id to language from audio tracks

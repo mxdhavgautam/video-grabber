@@ -132,6 +132,10 @@ export default async function handler(
         ext: (format.mime_type || '').includes('webm') ? 'webm' : (format.mime_type || '').includes('mp4') ? 'm4a' : 'm4a',
         filesize: format.content_length ? parseInt(format.content_length) : undefined,
         audio_codec: format.codecs,
+        video_codec: undefined, // Explicitly set to undefined for audio-only
+        vcodec: undefined, // Explicitly set to undefined for audio-only
+        hasVideo: false, // Explicitly mark as audio-only
+        hasAudio: true,
         url: format.url,
         protocol: format.protocol || undefined,
         language: format.audio_track?.display_name || format.language || undefined,
