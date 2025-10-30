@@ -82,7 +82,8 @@ export default async function handler(
     return res.status(400).json({ error: 'Invalid YouTube URL' })
   }
 
-  // Extract video ID
+  // Extract video ID - handle youtu.be URLs with query parameters
+  // Pattern: youtube.com/watch?v=VIDEO_ID or youtu.be/VIDEO_ID or youtube.com/embed/VIDEO_ID
   const videoIdMatch = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/)
   const videoId = videoIdMatch ? videoIdMatch[1] : null
   
@@ -90,15 +91,24 @@ export default async function handler(
     return res.status(400).json({ error: 'Could not extract video ID from URL' })
   }
 
+  console.log(`[Extract] Extracted video ID: ${videoId} from URL: ${url}`)
+
   try {
     const yt = await Innertube.create({ hl: 'en', gl: 'US' } as any)
     let info: any
     try {
       info = await yt.getInfo(videoId, { client: 'ANDROID' } as any)
     } catch (e) {
+      console.error('[Extract] ANDROID client failed, trying default:', e)
       // Fallback to default client
       info = await yt.getInfo(videoId)
     }
+
+    if (!info) {
+      throw new Error('Failed to get video info: info is null or undefined')
+    }
+
+    console.log(`[Extract] Successfully retrieved info for video ID: ${videoId}`)
 
     const sd = info?.streaming_data || {}
     const adaptive = sd.adaptive_formats || []
