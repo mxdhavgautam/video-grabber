@@ -102,3 +102,6 @@ pnpm-lock.yaml
 # Uncomment if you want to ignore bun.lock
 # bun.lockb
 .vercel
+
+# Portfolio folder (separate project, should not be tracked here)
+portfolio/
