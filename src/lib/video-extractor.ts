@@ -5,7 +5,7 @@ import { detectPlatform } from '@/lib/types'
 // Priority: 1. VITE_API_URL env, 2. /grabber/api for local dev, 3. /api for local dev
 function getApiBaseUrl(): string {
   // First priority: Check for VITE_API_URL environment variable (production)
-  const envUrl = import.meta.env.VITE_API_URL
+  const envUrl = (import.meta as any).env?.VITE_API_URL
   if (envUrl) {
     console.log('[API Config] Using VITE_API_URL from environment:', envUrl)
     return envUrl
