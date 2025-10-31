@@ -297,9 +297,10 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     
     // Add cookies - prefer browser extraction, fallback to file
     if (useBrowserCookies) {
-      command += ` --cookies-from-browser chromium --browser-executable-path /usr/bin/chromium --chromium-user-data-dir "${getOrCreateChromeProfile()}"`
+      const profilePath = getOrCreateChromeProfile()
+      command += ` --cookies-from-browser "chromium:${profilePath}"`
       if (retryCount === 0) {
-        console.log(`🔐 Using cookies from browser (Chromium at ${CHROME_PROFILE_DIR})`)
+        console.log(`🔐 Using cookies from browser (Chromium at ${profilePath})`)
       }
     } else if (hasCookies) {
       command += ` --cookies "${COOKIES_FILE}"`
@@ -762,8 +763,9 @@ const server = createServer(async (req, res) => {
       // Prepare cookie flags for yt-dlp
       let cookieFlags = []
       if (useBrowserCookies) {
-        cookieFlags = ['--cookies-from-browser', 'chromium', '--browser-executable-path', '/usr/bin/chromium', '--chromium-user-data-dir', getOrCreateChromeProfile()]
-        console.log(`🔐 Using cookies from browser...`)
+        const profilePath = getOrCreateChromeProfile()
+        cookieFlags = ['--cookies-from-browser', `chromium:${profilePath}`]
+        console.log(`🔐 Using cookies from browser (${profilePath})...`)
       } else if (hasCookies) {
         console.log(`🔐 Using cookies from frontend...`)
         cookieFlags = ['--cookies', COOKIES_FILE]
