@@ -533,7 +533,9 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
             .catch(reject)
         }
 
-        if (error && stderr && stderr.includes("Sign in to confirm you're not a bot")) {
+        const botDetectionTriggered = stderr && /Sign in to confirm you.?re not a bot/i.test(stderr)
+
+        if (error && botDetectionTriggered) {
           console.warn(`⚠️ Bot detection triggered on attempt ${retryCount + 1}`)
           if (retryCount < 3) {
             const nextDelay = Math.min(delayMs * Math.pow(2, retryCount + 1), 30000)
