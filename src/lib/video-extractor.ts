@@ -40,34 +40,6 @@ export async function extractVideoInfo(url: string): Promise<VideoInfo | null> {
 }
 
 /**
- * Extract video information from YouTube (legacy - now uses API)
- */
-export async function extractYouTubeInfo(url: string): Promise<VideoInfo | null> {
-  return extractVideoInfo(url)
-}
-
-/**
- * Extract video information from Instagram (legacy - now uses API)
- */
-export async function extractInstagramInfo(url: string): Promise<VideoInfo | null> {
-  return extractVideoInfo(url)
-}
-
-/**
- * Extract video information from Facebook (legacy - now uses API)
- */
-export async function extractFacebookInfo(url: string): Promise<VideoInfo | null> {
-  return extractVideoInfo(url)
-}
-
-/**
- * Extract video information from Twitter/X (legacy - now uses API)
- */
-export async function extractTwitterInfo(url: string): Promise<VideoInfo | null> {
-  return extractVideoInfo(url)
-}
-
-/**
  * Download video through proxy (for CORS bypass)
  */
 export async function downloadVideo(
@@ -100,7 +72,7 @@ export async function downloadVideo(
 
       if (value) {
         chunks.push(new Uint8Array(value))
-      received += value.length
+        received += value.length
       }
 
       if (onProgress && total > 0) {

@@ -130,7 +130,7 @@ async function fetchYTDLStream(videoPageUrl: string, itag: string, onProgress?: 
   return blob
 }
 
-// Attempt ytdl streaming first, then fall back to direct signed URL via proxy
+// Attempt download using format URL via proxy
 async function downloadFormatWithFallback(
   videoPageUrl: string,
   format: VideoFormat,

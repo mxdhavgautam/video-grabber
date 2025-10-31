@@ -1,118 +1,179 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
-import ytdl from '@distube/ytdl-core'
 
-// Normalize YouTube URL
-function normalizeYouTubeUrl(rawUrl: string): string {
-  if (!rawUrl) return rawUrl
-
-  try {
-    const trimmed = rawUrl.trim()
-    const parsed = new URL(trimmed)
-    parsed.hash = ''
-
-    const hostname = parsed.hostname.toLowerCase()
-
-    if (hostname === 'youtu.be' || hostname.endsWith('.youtu.be')) {
-      parsed.search = ''
-      return `${parsed.protocol}//${parsed.hostname}${parsed.pathname}`
-    }
-
-    if (hostname === 'youtube.com' || hostname.endsWith('.youtube.com')) {
-      parsed.searchParams.delete('si')
-      return parsed.toString()
-    }
-
-    return trimmed
-  } catch (error) {
-    console.error('[Extract] Failed to normalize URL:', error)
-    return rawUrl
-  }
-}
-
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default async function handler(
+  req: VercelRequest,
+  res: VercelResponse
+) {
+  // Enable CORS
+  res.setHeader('Access-Control-Allow-Credentials', 'true')
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 
   if (req.method === 'OPTIONS') {
-    return res.status(200).end()
+    res.status(200).end()
+    return
   }
 
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' })
   }
 
-  const { url } = req.query as { url?: string }
+  const { url } = req.query
 
   if (!url || typeof url !== 'string') {
     return res.status(400).json({ error: 'URL parameter is required' })
   }
 
-  const normalizedUrl = normalizeYouTubeUrl(url)
-
-  console.log('[Extract] Normalized URL:', normalizedUrl)
-
-  if (!/https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i.test(normalizedUrl)) {
+  // Validate YouTube URL
+  if (!/https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i.test(url)) {
     return res.status(400).json({ error: 'Invalid YouTube URL' })
   }
 
   try {
-    console.log('[Extract] Fetching info with @distube/ytdl-core...')
-
-    const info = await ytdl.getInfo(normalizedUrl)
-
-    console.log('[Extract] Got info:', {
-      videoId: info.videoDetails.videoId,
-      title: info.videoDetails.title,
-      formatCount: info.formats.length,
-    })
-
-    const formats = info.formats.map((format: any) => ({
-      format_id: format.itag?.toString() || 'unknown',
-      format_note: format.qualityLabel || format.quality || '',
-      ext: format.container || 'mp4',
-      resolution: format.qualityLabel || '',
-      filesize: format.contentLength ? Number(format.contentLength) : undefined,
-      fps: format.fps ? Number(format.fps) : undefined,
-      video_codec: format.codecs?.split(',')[0]?.trim() || undefined,
-      audio_codec: format.codecs?.split(',')[1]?.trim() || undefined,
-      url: format.url,
-      height: format.height ? Number(format.height) : undefined,
-      width: format.width ? Number(format.width) : undefined,
-      hasVideo: !!format.hasVideo,
-      hasAudio: !!format.hasAudio,
-    }))
-
-    console.log('[Extract] Built', formats.length, 'formats')
-
-    return res.status(200).json({
-      id: info.videoDetails.videoId,
-      title: info.videoDetails.title || '',
-      thumbnail: info.videoDetails.thumbnails?.[0]?.url || '',
-      duration: info.videoDetails.lengthSeconds ? Number(info.videoDetails.lengthSeconds) : 0,
-      formats,
-      subtitle_tracks: [],
-      audio_tracks: [],
-      webpage_url: normalizedUrl,
-      platform: 'youtube',
-      description: info.videoDetails.description || undefined,
-      uploader: info.videoDetails.author?.name || undefined,
-      view_count: info.videoDetails.viewCount ? Number(info.videoDetails.viewCount) : undefined,
-    })
-  } catch (error) {
-    console.error('[Extract] Error:')
-    if (error instanceof Error) {
-      console.error('[Extract] Message:', error.message)
-      console.error('[Extract] Stack:', error.stack?.substring(0, 500))
-    } else {
-      console.error('[Extract] Error object:', error)
+    // @ts-ignore - runtime import, no types needed
+    const { Innertube }: any = await import('youtubei.js')
+    const yt = await Innertube.create({ hl: 'en', gl: 'US' })
+    let info: any
+    try {
+      info = await yt.getBasicInfo(url, 'ANDROID')
+    } catch (e) {
+      info = await yt.getBasicInfo(url, 'TV')
     }
 
-    const errorMessage = error instanceof Error ? error.message : String(error)
+    const sd = info?.streaming_data || {}
+    const adaptive = sd.adaptive_formats || []
+    const formatsMuxed = sd.formats || []
 
+    // Get all video formats (with or without audio)
+    const videoFormats = [...adaptive, ...formatsMuxed]
+      .filter((format: any) => format.has_video)
+      .map((format: any) => ({
+        format_id: String(format.itag),
+        format_note: format.quality_label || format.quality || undefined,
+        ext: (format.mime_type || '').includes('webm') ? 'webm' : (format.mime_type || '').includes('mp4') ? 'mp4' : 'mp4',
+        resolution: format.quality_label || format.quality || undefined,
+        filesize: format.content_length ? parseInt(format.content_length) : undefined,
+        fps: format.fps,
+        video_codec: format.codecs,
+        audio_codec: format.audio_codec || undefined,
+        url: format.url,
+        protocol: format.protocol || undefined,
+        width: format.width,
+        height: format.height,
+        hasAudio: !!format.has_audio,
+        hasVideo: !!format.has_video,
+      }))
+
+    // Get audio-only formats with language information
+    const audioFormats = adaptive
+      .filter((format: any) => format.has_audio && !format.has_video)
+      .map((format: any) => ({
+        format_id: String(format.itag),
+        format_note: format.bitrate ? `${Math.round((format.bitrate || 0) / 1000)}kbps` : 'Audio',
+        ext: (format.mime_type || '').includes('webm') ? 'webm' : (format.mime_type || '').includes('mp4') ? 'm4a' : 'm4a',
+        filesize: format.content_length ? parseInt(format.content_length) : undefined,
+        audio_codec: format.codecs,
+        url: format.url,
+        protocol: format.protocol || undefined,
+        language: format.audio_track?.display_name || format.language || undefined,
+        audio_track_id: format.audio_track?.id || undefined,
+        hasAudio: !!format.has_audio,
+        hasVideo: false,
+      }))
+
+    // Get unique audio tracks from adaptive formats (if available)
+    const adaptiveFormats = adaptive
+    const audioTracksMap = new Map<string, any>()
+    
+    // Group audio formats by language/track
+    adaptiveFormats
+      .filter((f: any) => f.mimeType?.includes('audio'))
+      .forEach((format: any) => {
+        const language = format.language || 'default'
+        const trackId = format.audioTrack?.id || format.itag?.toString()
+        
+        if (!audioTracksMap.has(language)) {
+          audioTracksMap.set(language, {
+            language: language === 'default' ? 'Default' : language,
+            language_code: format.language || 'default',
+            format_ids: [],
+            track_id: trackId,
+          })
+        }
+        
+        if (format.itag) {
+          audioTracksMap.get(language)!.format_ids.push(format.itag.toString())
+        }
+      })
+    
+    // Also check formats for audio tracks
+    adaptive
+      .filter((f: any) => f.has_audio && !f.has_video)
+      .forEach((format: any) => {
+        const language = format.audio_track?.display_name || format.language || 'default'
+        const trackId = format.audio_track?.id || String(format.itag)
+        
+        if (!audioTracksMap.has(language)) {
+          audioTracksMap.set(language, {
+            language: language === 'default' ? 'Default' : language,
+            language_code: format.language || 'default',
+            format_ids: [],
+            track_id: trackId,
+          })
+        }
+        
+        if (format.itag) {
+          const formatId = format.itag.toString()
+          if (!audioTracksMap.get(language)!.format_ids.includes(formatId)) {
+            audioTracksMap.get(language)!.format_ids.push(formatId)
+          }
+        }
+      })
+
+    let audioTracks = Array.from(audioTracksMap.values()).map((track, index) => ({
+      ...track,
+      format_id: index.toString(),
+    }))
+
+    // If no audio tracks detected, create a default one
+    if (audioTracks.length === 0) {
+      audioTracks = [{
+        language: 'Default',
+        language_code: 'default',
+        format_id: '0',
+        format_ids: audioFormats.map((f: any) => f.format_id),
+      }]
+    }
+
+    // Get subtitle/caption tracks
+    const subtitleTracks = info?.captions?.tracks
+      ?.map((track: any, index: number) => ({
+        language: track?.name?.simpleText || track?.name?.runs?.[0]?.text || track?.language_code || 'Unknown',
+        language_code: track?.language_code || 'und',
+        base_url: track?.base_url,
+        format_id: index.toString(),
+      })) || []
+
+    return res.status(200).json({
+      id: info?.basic_info?.id || info?.id || '',
+      title: info?.basic_info?.title || '',
+      thumbnail: (info?.basic_info?.thumbnail?.[(info?.basic_info?.thumbnail?.length || 1) - 1]?.url) || '',
+      duration: info?.basic_info?.duration || 0,
+      formats: [...videoFormats, ...audioFormats],
+      subtitle_tracks: subtitleTracks,
+      audio_tracks: audioTracks,
+      webpage_url: url,
+      platform: 'youtube',
+      description: info?.basic_info?.short_description || undefined,
+      uploader: info?.basic_info?.author || undefined,
+      view_count: info?.basic_info?.view_count ? Number(info.basic_info.view_count) : undefined,
+    })
+  } catch (error) {
+    console.error('Error fetching YouTube info:', error)
     return res.status(500).json({
       error: 'Failed to fetch video information',
-      message: errorMessage,
+      message: error instanceof Error ? error.message : 'Unknown error',
     })
   }
 }
