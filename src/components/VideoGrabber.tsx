@@ -205,6 +205,7 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
   const [formatType, setFormatType] = useState<'video' | 'audio' | 'video-only'>('video')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [prevUrl, setPrevUrl] = useState<string>('')
+  const [extractionStatus, setExtractionStatus] = useState<string | null>(null)
   const { toast } = useToast()
 
   // Notify parent when extracting state changes
@@ -556,6 +557,7 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
     setSelectedSubtitleTrack('none')
     setSelectedAudioTrack('default')
     setErrorMessage(null)
+    setExtractionStatus('🔍 Extracting video information...')
 
     try {
       const info = await extractVideoInfo(url)
@@ -566,11 +568,13 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
       setVideoInfo(info)
       setPrevUrl(url)
       setErrorMessage(null)
+      setExtractionStatus(null)
       
       // No success toast - extraction happens automatically
     } catch (error) {
       console.error('Error extracting video info:', error)
       setErrorMessage(error instanceof Error ? error.message : 'Failed to extract video information')
+      setExtractionStatus(null)
     } finally {
       setLoading(false)
     }
@@ -1471,6 +1475,16 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
             >
               ✕
             </button>
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* Extraction Status - Shows during retries */}
+      {loading && extractionStatus && (
+        <Alert className="bg-blue-500/10 border-blue-500/20 text-blue-600 dark:text-blue-400 py-2 px-3">
+          <AlertDescription className="flex items-center gap-2 text-xs sm:text-sm">
+            <Loader2 className="h-3.5 w-3.5 animate-spin flex-shrink-0" />
+            <span>{extractionStatus}</span>
           </AlertDescription>
         </Alert>
       )}
