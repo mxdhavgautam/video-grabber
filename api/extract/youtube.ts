@@ -1,5 +1,73 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node'
 
+// Module-level cache (persists across requests in the same Lambda instance)
+let cachedInnertube: any = null
+let innertubeCacheTime: number = 0
+const CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
+
+/**
+ * Get or create Innertube instance with caching
+ * Reuses the same instance across requests to avoid bot detection
+ */
+async function getInnertubeInstance() {
+  const now = Date.now()
+  
+  // Return cached instance if still valid
+  if (cachedInnertube && (now - innertubeCacheTime) < CACHE_DURATION) {
+    console.log('[Extract] Using cached Innertube instance')
+    return cachedInnertube
+  }
+
+  console.log('[Extract] Creating new Innertube instance...')
+  
+  // @ts-ignore - runtime import
+  const { Innertube }: any = await import('youtubei.js')
+  
+  // Create with specific options to avoid bot detection
+  const yt = await Innertube.create({
+    hl: 'en',
+    gl: 'US',
+    fetch_player: true, // Explicitly fetch player
+  })
+  
+  cachedInnertube = yt
+  innertubeCacheTime = now
+  
+  console.log('[Extract] New Innertube instance created and cached')
+  return yt
+}
+
+/**
+ * Try multiple clients with retry logic
+ */
+async function getVideoInfoWithRetry(yt: any, url: string, maxRetries = 3) {
+  const clients = ['ANDROID', 'TV', 'WEB', 'IOS']
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    for (const client of clients) {
+      try {
+        console.log(`[Extract] Attempt ${attempt + 1}/${maxRetries} - Trying ${client} client...`)
+        const info = await yt.getBasicInfo(url, client)
+        
+        if (info && (info.streaming_data || info.videoDetails)) {
+          console.log(`[Extract] ✅ ${client} client worked!`)
+          return info
+        }
+      } catch (e: any) {
+        console.warn(`[Extract] ${client} failed:`, e.message?.substring(0, 100))
+      }
+    }
+    
+    // Wait before retry
+    if (attempt < maxRetries - 1) {
+      console.log(`[Extract] Waiting before retry ${attempt + 2}/${maxRetries}...`)
+      await new Promise(resolve => setTimeout(resolve, 1000))
+    }
+  }
+  
+  throw new Error('All client attempts failed')
+}
+
 export default async function handler(
   req: VercelRequest,
   res: VercelResponse
@@ -31,26 +99,17 @@ export default async function handler(
   }
 
   try {
-    // @ts-ignore - runtime import, no types needed
-    const { Innertube }: any = await import('youtubei.js')
-    console.log('[Extract] Creating Innertube instance...')
-    const yt = await Innertube.create({ hl: 'en', gl: 'US' })
-    console.log('[Extract] Innertube created, trying ANDROID client...')
+    console.log('[Extract] Starting extraction for:', url)
+    const yt = await getInnertubeInstance()
     
-    let info: any
-    try {
-      info = await yt.getBasicInfo(url, 'ANDROID')
-      console.log('[Extract] ✅ ANDROID client worked')
-    } catch (e: any) {
-      console.warn('[Extract] ANDROID failed, trying TV client:', e.message)
-      info = await yt.getBasicInfo(url, 'TV')
-      console.log('[Extract] ✅ TV client worked')
+    // Try with retry logic
+    const info = await getVideoInfoWithRetry(yt, url)
+
+    if (!info) {
+      throw new Error('No info returned from YouTube')
     }
 
-    if (!info?.streaming_data) {
-      console.warn('[Extract] No streaming_data in info, checking alternative structures...')
-      console.log('[Extract] Info keys:', Object.keys(info || {}))
-    }
+    console.log('[Extract] Got info from YouTube')
 
     const sd = info?.streaming_data || {}
     const adaptive = sd.adaptive_formats || []
@@ -94,11 +153,10 @@ export default async function handler(
       }))
 
     // Get unique audio tracks from adaptive formats (if available)
-    const adaptiveFormats = adaptive
     const audioTracksMap = new Map<string, any>()
     
     // Group audio formats by language/track
-    adaptiveFormats
+    adaptive
       .filter((f: any) => f.mimeType?.includes('audio'))
       .forEach((format: any) => {
         const language = format.language || 'default'
@@ -166,22 +224,31 @@ export default async function handler(
         format_id: index.toString(),
       })) || []
 
+    console.log('[Extract] Successfully parsed', videoFormats.length + audioFormats.length, 'formats')
+
     return res.status(200).json({
       id: info?.basic_info?.id || info?.id || '',
-      title: info?.basic_info?.title || '',
-      thumbnail: (info?.basic_info?.thumbnail?.[(info?.basic_info?.thumbnail?.length || 1) - 1]?.url) || '',
-      duration: info?.basic_info?.duration || 0,
+      title: info?.basic_info?.title || info?.videoDetails?.title || '',
+      thumbnail: (info?.basic_info?.thumbnail?.[(info?.basic_info?.thumbnail?.length || 1) - 1]?.url) || info?.videoDetails?.thumbnail?.url || '',
+      duration: info?.basic_info?.duration || info?.videoDetails?.lengthSeconds || 0,
       formats: [...videoFormats, ...audioFormats],
       subtitle_tracks: subtitleTracks,
       audio_tracks: audioTracks,
       webpage_url: url,
       platform: 'youtube',
-      description: info?.basic_info?.short_description || undefined,
-      uploader: info?.basic_info?.author || undefined,
-      view_count: info?.basic_info?.view_count ? Number(info.basic_info.view_count) : undefined,
+      description: info?.basic_info?.short_description || info?.videoDetails?.description || undefined,
+      uploader: info?.basic_info?.author || info?.videoDetails?.author?.name || undefined,
+      view_count: info?.basic_info?.view_count ? Number(info.basic_info.view_count) : info?.videoDetails?.viewCount ? Number(info.videoDetails.viewCount) : undefined,
     })
   } catch (error) {
-    console.error('Error fetching YouTube info:', error)
+    console.error('[Extract] Error:')
+    if (error instanceof Error) {
+      console.error('[Extract] Message:', error.message)
+      console.error('[Extract] Stack:', error.stack?.substring(0, 500))
+    } else {
+      console.error('[Extract] Error:', error)
+    }
+
     return res.status(500).json({
       error: 'Failed to fetch video information',
       message: error instanceof Error ? error.message : 'Unknown error',
