@@ -473,23 +473,14 @@ function normalizeYouTubeUrl(url) {
 
 /**
  * Execute yt-dlp with robust retry logic for bot-protected videos
- * Uses exponential backoff and automatic browser cookie extraction to bypass restrictions
+ * Uses multiple strategies: cookies, client switching, and PO Tokens
  */
-async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000, forceNewProfile = false) {
+async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
   return new Promise(async (resolve, reject) => {
     // Add exponential backoff delay before retry
     if (retryCount > 0) {
       console.log(`⏳ Retry #${retryCount} - Waiting ${delayMs}ms before attempting...`)
       await new Promise(r => setTimeout(r, delayMs))
-      
-      // On retry attempt 2+, regenerate Chrome profile with fresh cookies
-      if (retryCount >= 2 && !forceNewProfile) {
-        console.log(`🔄 Regenerating Chrome profile with fresh cookies...`)
-        const newProfile = `${CHROME_PROFILES_BASE}/profile-${Date.now()}`
-        process.env.CHROME_PROFILE_DIR = newProfile
-        await getOrCreateChromeProfile()
-        console.log(`✅ Fresh Chrome profile created: ${newProfile}`)
-      }
     }
     
     // Build yt-dlp command - explicitly request JSON output for extraction
@@ -498,27 +489,31 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000, forceNewPr
     // Add best practices per yt-dlp documentation:
     // 1. User-Agent: Mimic a real browser to avoid bot detection
     // 2. Socket timeout: Prevent hanging on slow connections
-    // 3. Sleep intervals: Respect YouTube rate limits
     command += ` --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"`
     command += ` --socket-timeout 30`
     
-    // Use pre-warmed Chrome profile from environment (set by start.sh)
-    // The profile is created and pre-warmed at startup, and yt-dlp can read directly from it
-    if (useBrowserCookies && process.env.CHROME_PROFILE_DIR) {
-      command += ` --cookies-from-browser "chromium:${process.env.CHROME_PROFILE_DIR}"`
-      if (retryCount === 0) {
-        console.log(`🔐 Using cookies from pre-warmed Chrome profile`)
+    // Strategy 1: Try with browser cookies (attempt 0-1)
+    // Strategy 2: Switch to mweb client with PO Token support (attempt 2+)
+    //   Per https://github.com/yt-dlp/yt-dlp/wiki/Extractors#youtube
+    //   mweb client can use PO Tokens to bypass bot detection
+    if (retryCount < 2) {
+      // First attempts: Use browser cookies if available
+      if (useBrowserCookies && process.env.CHROME_PROFILE_DIR) {
+        command += ` --cookies-from-browser "chromium:${process.env.CHROME_PROFILE_DIR}"`
+        if (retryCount === 0) {
+          console.log(`🔐 Strategy 1: Using cookies from Chrome profile`)
+        } else {
+          console.log(`🔐 Retry ${retryCount}: Retrying with Chrome profile cookies`)
+        }
       } else {
-        console.log(`🔐 Retrying with profile: ${process.env.CHROME_PROFILE_DIR}`)
+        console.log(`⚠️ No Chrome profile available for cookies`)
       }
-    } else if (hasCookies) {
-      command += ` --cookies "${COOKIES_FILE}"`
-      if (retryCount === 0) {
-        console.log(`🔐 Using cookies from: ${COOKIES_FILE}`)
-      }
-    } else if (retryCount === 0) {
-      console.log(`⚠️ No cookies available - attempting with geo-bypass`)
-      command += ` --geo-bypass`
+    } else {
+      // Retry 2+: Switch to mweb client with PO Token support
+      // Per documentation: https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
+      // mweb client can leverage installed PO Token provider plugins
+      console.log(`🎬 Retry ${retryCount}: Switching to mweb client with PO Token support`)
+      command += ` --extractor-args "youtube:player-client=mweb"`
     }
     
     // Add URL
@@ -532,22 +527,22 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000, forceNewPr
         stdout = out
         stderr = err
         
-        // Check for bot detection errors and retry with fresh profile
-        if (error && stderr.includes("Sign in to confirm you're not a bot")) {
+        // Check for bot detection errors
+        if (error && stderr && stderr.includes("Sign in to confirm you're not a bot")) {
           console.warn(`⚠️ Bot detection triggered on attempt ${retryCount + 1}`)
           
-          // Retry with exponential backoff
+          // Retry with different strategy
           if (retryCount < 3) {
             const nextDelay = Math.min(delayMs * Math.pow(2, retryCount + 1), 30000)
-            return getVideoInfo(videoUrl, retryCount + 1, nextDelay, true)
+            return getVideoInfo(videoUrl, retryCount + 1, nextDelay)
           } else {
-            return reject(new Error('Failed to get video information from yt-dlp - Bot detection could not be bypassed'))
+            return reject(new Error('Failed to get video information from yt-dlp - Bot detection could not be bypassed after 3 retries'))
           }
         }
         
         if (error) {
           if (stderr) {
-            console.error(`❌ Attempt ${retryCount + 1} failed: ${stderr.substring(0, 200)}`)
+            console.error(`❌ Attempt ${retryCount + 1} failed: ${stderr.substring(0, 300)}`)
           }
 
           // Retry on transient network errors
