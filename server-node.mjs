@@ -598,34 +598,18 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
           const jsonStr = stdout.substring(jsonStart, jsonEnd)
           const data = JSON.parse(jsonStr)
 
-          // Transform and validate the data
-          const formatsData = transformFormats(data)
-          const videoInfo = {
-            id: data.id,
-            title: data.title || 'Unknown Title',
-            thumbnail: data.thumbnail,
-            duration: data.duration,
-            webpage_url: data.webpage_url || videoUrl,
-            formats: [...(formatsData.videoFormats || []), ...(formatsData.audioFormats || [])],
-            subtitle_tracks: data.subtitles ? Object.entries(data.subtitles).map(([lang, tracks]) => ({
-              language: lang,
-              language_code: lang,
-              format_id: '0',
-              url: tracks[0]?.url || ''
-            })) : [],
-            audio_tracks: formatsData.audioTracks || [],
-            platform: 'youtube',
-            description: data.description || '',
-            uploader: data.uploader || '',
-            view_count: data.view_count || 0
-          }
+          // Pre-compute transformed formats for logging and reuse downstream
+          const transformedFormats = transformFormats(data)
 
-          console.log(`✅ Successfully extracted video: ${videoInfo.title}`)
-          console.log(`  - Video formats: ${videoInfo.formats.filter(f => f.hasVideo).length}`)
-          console.log(`  - Audio formats: ${videoInfo.formats.filter(f => f.hasAudio).length}`)
-          console.log(`  - Subtitle tracks: ${videoInfo.subtitle_tracks.length}`)
+          console.log(`✅ Successfully extracted video: ${data.title || 'Unknown Title'}`)
+          console.log(`  - Video formats: ${transformedFormats.videoFormats.length}`)
+          console.log(`  - Audio formats: ${transformedFormats.audioFormats.length}`)
+          console.log(`  - Subtitle tracks: ${(data.subtitles && Object.keys(data.subtitles).length) || 0}`)
 
-          resolve(videoInfo)
+          // Attach transformed formats for downstream reuse
+          data.__transformedFormats = transformedFormats
+
+          resolve(data)
         } catch (parseError) {
           reject(new Error(`JSON Parse error: ${parseError.message}`))
         }
@@ -825,8 +809,15 @@ const server = createServer(async (req, res) => {
       // Extract video ID for consistency
       const videoId = extractVideoId(videoUrl)
 
-      // Transform formats
-      const { videoFormats, audioFormats, audioTracks } = transformFormats(ytdlpData)
+      // Use precomputed transformed formats if available
+      const transformed = ytdlpData.__transformedFormats || transformFormats(ytdlpData)
+      const { videoFormats, audioFormats, audioTracks } = transformed
+
+      // Clean helper property before responding
+      if (ytdlpData.__transformedFormats) {
+        delete ytdlpData.__transformedFormats
+      }
+
       const subtitleTracks = getSubtitleTracks(ytdlpData)
 
       console.log(`✅ Successfully extracted video: ${ytdlpData.title || 'Unknown'}`)
