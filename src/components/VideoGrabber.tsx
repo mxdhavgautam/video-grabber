@@ -175,6 +175,7 @@ export function VideoGrabber() {
   const [selectedVideoOnlyQuality, setSelectedVideoOnlyQuality] = useState<string>('')
   const [selectedVideoOnlyFileType, setSelectedVideoOnlyFileType] = useState<string>('mp4')
   const [formatType, setFormatType] = useState<'video' | 'audio' | 'video-only'>('video')
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const { toast } = useToast()
 
   // Suppress browser extension errors that clutter the console
@@ -486,6 +487,7 @@ export function VideoGrabber() {
     setSelectedAudioSource('')
     setSelectedSubtitleTrack('none')
     setSelectedAudioTrack('default')
+    setErrorMessage(null)
 
     try {
       const info = await extractVideoInfo(url)
@@ -494,15 +496,12 @@ export function VideoGrabber() {
       }
 
       setVideoInfo(info)
+      setErrorMessage(null)
       
       // No success toast - extraction happens automatically
     } catch (error) {
       console.error('Error extracting video info:', error)
-      toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to extract video information',
-        variant: 'destructive',
-      })
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to extract video information')
     } finally {
       setLoading(false)
     }
@@ -1294,6 +1293,24 @@ export function VideoGrabber() {
           </div>
         </CardContent>
       </Card>
+
+      {errorMessage && (
+        <Alert className="bg-yellow-50 border-yellow-200">
+          <div className="flex items-start gap-3">
+            <div className="text-yellow-800 flex-1">
+              <p className="font-semibold text-sm">Error</p>
+              <p className="text-sm mt-1">{errorMessage}</p>
+            </div>
+            <button
+              onClick={() => setErrorMessage(null)}
+              className="text-yellow-600 hover:text-yellow-800 flex-shrink-0 mt-1"
+              aria-label="Close error message"
+            >
+              ✕
+            </button>
+          </div>
+        </Alert>
+      )}
 
       {videoInfo && (
         <Card>
