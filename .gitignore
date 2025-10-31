@@ -106,3 +106,23 @@ pnpm-lock.yaml
 # Portfolio folder (separate project, should not be tracked here)
 portfolio/
 .env.production
+
+# VPS/Docker Deployment (PRIVATE - Keep local only, never commit to GitHub)
+# These files contain infrastructure details and should never be public
+Dockerfile
+docker-compose.yml
+docker-compose.*.yml
+render.yaml
+build.sh
+DEPLOYMENT_GUIDE.md
+VPS_SETUP.md
+.dockerignore
+
+# Docker artifacts
+.docker/
+docker-volumes/
+chrome-profiles/
+temp-downloads/
+
+# Deployment backup folder (SENSITIVE - LOCAL BACKUP ONLY)
+deployment-backup/
