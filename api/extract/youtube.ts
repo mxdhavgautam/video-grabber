@@ -33,12 +33,23 @@ export default async function handler(
   try {
     // @ts-ignore - runtime import, no types needed
     const { Innertube }: any = await import('youtubei.js')
+    console.log('[Extract] Creating Innertube instance...')
     const yt = await Innertube.create({ hl: 'en', gl: 'US' })
+    console.log('[Extract] Innertube created, trying ANDROID client...')
+    
     let info: any
     try {
       info = await yt.getBasicInfo(url, 'ANDROID')
-    } catch (e) {
+      console.log('[Extract] ✅ ANDROID client worked')
+    } catch (e: any) {
+      console.warn('[Extract] ANDROID failed, trying TV client:', e.message)
       info = await yt.getBasicInfo(url, 'TV')
+      console.log('[Extract] ✅ TV client worked')
+    }
+
+    if (!info?.streaming_data) {
+      console.warn('[Extract] No streaming_data in info, checking alternative structures...')
+      console.log('[Extract] Info keys:', Object.keys(info || {}))
     }
 
     const sd = info?.streaming_data || {}
