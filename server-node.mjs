@@ -165,6 +165,136 @@ function validateFormatID(formatId) {
   return { valid: true }
 }
 
+/**
+ * Helper to run FFmpeg command and get output
+ */
+function runFFmpeg(args) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('ffmpeg', args)
+    let stderr = ''
+    let stdout = ''
+    
+    proc.stdout.on('data', (data) => {
+      stdout += data.toString()
+    })
+    
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString()
+      // Log FFmpeg progress
+      const line = data.toString().trim()
+      if (line && (line.includes('frame=') || line.includes('time=') || line.includes('bitrate='))) {
+        console.log(`[FFmpeg] ${line}`)
+      }
+    })
+    
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve({ stdout, stderr, success: true })
+      } else {
+        reject(new Error(`FFmpeg failed with code ${code}: ${stderr.substring(0, 500)}`))
+      }
+    })
+    
+    proc.on('error', (error) => {
+      reject(new Error(`Failed to run FFmpeg: ${error.message}`))
+    })
+  })
+}
+
+/**
+ * Merge video and audio streams with FFmpeg
+ * @param {string} videoPath - Path to video file (e.g., format 313 VP9)
+ * @param {string} audioPath - Path to audio file (e.g., format 140 AAC)
+ * @param {string} outputPath - Path for output MP4
+ */
+async function mergeVideoAudio(videoPath, audioPath, outputPath) {
+  console.log(`🎬 Merging video and audio with FFmpeg...`)
+  console.log(`   Video: ${videoPath}`)
+  console.log(`   Audio: ${audioPath}`)
+  console.log(`   Output: ${outputPath}`)
+  
+  const args = [
+    '-i', videoPath,
+    '-i', audioPath,
+    '-c:v', 'copy',        // Copy video codec (already VP9 or H.264)
+    '-c:a', 'aac',         // Convert audio to AAC for compatibility
+    '-b:a', '128k',        // Audio bitrate
+    '-movflags', '+faststart', // Enable streaming (moov atom at start)
+    '-y',                  // Overwrite output file
+    outputPath
+  ]
+  
+  return runFFmpeg(args)
+}
+
+/**
+ * Convert video format with FFmpeg
+ * @param {string} inputPath - Input video file
+ * @param {string} outputPath - Output video file  
+ * @param {object} options - Conversion options {codec, preset, bitrate}
+ */
+async function convertVideoFormat(inputPath, outputPath, options = {}) {
+  const codec = options.codec || 'libx264'  // H.264 or libx265 for H.265
+  const preset = options.preset || 'fast'    // ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
+  const bitrate = options.bitrate || '5000k'
+  
+  console.log(`🎥 Converting video with codec: ${codec}`)
+  
+  const args = [
+    '-i', inputPath,
+    '-c:v', codec,
+    '-preset', preset,
+    '-b:v', bitrate,
+    '-c:a', 'aac',
+    '-b:a', '128k',
+    '-movflags', '+faststart',
+    '-y',
+    outputPath
+  ]
+  
+  return runFFmpeg(args)
+}
+
+/**
+ * Get video information with FFmpeg
+ */
+async function getVideoInfo(filePath) {
+  const args = [
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-show_format',
+    '-show_streams',
+    '-print_format', 'json',
+    filePath
+  ]
+  
+  return new Promise((resolve, reject) => {
+    const proc = spawn('ffprobe', args)
+    let stdout = ''
+    
+    proc.stdout.on('data', (data) => {
+      stdout += data.toString()
+    })
+    
+    proc.on('close', (code) => {
+      if (code === 0) {
+        try {
+          const info = JSON.parse(stdout)
+          resolve(info)
+        } catch (e) {
+          reject(new Error(`Failed to parse ffprobe output: ${e.message}`))
+        }
+      } else {
+        reject(new Error(`ffprobe failed with code ${code}`))
+      }
+    })
+    
+    proc.on('error', (error) => {
+      reject(new Error(`Failed to run ffprobe: ${error.message}`))
+    })
+  })
+}
+
 // Cleanup orphaned temp files on startup
 function cleanupOldTempFiles() {
   try {
@@ -249,6 +379,43 @@ function checkYtDlpAvailability() {
           }
           resolve(true)
         })
+      }
+    })
+  })
+}
+
+// Check FFmpeg availability on startup
+function checkFFmpegAvailability() {
+  return new Promise((resolve) => {
+    exec('which ffmpeg', (error, stdout) => {
+      if (error) {
+        console.warn('⚠️ ffmpeg not found in PATH')
+        console.warn('   This tool is required for video processing.')
+        resolve(false)
+      } else {
+        console.log(`✅ ffmpeg found at: ${stdout.trim()}`)
+        exec('ffmpeg -version 2>&1 | head -1', (verError, verStdout) => {
+          if (!verError) {
+            console.log(`✅ ${verStdout.trim()}`)
+          }
+          resolve(true)
+        })
+      }
+    })
+  })
+}
+
+// Check ffprobe availability on startup
+function checkFFprobeAvailability() {
+  return new Promise((resolve) => {
+    exec('which ffprobe', (error, stdout) => {
+      if (error) {
+        console.warn('⚠️ ffprobe not found in PATH')
+        console.warn('   This tool is required for video information extraction.')
+        resolve(false)
+      } else {
+        console.log(`✅ ffprobe found at: ${stdout.trim()}`)
+        resolve(true)
       }
     })
   })
@@ -1130,6 +1297,24 @@ server.listen(PORT, async () => {
     console.error('   Video extraction will fail.')
     console.error('   Render deployment: Check build command in render.yaml')
     console.error('   Local deployment: Run: pip3 install --upgrade yt-dlp')
+  }
+  
+  // Check FFmpeg availability
+  const ffmpegAvailable = await checkFFmpegAvailability()
+  if (!ffmpegAvailable) {
+    console.error('❌ CRITICAL: ffmpeg is not available!')
+    console.error('   Video processing will fail.')
+    console.error('   Render deployment: Check build command in render.yaml')
+    console.error('   Local deployment: Run: brew install ffmpeg')
+  }
+
+  // Check ffprobe availability
+  const ffprobeAvailable = await checkFFprobeAvailability()
+  if (!ffprobeAvailable) {
+    console.error('❌ CRITICAL: ffprobe is not available!')
+    console.error('   Video information extraction will fail.')
+    console.error('   Render deployment: Check build command in render.yaml')
+    console.error('   Local deployment: Run: brew install ffprobe')
   }
   
   console.log('Ready to accept requests!')

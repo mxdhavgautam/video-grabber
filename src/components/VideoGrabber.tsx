@@ -8,11 +8,10 @@ import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { useToast } from '@/components/ui/use-toast'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Loader2, Download, Video, Music, Link2, Clipboard, Lock } from 'lucide-react'
-import { extractVideoInfo, detectPlatform, enableBrowserCookies } from '@/lib/video-extractor'
+import { Loader2, Download, Video, Music, Link2, Clipboard } from 'lucide-react'
+import { extractVideoInfo, detectPlatform } from '@/lib/video-extractor'
 import { extractAudioFromVideo } from '@/lib/ffmpeg'
 import { downloadBlob, formatFileSize, formatDuration, formatViewCount, sanitizeFilename, type VideoInfo, type VideoFormat } from '@/lib/types'
-import { CookiePermissionDialog } from './CookiePermissionDialog'
 
 // Detect API base URL based on current path
 function getApiBaseUrl(): string {
@@ -61,7 +60,7 @@ async function downloadFormatWithoutProgress(url: string): Promise<Blob> {
 async function downloadFormat(videoPageUrl: string, formatId: string, onProgress?: (progress: number) => void): Promise<Blob> {
   const proxyUrl = `${getApiBaseUrl()}/download?url=${encodeURIComponent(videoPageUrl)}&format=${encodeURIComponent(formatId)}`
   
-  // Start tracking from 0 - obtaining cookies
+  // Start tracking from 0 - waiting for server to process
   onProgress?.(0)
   
   console.log(`📥 Starting download for format ${formatId} from ${proxyUrl}`)
@@ -93,7 +92,7 @@ async function downloadFormat(videoPageUrl: string, formatId: string, onProgress
     }
   }
 
-  // Stage 1-3 complete: Obtaining cookies + Processing + Waiting for size (0-60%)
+  // Server processing + downloading (0-60%)
   onProgress?.(60)
 
   // Download video data with progress tracking
@@ -206,40 +205,7 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
   const [formatType, setFormatType] = useState<'video' | 'audio' | 'video-only'>('video')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [prevUrl, setPrevUrl] = useState<string>('')
-  const [showCookieDialog, setShowCookieDialog] = useState(false)
-  const [cookieDialogLoading, setCookieDialogLoading] = useState(false)
   const { toast } = useToast()
-
-  // Handle cookie permission allow
-  const handleCookieAllow = async () => {
-    setCookieDialogLoading(true)
-    try {
-      await enableBrowserCookies()
-      setShowCookieDialog(false)
-      toast({
-        title: 'Success',
-        description: 'YouTube cookies enabled. Downloads will now bypass bot detection.',
-      })
-    } catch (error) {
-      console.error('Cookie error:', error)
-      toast({
-        title: 'Cookie Error',
-        description: error instanceof Error ? error.message : 'Failed to enable cookies',
-        variant: 'destructive',
-      })
-    } finally {
-      setCookieDialogLoading(false)
-    }
-  }
-
-  // Handle cookie permission deny
-  const handleCookieDeny = () => {
-    setShowCookieDialog(false)
-    toast({
-      title: 'Cookies Skipped',
-      description: 'You can still download videos, but bot detection may block some requests.',
-    })
-  }
 
   // Notify parent when extracting state changes
   useEffect(() => {
@@ -704,7 +670,7 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
             setDownloadProgress(10)
             toast({
               title: 'Processing',
-              description: '🔐 Obtaining cookies...',
+              description: '⚙️ Processing video format...',
             })
             const videoBlob = await downloadFormatWithFallback(
               videoInfo.webpage_url,
@@ -846,7 +812,7 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
 
         toast({
           title: 'Processing',
-          description: '🔐 Obtaining cookies...',
+          description: '⚙️ Processing video format...',
         })
 
         // Get audio formats based on selected audio track
@@ -1486,17 +1452,6 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
                         </>
                       )}
                     </Button>
-                    <Button
-                      onClick={() => setShowCookieDialog(true)}
-                      disabled={loading}
-                      variant="outline"
-                      className="w-full sm:w-auto text-xs sm:text-sm h-11 sm:h-12 px-2 sm:px-3 border-amber-200 hover:bg-amber-50 dark:border-amber-900 dark:hover:bg-amber-950/30"
-                      title="Enable cookies to bypass YouTube bot detection"
-                      aria-label="Configure YouTube cookies"
-                    >
-                      <Lock className="h-3.5 w-3.5 mr-1 sm:mr-0 text-amber-600" />
-                      <span className="hidden sm:inline">Cookies</span>
-                    </Button>
                   </div>
                 </div>
               </div>
@@ -1779,12 +1734,6 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
           </CardContent>
         </Card>
       )}
-      <CookiePermissionDialog
-        isOpen={showCookieDialog}
-        onAllow={handleCookieAllow}
-        onDeny={handleCookieDeny}
-        isLoading={cookieDialogLoading}
-      />
     </div>
   )
 }
