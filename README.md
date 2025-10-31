@@ -2,7 +2,7 @@
 
 **Download YouTube videos in multiple formats using automatic format selection.** Deployed and working at **https://mxdhavgautam.com/grabber**
 
-> ✅ Production-ready with Vercel (frontend) + Render (backend) + yt-dlp + FFmpeg.wasm
+> ✅ Production-ready with Vercel (frontend) + VPS Docker (backend) + yt-dlp + FFmpeg
 
 ---
 
@@ -26,7 +26,7 @@ bun install && bun run dev
 - 🎚️ **Smart Quality Selection** - Auto-selects best compatible format
 - 📁 **Format Support** - MP4, WebM, MP3, M4A, OGG, WAV, AVI, MKV, FLV
 - 🎵 **Audio Extraction** - Extract audio with language selection  
-- 🤖 **Bot Detection Bypass** - Optional YouTube cookie integration
+- 🤖 **Bot Detection Bypass** - Server-side Chrome profile management
 - 🔐 **Secure Codec Handling** - Filters unsupported AV1 codec automatically
 - ⚡ **Real-time Progress** - Server-Sent Events for download updates
 - 🔒 **Secure** - CORS restricted to approved domains only
@@ -38,10 +38,11 @@ bun install && bun run dev
 | Layer | Technology |
 |-------|-----------|
 | **Frontend** | React 18 + TypeScript, Vite, shadcn/ui, Tailwind CSS |
-| **Backend** | Node.js (Bun), yt-dlp, Render (24/7 persistent) |
-| **Processing** | FFmpeg.wasm (client-side) + yt-dlp (server-side) |
-| **Video Download** | yt-dlp with Netscape cookies.txt format |
-| **Deployment** | Vercel (frontend) + Render (backend) |
+| **Backend** | Node.js (Bun), yt-dlp, Docker, VPS with Ubuntu 24.04 |
+| **Processing** | FFmpeg (server-side) + client-side video assembly |
+| **Video Download** | yt-dlp with Chrome profile cookies |
+| **Deployment** | Vercel (frontend) + Custom VPS (backend) |
+| **Infrastructure** | Docker + Docker Compose, Xvfb, Chromium |
 
 ---
 
@@ -54,15 +55,15 @@ bun install && bun run dev
 - ✅ **VP9** - Supported, slower but works
 - ❌ **AV1** - Not supported (auto-filtered)
 
-**Why AV1 is filtered:** Browser FFmpeg WASM lacks reliable AV1 decoding support. The application automatically excludes AV1 formats and selects H.264 or VP9 instead.
+**Why AV1 is filtered:** Browser environment lacks reliable AV1 decoding support. The application automatically excludes AV1 formats and selects H.264 or VP9 instead.
 
 ### Download Flow
 
 1. **Extract Metadata** - yt-dlp queries video info (JSON format)
 2. **Smart Format Selection** - Algorithm picks best compatible codec
 3. **Parallel Download** - Video + Audio downloaded from YouTube
-4. **Merge & Process** - FFmpeg.wasm combines and processes on client
-5. **Download to User** - Final file saved to user's device
+4. **Merge & Process** - FFmpeg combines and processes on server
+5. **Download to User** - Final file sent to browser
 
 ### Performance
 
@@ -77,43 +78,26 @@ bun install && bun run dev
 
 ## 🚀 Deploy Your Own
 
-### Backend (Render)
+### Backend Architecture
 
-**Requirements:**
-- Node.js 18+ (Render provides this)
-- Python 3 + yt-dlp (installed during build)
-- Bun for running server
+The backend uses a **private Docker container** on a custom VPS with:
 
-**Setup Steps:**
+- **Docker containerization** - Isolated, reproducible environment
+- **Chromium** - Full browser instance (not headless) for YouTube bot detection
+- **FFmpeg** - Server-side video processing with all codecs
+- **yt-dlp** - YouTube metadata extraction and downloading
+- **Xvfb** - Virtual X display for Chromium
+- **Daily Chrome Profile Rotation** - Fresh cookies every 24 hours
+- **Auto-Cleanup** - Temporary files cleaned every 30 minutes
 
-1. **Create Render Web Service**
-   - Go to [render.com](https://render.com)
-   - Click "New +" → "Web Service"
-   - Connect your GitHub repo
+**For your own deployment:**
 
-2. **Configure Build & Start**
-   ```
-   Build Command: apt-get update && apt-get install -y python3 python3-pip && pip3 install yt-dlp && bun install
-   Start Command: bun server-node.mjs
-   ```
+1. Prepare a VPS (Ubuntu 24.04, 8GB+ RAM, Docker installed)
+2. Copy deployment files from `deployment-backup/` folder (kept private, not in git)
+3. Configure Docker Compose with your domains
+4. Run `docker-compose up -d`
 
-3. **Set Environment Variables**
-   ```
-   PORT=3001
-   ALLOWED_ORIGINS=https://your-frontend-domain.com,https://another-domain.com
-   NODE_ENV=production
-   ```
-
-4. **Deploy**
-   - Render will automatically build and deploy on git push
-
-**Important CORS Configuration:**
-```
-ALLOWED_ORIGINS=https://www.yourdomain.com,https://yourdomain.com,https://app.vercel.com
-```
-- Backend validates each request origin against this list
-- Supports multiple comma-separated domains
-- Set to specific domains in production (never use `*` in production)
+Detailed setup guide available in private `deployment-backup/DEPLOYMENT_INSTRUCTIONS.md`
 
 ### Frontend (Vercel)
 
@@ -126,7 +110,7 @@ ALLOWED_ORIGINS=https://www.yourdomain.com,https://yourdomain.com,https://app.ve
 
 2. **Set Environment Variable**
    ```
-   VITE_API_URL=https://your-render-backend.onrender.com
+   VITE_API_URL=https://your-backend-api.com
    ```
 
 3. **Deploy**
@@ -134,52 +118,46 @@ ALLOWED_ORIGINS=https://www.yourdomain.com,https://yourdomain.com,https://app.ve
    - Build command: `bun run build`
    - Output directory: `dist`
 
-Both services auto-deploy on git push to `main` branch.
-
 ---
 
 ## 🔐 API Endpoints
 
-### Backend (Render)
+### Backend
 
-**Base URL:** `https://video-grabber-backend.onrender.com/`
+**Base URL:** `https://api.yourdomain.com/` (your configured backend)
 
 - `GET /extract?url={youtube_url}` - Extract video metadata
 - `GET /download?url={youtube_url}&format={format_id}` - Download specific format
-- `GET /api/progress?format={format_id}` - Real-time SSE progress updates
-- `POST /api/enable-cookies` - Submit YouTube cookies for bot bypass
+- `GET /health` - Health check
 
 ### CORS Handling
 
-All requests include CORS headers validated against `ALLOWED_ORIGINS`:
+All requests include CORS headers validated against configured origins:
 - Requests from approved domains ✅ Allowed
 - Requests from unknown origins ❌ Blocked
 - Preflight OPTIONS requests ✅ Handled automatically
 
 ---
 
-## 🎬 yt-dlp Configuration
+## 🎬 Video Processing Pipeline
 
-**Backend yt-dlp Setup (Render):**
+**Backend (VPS + Docker):**
 
-1. **Installation**: Automatic via build command
-   ```bash
-   pip3 install --upgrade yt-dlp
-   ```
+1. **Chrome Profile Management** - Daily rotation, automatic cleanup
+2. **yt-dlp Extraction** - Queries YouTube with browser-like behavior
+3. **Format Detection** - Identifies all available codecs and qualities
+4. **Smart Selection** - Chooses best format matching user preferences
+5. **Concurrent Downloads** - Max 3 parallel downloads (configurable)
+6. **FFmpeg Processing** - Merges video/audio, converts formats
+7. **Cleanup** - Removes temp files, rotates Chrome profiles
 
-2. **Configuration**: Server uses file-based command-line args
-   ```javascript
-   // No global config needed - args passed directly
-   spawn('yt-dlp', ['-f', formatId, '-o', tempPath, videoUrl, ...cookieFlags])
-   ```
+**Frontend (Vercel + React):**
 
-3. **Cookie Support**: Two modes
-   - **File-based**: `--cookies {file_path}` (production)
-   - **Browser-based**: Frontend extracts Chrome cookies, sends to backend
-
-4. **Format IDs**: Queried via `-j --dump-single-json` flag
-   - AV1 formats automatically skipped
-   - H.264 and VP9 preferred
+1. **URL Input** - User pastes YouTube link
+2. **API Call** - Requests metadata from backend
+3. **Format Display** - Shows available qualities and formats
+4. **Download** - Streams file to user's browser
+5. **Progress Tracking** - Real-time updates via Server-Sent Events
 
 ---
 
@@ -187,42 +165,45 @@ All requests include CORS headers validated against `ALLOWED_ORIGINS`:
 
 ```
 video-grabber/
-├── server-node.mjs          # Backend server (Node.js)
+├── server-node.mjs          # Backend server (Node.js/Bun)
 ├── src/
 │   ├── lib/
 │   │   ├── video-extractor.ts   # Frontend API client
-│   │   ├── ffmpeg.ts            # Client-side video processing
 │   │   └── types.ts             # TypeScript types
 │   ├── components/
 │   │   ├── VideoGrabber.tsx     # Main UI component
 │   │   └── CookiePermissionDialog.tsx
 │   └── App.tsx
-├── render.yaml              # Render deployment config
-├── vercel.json              # Vercel deployment config
+├── deployment-backup/       # Private deployment configs (gitignored)
+│   ├── Dockerfile
+│   ├── docker-compose.yml
+│   ├── build-and-deploy.sh
+│   └── DEPLOYMENT_INSTRUCTIONS.md
 ├── vite.config.ts           # Vite build config
 ├── tsconfig.json            # TypeScript config
-└── package.json             # Dependencies
+├── package.json             # Dependencies
+└── README.md                # This file
 ```
 
 ---
 
 ## ⚙️ Configuration Files
 
-### render.yaml
-- Defines Render service configuration
-- Specifies build and start commands
-- Sets environment variables
-- **Update ALLOWED_ORIGINS** before deploying
+### deployment-backup/ (Private)
+- `Dockerfile` - Multi-stage Docker build configuration
+- `docker-compose.yml` - Service orchestration
+- `build-and-deploy.sh` - Automated deployment script
+- `DEPLOYMENT_INSTRUCTIONS.md` - Comprehensive setup guide
+
+*These files are NOT committed to git for security. Keep them in `deployment-backup/` locally.*
 
 ### vite.config.ts
 - Base path: `/grabber/` for subdirectory deployment
-- Proxy: `/grabber/api` → `http://localhost:3001/api` (dev)
-- CORS headers for FFmpeg.wasm: `Cross-Origin-Embedder-Policy: require-corp`
+- Proxy: `/grabber/api` → backend (dev)
 
 ### vercel.json
 - Frontend deployment configuration
-- Rewrites API calls to backend
-- CORS headers for FFmpeg.wasm support
+- API rewrites to backend
 
 ---
 
@@ -241,10 +222,9 @@ git push origin feature/your-idea
 
 ### Guidelines
 - ✅ Test with multiple video types
-- ✅ Maintain AV1 codec filtering
-- ✅ Keep client-side processing where possible
-- ✅ Write clear commit messages
+- ✅ Maintain codec filtering logic
 - ✅ Test CORS configuration if adding new endpoints
+- ✅ Write clear commit messages
 
 ### Ideas for Contributors
 - [ ] Playlist batch downloads
@@ -265,19 +245,18 @@ git push origin feature/your-idea
 - Try a different video URL
 
 ### Download times out
-- Render free tier may throttle large downloads
-- Try a lower quality/smaller video
-- Consider upgrading to Render paid plan
+- Check backend logs for errors
+- Verify network connectivity
+- Try a lower quality video
 
 ### CORS errors
-- Verify `ALLOWED_ORIGINS` includes your frontend domain
+- Verify API URL is correctly configured
 - Check browser dev tools Network tab
-- Ensure both frontend and backend are running
+- Ensure frontend can reach backend
 
 ### No compatible formats
 - Some videos are geo-blocked or age-restricted
 - YouTube's restrictions prevent downloading certain content
-- Try enabling YouTube cookies via the UI
 
 ---
 
@@ -297,12 +276,13 @@ git push origin feature/your-idea
 ## 🙏 Thanks To
 
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) - YouTube downloader
-- [FFmpeg.wasm](https://github.com/ffmpegwasm/ffmpeg.wasm) - Client-side video processing
+- [FFmpeg](https://ffmpeg.org/) - Video processing
 - [Bun](https://bun.sh) - Fast JavaScript runtime
 - [shadcn/ui](https://ui.shadcn.com) - React components
 - [Tailwind CSS](https://tailwindcss.com) - Styling
 - [Vite](https://vitejs.dev) - Build tool
-- [Render](https://render.com) & [Vercel](https://vercel.com) - Hosting
+- [Docker](https://docker.com) - Containerization
+- [Vercel](https://vercel.com) - Frontend hosting
 
 ---
 
