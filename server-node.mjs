@@ -58,6 +58,27 @@ function cleanupOldTempFiles() {
 // Clean up on startup
 cleanupOldTempFiles()
 
+// Check yt-dlp availability on startup
+function checkYtDlpAvailability() {
+  return new Promise((resolve) => {
+    exec('which yt-dlp', (error, stdout) => {
+      if (error) {
+        console.warn('⚠️ yt-dlp not found in PATH')
+        console.warn('   Try running: pip3 install --upgrade yt-dlp')
+        resolve(false)
+      } else {
+        console.log(`✅ yt-dlp found at: ${stdout.trim()}`)
+        exec('yt-dlp --version', (verError, verStdout) => {
+          if (!verError) {
+            console.log(`✅ yt-dlp version: ${verStdout.trim()}`)
+          }
+          resolve(true)
+        })
+      }
+    })
+  })
+}
+
 /**
  * Extract video ID from YouTube URL
  * Supports:
@@ -854,9 +875,19 @@ const server = createServer(async (req, res) => {
   res.end(JSON.stringify({ error: 'Not found' }))
 })
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`✅ API server running on http://localhost:${PORT}`)
   console.log('📊 Using yt-dlp backend (supports all YouTube formats)')
+  
+  // Check yt-dlp availability
+  const ytDlpAvailable = await checkYtDlpAvailability()
+  if (!ytDlpAvailable) {
+    console.error('❌ CRITICAL: yt-dlp is not available!')
+    console.error('   Video extraction will fail.')
+    console.error('   Render deployment: Check build command in render.yaml')
+    console.error('   Local deployment: Run: pip3 install --upgrade yt-dlp')
+  }
+  
   console.log('Ready to accept requests!')
 })
 
