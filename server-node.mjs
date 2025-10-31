@@ -463,11 +463,19 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     let command = `yt-dlp -j --dump-single-json --quiet --no-warnings`
     
     // Use pre-warmed Chrome profile from environment (set by start.sh)
-    // The profile is created and pre-warmed at startup, so we use it directly
+    // The profile is created and pre-warmed at startup, and cookies are exported to cookies.txt
     if (useBrowserCookies && process.env.CHROME_PROFILE_DIR) {
-      command += ` --cookies-from-browser "chromium:${process.env.CHROME_PROFILE_DIR}"`
-      if (retryCount === 0) {
-        console.log(`🔐 Using cookies from pre-warmed Chrome profile`)
+      const exportedCookiesFile = join(process.env.CHROME_PROFILE_DIR, 'cookies.txt')
+      if (existsSync(exportedCookiesFile)) {
+        command += ` --cookies "${exportedCookiesFile}"`
+        if (retryCount === 0) {
+          console.log(`🔐 Using cookies from pre-warmed Chrome profile`)
+        }
+      } else {
+        if (retryCount === 0) {
+          console.log(`⚠️ Exported cookies file not found - attempting with geo-bypass`)
+        }
+        command += ` --geo-bypass`
       }
     } else if (hasCookies) {
       command += ` --cookies "${COOKIES_FILE}"`
@@ -931,8 +939,15 @@ const server = createServer(async (req, res) => {
       // Prepare cookie flags for yt-dlp
       let cookieFlags = []
       if (useBrowserCookies && process.env.CHROME_PROFILE_DIR) {
-        cookieFlags = ['--cookies-from-browser', `chromium:${process.env.CHROME_PROFILE_DIR}`]
-        console.log(`🔐 Using cookies from pre-warmed Chrome profile...`)
+        // Use the exported cookies.txt file from the Chrome profile
+        const exportedCookiesFile = join(process.env.CHROME_PROFILE_DIR, 'cookies.txt')
+        if (existsSync(exportedCookiesFile)) {
+          cookieFlags = ['--cookies', exportedCookiesFile]
+          console.log(`🔐 Using cookies from pre-warmed Chrome profile (${exportedCookiesFile})`)
+        } else {
+          console.log(`⚠️  Exported cookies file not found, trying --geo-bypass...`)
+          cookieFlags = ['--geo-bypass']
+        }
       } else if (hasCookies) {
         console.log(`🔐 Using cookies from frontend...`)
         cookieFlags = ['--cookies', COOKIES_FILE]
