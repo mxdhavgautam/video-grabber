@@ -385,14 +385,6 @@ function transformFormats(ytdlpData) {
       return
     }
 
-    // CRITICAL: Skip AV1 codecs - browser FFmpeg WASM cannot decode AV1
-    // AV1 support in WebAssembly is limited and causes errors like "Error while decoding stream"
-    // Only H.264 and VP9 are reliably supported in browser FFmpeg
-    if (format.vcodec && (format.vcodec.toLowerCase().includes('av1') || format.vcodec.toLowerCase().includes('av01'))) {
-      console.log(`⏭️  Skipping AV1 format ${format.format_id} - not supported by browser FFmpeg`)
-      return
-    }
-
     const formatObj = {
       format_id: format.format_id || String(format.itag || format.format),
       ext: format.ext || 'unknown',

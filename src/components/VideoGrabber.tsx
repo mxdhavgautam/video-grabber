@@ -761,15 +761,8 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
         const scoreFormat = (f: VideoFormat): number => {
           let score = 0
           
-          // CRITICAL: Exclude codecs that FFmpeg WASM cannot decode
-          // AV1 is not supported in browser WebAssembly FFmpeg - it will crash
+          // Get video codec for preference scoring
           const codec = f.video_codec || ''
-          
-          // Check if this is an AV1 format - these CANNOT be decoded by browser FFmpeg
-          if (codec.toLowerCase().includes('av1') || codec.toLowerCase().includes('av01')) {
-            // Return very high score to exclude this format (it's not usable)
-            return 999999
-          }
           
           // 1. Height match (most important) - exact match = 0 points
           const formatHeight = f.height || 0
@@ -796,7 +789,7 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
           }
           
           // 4. Video codec preference - prefer H.264 over VP9 (H.264 is faster and more compatible)
-          // VP9 is slower but works. AV1 is already filtered out above.
+          // VP9 is slower but works reliably
           if (codec.includes('vp9') || codec.includes('VP9')) {
             score += 50  // Small penalty for VP9, but it's acceptable
           }
