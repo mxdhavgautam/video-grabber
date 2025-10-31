@@ -27,7 +27,8 @@ const COOKIES_FILE = process.env.COOKIES_FILE || join(__dirname, '.yt-dlp', 'coo
 const hasCookies = existsSync(COOKIES_FILE)
 
 // Flag to enable automatic browser cookie extraction
-let useBrowserCookies = hasCookies
+// On server: always enable chromium cookies extraction since we're running full Chrome
+let useBrowserCookies = true
 
 // =====================================================================
 // RATE LIMITING & SECURITY
@@ -248,9 +249,9 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     
     // Add cookies - prefer browser extraction, fallback to file
     if (useBrowserCookies) {
-      command += ` --cookies-from-browser chrome`
+      command += ` --cookies-from-browser chromium`
       if (retryCount === 0) {
-        console.log(`🔐 Using cookies from browser (Chrome)`)
+        console.log(`🔐 Using cookies from browser (Chromium)`)
       }
     } else if (hasCookies) {
       command += ` --cookies "${COOKIES_FILE}"`
