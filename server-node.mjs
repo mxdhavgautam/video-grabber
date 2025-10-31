@@ -3,8 +3,10 @@ import { exec, spawn } from 'child_process'
 import { promisify as _promisify } from 'util'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
-import { existsSync } from 'fs'
+import { existsSync, writeFileSync, mkdirSync, readFileSync, unlinkSync, statSync, readdirSync } from 'fs'
 import { join } from 'path'
+import { execSync } from 'child_process'
+import { tmpdir } from 'os'
 
 const execPromise = _promisify(exec)
 const __filename = fileURLToPath(import.meta.url)
@@ -13,9 +15,48 @@ const __dirname = dirname(__filename)
 const PORT = process.env.PORT || 3001
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS || '*'
 
+// Concurrent download limit - prevent overwhelming free tier
+let activeDownloads = 0
+const MAX_CONCURRENT_DOWNLOADS = 3
+
+// Progress tracking for active downloads - Map<formatId, {progress, stage, eta}>
+const downloadProgress = new Map()
+
 // Path to cookies file (can be provided as environment variable)
 const COOKIES_FILE = process.env.COOKIES_FILE || join(__dirname, '.yt-dlp', 'cookies.txt')
 const hasCookies = existsSync(COOKIES_FILE)
+
+// Flag to enable automatic browser cookie extraction
+let useBrowserCookies = hasCookies
+
+// Cleanup orphaned temp files on startup
+function cleanupOldTempFiles() {
+  try {
+    const tempDir = tmpdir()
+    const files = readdirSync(tempDir)
+    const now = Date.now()
+    const ONE_HOUR = 60 * 60 * 1000
+    
+    files.forEach(file => {
+      if (file.startsWith('yt-dlp-')) {
+        const filePath = join(tempDir, file)
+        try {
+          const stats = statSync(filePath)
+          // Delete files older than 1 hour
+          if (now - stats.mtime.getTime() > ONE_HOUR) {
+            unlinkSync(filePath)
+            console.log(`🧹 Cleaned up old temp file: ${file}`)
+          }
+        } catch (e) {}
+      }
+    })
+  } catch (error) {
+    console.warn('⚠️ Could not cleanup old temp files:', error.message)
+  }
+}
+
+// Clean up on startup
+cleanupOldTempFiles()
 
 /**
  * Extract video ID from YouTube URL
@@ -45,7 +86,7 @@ function extractVideoId(url) {
 
 /**
  * Execute yt-dlp with robust retry logic for bot-protected videos
- * Uses exponential backoff and server-side mechanisms to bypass restrictions
+ * Uses exponential backoff and automatic browser cookie extraction to bypass restrictions
  */
 async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
   return new Promise(async (resolve, reject) => {
@@ -55,22 +96,22 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
       await new Promise(r => setTimeout(r, delayMs))
     }
     
-    // Build yt-dlp command using config file
-      // Config file at ~/.yt-dlp/config provides optimal settings
-    let command = `yt-dlp -j --config-location ~/.yt-dlp/config`
+    // Build yt-dlp command - explicitly request JSON output for extraction
+    let command = `yt-dlp -j --dump-single-json`
     
-    // Add cookies if available
-    if (hasCookies) {
+    // Add cookies - prefer browser extraction, fallback to file
+    if (useBrowserCookies) {
+      command += ` --cookies-from-browser chrome`
+      if (retryCount === 0) {
+        console.log(`🔐 Using cookies from browser (Chrome)`)
+      }
+    } else if (hasCookies) {
       command += ` --cookies "${COOKIES_FILE}"`
       if (retryCount === 0) {
         console.log(`🔐 Using cookies from: ${COOKIES_FILE}`)
       }
     } else if (retryCount === 0) {
-      console.log(`⚠️ No cookies file found at ${COOKIES_FILE}`)
-      console.log(`📝 To use cookies, export them from your browser:`)
-      console.log(`   1. Use browser extension "Get cookies.txt LOCALLY" (Chrome) or "cookies.txt" (Firefox)`)
-      console.log(`   2. Save as: ${COOKIES_FILE}`)
-      console.log(`   3. Restart server for changes to take effect`)
+      console.log(`⚠️ No cookies available - some videos may be blocked by bot detection`)
     }
     
     // Add URL
@@ -165,6 +206,14 @@ function transformFormats(ytdlpData) {
   ytdlpData.formats.forEach(format => {
     // Skip formats without URL (not downloadable)
     if (!format.url && !format.fragment_base_url) {
+      return
+    }
+
+    // CRITICAL: Skip AV1 codecs - browser FFmpeg WASM cannot decode AV1
+    // AV1 support in WebAssembly is limited and causes errors like "Error while decoding stream"
+    // Only H.264 and VP9 are reliably supported in browser FFmpeg
+    if (format.vcodec && (format.vcodec.toLowerCase().includes('av1') || format.vcodec.toLowerCase().includes('av01'))) {
+      console.log(`⏭️  Skipping AV1 format ${format.format_id} - not supported by browser FFmpeg`)
       return
     }
 
@@ -288,6 +337,7 @@ const server = createServer(async (req, res) => {
   }
 
   const url = new URL(req.url || '', `http://${req.headers.host}`)
+  console.log(`📍 ${req.method} ${url.pathname}`)
 
   // Extract endpoint
   if (url.pathname === '/extract') {
@@ -413,10 +463,11 @@ const server = createServer(async (req, res) => {
     return
   }
 
-  // Download proxy
-  if (url.pathname === '/download') {
-    const videoUrl = url.searchParams.get('url')
-    const formatId = url.searchParams.get('format')
+  // Download format endpoint - stream video directly
+  if (url.pathname === '/download' && req.method === 'GET') {
+    const queryParams = new URL(req.url, `http://${req.headers.host}`).searchParams
+    const videoUrl = queryParams.get('url')
+    const formatId = queryParams.get('format')
 
     if (!videoUrl || !formatId) {
       res.writeHead(400, { 
@@ -427,169 +478,368 @@ const server = createServer(async (req, res) => {
       return
     }
 
+    // Check concurrent download limit
+    if (activeDownloads >= MAX_CONCURRENT_DOWNLOADS) {
+      console.warn(`⚠️ Download queue full (${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS})`)
+      res.writeHead(429, { 
+        ...corsHeaders,
+        'Content-Type': 'application/json',
+        'Retry-After': '10'
+      })
+      res.end(JSON.stringify({ 
+        error: 'Too many downloads in progress. Please wait a moment and try again.',
+        activeDownloads,
+        maxConcurrent: MAX_CONCURRENT_DOWNLOADS
+      }))
+      return
+    }
+
+    activeDownloads++
+    console.log(`📊 Active downloads: ${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS}`)
+
     try {
       console.log(`📥 Downloading format ${formatId} from: ${videoUrl}`)
 
-      // First, get the file size using yt-dlp --print-json
-      exec(`yt-dlp -f "${formatId}" --print-json -o - "${videoUrl}" 2>/dev/null | head -c 1 > /dev/null && yt-dlp -f "${formatId}" --simulate --dump-json "${videoUrl}" 2>/dev/null`, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
-        try {
-          const videoInfo = JSON.parse(stdout)
-          const selectedFormat = videoInfo.formats?.find(f => f.format_id === formatId)
-          const fileSize = selectedFormat?.filesize || selectedFormat?.filesize_approx || 0
+      // Build cookie flags - ONLY use file-based cookies, never --cookies-from-browser on server
+      let cookieFlags = []
+      if (hasCookies) {
+        console.log(`🔐 Using cookies from frontend...`)
+        cookieFlags = ['--cookies', COOKIES_FILE]
+      } else {
+        console.log(`🔐 No cookies - trying without...`)
+      }
 
-          // Use spawn to stream the actual video data
-          const proc = spawn('yt-dlp', ['-f', formatId, '--no-warnings', '-o', '-', videoUrl])
+      // Create temporary file path for this download
+      const tempDir = tmpdir()
+      const tempFileName = `yt-dlp-${Date.now()}-${Math.random().toString(36).substring(7)}.mp4`
+      const tempFilePath = join(tempDir, tempFileName)
+      
+      console.log(`💾 Temp file: ${tempFilePath}`)
 
-          let sentBytes = 0
-          const headers = {
-            ...corsHeaders,
-            'Content-Type': 'application/octet-stream',
-            'Cache-Control': 'public, max-age=3600',
-            'X-Format-Id': formatId,
-          }
+      // Build yt-dlp command to save to file instead of stdout
+      const ytdlpArgs = ['-f', formatId, '--no-warnings', '-o', tempFilePath, videoUrl, ...cookieFlags]
+
+      const proc = spawn('yt-dlp', ytdlpArgs)
+      let stderrOutput = ''
+      const startTime = Date.now()
+      const TIMEOUT_MS = 1200000 // 20 minutes
+      let responseSent = false
+
+      proc.stderr.on('data', (chunk) => {
+        const message = chunk.toString().trim()
+        stderrOutput += message + '\n'
+        // Log all yt-dlp output for visibility
+        if (message) {
+          console.log(`[yt-dlp] ${message}`)
           
-          // Add Content-Length if we know the file size
-          if (fileSize > 0) {
-            headers['Content-Length'] = fileSize.toString()
-          }
-
-          res.writeHead(200, headers)
-
-          let totalBytes = 0
-          let errorOccurred = false
-
-          // Stream stdout directly to response
-          proc.stdout.on('data', (chunk) => {
-            totalBytes += chunk.length
-            sentBytes += chunk.length
-            res.write(chunk)
-          })
-
-          proc.stderr.on('data', (chunk) => {
-            const message = chunk.toString()
-            if (!message.includes('WARNING') && message.trim()) {
-              console.warn(`yt-dlp stderr: ${message}`)
-            }
-          })
-
-          proc.on('close', (code) => {
-            if (code === 0) {
-              console.log(`✅ Successfully downloaded ${totalBytes} bytes for format ${formatId}`)
-              res.end()
-            } else if (!errorOccurred) {
-              console.error(`❌ yt-dlp exited with code ${code}`)
-              if (!res.headersSent) {
-                res.writeHead(500, { 
-                  ...corsHeaders,
-                  'Content-Type': 'application/json' 
-                })
-              }
-              if (!res.writableEnded) {
-                res.end(JSON.stringify({
-                  error: 'Download failed',
-                  message: `yt-dlp process exited with code ${code}`,
-                }))
-              }
-            }
-          })
-
-          proc.on('error', (error) => {
-            errorOccurred = true
-            console.error('❌ Spawn error:', error.message)
-            if (!res.headersSent) {
-              res.writeHead(500, { 
-                ...corsHeaders,
-                'Content-Type': 'application/json' 
+          // Parse progress from yt-dlp: "[download]  45.5% of ~150.00MiB at 2.34MiB/s ETA 01:05"
+          if (message.includes('[download]')) {
+            const progressMatch = message.match(/(\d+(?:\.\d+)?)%/)
+            const etaMatch = message.match(/ETA\s+(\d+:\d+)/)
+            if (progressMatch) {
+              const percentage = Math.min(100, parseFloat(progressMatch[1]))
+              downloadProgress.set(formatId, {
+                progress: percentage,
+                stage: 'Downloading',
+                eta: etaMatch ? etaMatch[1] : 'Unknown',
+                message: message.substring(0, 100)
               })
             }
-            if (!res.writableEnded) {
-              res.end(JSON.stringify({
-                error: 'Download failed',
-                message: error.message,
-              }))
-            }
-          })
-        } catch (parseError) {
-          console.warn('Could not get file size info:', parseError.message)
-          
-          // Fallback: stream without Content-Length
-          const proc = spawn('yt-dlp', ['-f', formatId, '--no-warnings', '-o', '-', videoUrl])
-
-          res.writeHead(200, {
-            ...corsHeaders,
-            'Content-Type': 'application/octet-stream',
-            'Cache-Control': 'public, max-age=3600',
-            'X-Format-Id': formatId,
-          })
-
-          let totalBytes = 0
-          let errorOccurred = false
-
-          proc.stdout.on('data', (chunk) => {
-            totalBytes += chunk.length
-            res.write(chunk)
-          })
-
-          proc.stderr.on('data', (chunk) => {
-            const message = chunk.toString()
-            if (!message.includes('WARNING') && message.trim()) {
-              console.warn(`yt-dlp stderr: ${message}`)
-            }
-          })
-
-          proc.on('close', (code) => {
-            if (code === 0) {
-              console.log(`✅ Successfully downloaded ${totalBytes} bytes for format ${formatId}`)
-              res.end()
-            } else if (!errorOccurred) {
-              console.error(`❌ yt-dlp exited with code ${code}`)
-              if (!res.headersSent) {
-                res.writeHead(500, { 
-                  ...corsHeaders,
-                  'Content-Type': 'application/json' 
-                })
-              }
-              if (!res.writableEnded) {
-                res.end(JSON.stringify({
-                  error: 'Download failed',
-                  message: `yt-dlp process exited with code ${code}`,
-                }))
-              }
-            }
-          })
-
-          proc.on('error', (error) => {
-            errorOccurred = true
-            console.error('❌ Spawn error:', error.message)
-            if (!res.headersSent) {
-              res.writeHead(500, { 
-                ...corsHeaders,
-                'Content-Type': 'application/json' 
-              })
-            }
-            if (!res.writableEnded) {
-              res.end(JSON.stringify({
-                error: 'Download failed',
-                message: error.message,
-              }))
-            }
-          })
+          }
         }
       })
-      return
-    } catch (error) {
-      console.error('❌ Download error:', error.message)
-      if (!res.headersSent) {
+
+      proc.on('close', (code) => {
+        clearTimeout(timeoutHandle)
+        activeDownloads--
+        downloadProgress.delete(formatId)
+        console.log(`📊 Active downloads after close: ${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS}`)
+        
+        if (responseSent) return
+        
+        if (code === 0) {
+          console.log(`✅ yt-dlp completed`)
+          
+          // Validate file exists and has content
+          if (!existsSync(tempFilePath)) {
+            console.error(`❌ Temp file not found: ${tempFilePath}`)
+            responseSent = true
+            res.writeHead(500, { 
+              ...corsHeaders,
+              'Content-Type': 'application/json' 
+            })
+            res.end(JSON.stringify({ error: 'Video file not created' }))
+            return
+          }
+
+          const fileStats = statSync(tempFilePath)
+          const fileSize = fileStats.size
+          
+          console.log(`📊 Downloaded file size: ${(fileSize / 1024 / 1024).toFixed(2)}MB`)
+
+          if (fileSize < 5000) {
+            console.error(`❌ Downloaded file too small: ${fileSize} bytes`)
+            try { unlinkSync(tempFilePath) } catch (e) {}
+            responseSent = true
+            res.writeHead(500, { 
+              ...corsHeaders,
+              'Content-Type': 'application/json' 
+            })
+            res.end(JSON.stringify({ error: 'Downloaded file too small - may be incomplete' }))
+            return
+          }
+
+          // Read and send the complete file
+          try {
+            const fileData = readFileSync(tempFilePath)
+            
+            responseSent = true
+            res.writeHead(200, {
+              ...corsHeaders,
+              'Content-Type': 'application/octet-stream',
+              'Content-Length': fileSize,
+              'Cache-Control': 'public, max-age=3600',
+              'X-Format-Id': formatId,
+            })
+            
+            res.end(fileData)
+            
+            console.log(`✅ Successfully sent ${(fileSize / 1024 / 1024).toFixed(2)}MB to client`)
+            
+            // Clean up temp file after successful send
+            setImmediate(() => {
+              try { 
+                unlinkSync(tempFilePath)
+                console.log(`🧹 Cleaned up temp file`)
+              } catch (e) {}
+            })
+          } catch (error) {
+            console.error(`❌ Error reading/sending file: ${error.message}`)
+            responseSent = true
+            res.writeHead(500, { 
+              ...corsHeaders,
+              'Content-Type': 'application/json' 
+            })
+            res.end(JSON.stringify({ error: 'Error sending file' }))
+            try { unlinkSync(tempFilePath) } catch (e) {}
+          }
+        } else {
+          console.error(`❌ yt-dlp exited with code ${code}`)
+          console.error(`stderr: ${stderrOutput.substring(0, 500)}`)
+          responseSent = true
+          res.writeHead(500, { 
+            ...corsHeaders,
+            'Content-Type': 'application/json' 
+          })
+          res.end(JSON.stringify({ error: 'yt-dlp failed to download video' }))
+          try { unlinkSync(tempFilePath) } catch (e) {}
+        }
+      })
+
+      proc.on('error', (error) => {
+        if (responseSent) return
+        clearTimeout(timeoutHandle)
+        activeDownloads--
+        downloadProgress.delete(formatId)
+        console.error('❌ Spawn error:', error.message)
+        responseSent = true
         res.writeHead(500, { 
           ...corsHeaders,
           'Content-Type': 'application/json' 
         })
-      }
+        res.end(JSON.stringify({ error: 'Failed to start download process' }))
+        try { unlinkSync(tempFilePath) } catch (e) {}
+      })
+
+      // Set process timeout - 20 minutes for large 4K videos
+      const timeoutHandle = setTimeout(() => {
+        if (responseSent) return
+        console.error(`❌ Download timeout (20 minutes)`)
+        proc.kill('SIGTERM')
+        activeDownloads--
+        downloadProgress.delete(formatId)
+        responseSent = true
+        res.writeHead(500, { 
+          ...corsHeaders,
+          'Content-Type': 'application/json' 
+        })
+        res.end(JSON.stringify({ error: 'Download timeout - video took too long' }))
+        try { unlinkSync(tempFilePath) } catch (e) {}
+      }, TIMEOUT_MS)
+
+    } catch (error) {
+      console.error('❌ Download error:', error.message)
+      res.writeHead(500, { 
+        ...corsHeaders,
+        'Content-Type': 'application/json' 
+      })
       res.end(JSON.stringify({
         error: 'Download failed',
         message: error instanceof Error ? error.message : 'Unknown error',
       }))
     }
+    return
+  }
+
+  // Progress streaming endpoint - Server-Sent Events for real-time download status
+  if (url.pathname === '/api/progress' && req.method === 'GET') {
+    const formatId = url.searchParams.get('format')
+    
+    if (!formatId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'format parameter is required' }))
+      return
+    }
+
+    // Set SSE headers
+    res.writeHead(200, {
+      ...corsHeaders,
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    })
+
+    // Send initial message
+    res.write('data: ' + JSON.stringify({ progress: 0, stage: 'Waiting...', eta: 'Unknown' }) + '\n\n')
+
+    // Poll for progress updates
+    const pollInterval = setInterval(() => {
+      const progress = downloadProgress.get(formatId)
+      if (progress) {
+        res.write('data: ' + JSON.stringify(progress) + '\n\n')
+      }
+    }, 500) // Update every 500ms
+
+    // Stop polling when client disconnects
+    req.on('close', () => {
+      clearInterval(pollInterval)
+      downloadProgress.delete(formatId)
+      res.end()
+    })
+    return
+  }
+
+  // Cookies upload endpoint - receive cookies from browser and save to file
+  if (url.pathname === '/api/cookies' && req.method === 'POST') {
+    let body = ''
+    
+    req.on('data', chunk => {
+      body += chunk.toString()
+    })
+    
+    req.on('end', async () => {
+      try {
+        const data = JSON.parse(body)
+        const { cookies } = data
+        
+        if (!cookies || typeof cookies !== 'string') {
+          res.writeHead(400, { 
+            ...corsHeaders,
+            'Content-Type': 'application/json' 
+          })
+          res.end(JSON.stringify({
+            error: 'Invalid cookies format',
+            message: 'Cookies must be a string in Netscape cookies.txt format'
+          }))
+          return
+        }
+        
+        // Ensure .yt-dlp directory exists
+        const cookieDir = dirname(COOKIES_FILE)
+        if (!existsSync(cookieDir)) {
+          mkdirSync(cookieDir, { recursive: true })
+        }
+        
+        // Write cookies to file
+        writeFileSync(COOKIES_FILE, cookies, 'utf-8')
+        
+        console.log(`🔐 Cookies saved from browser: ${COOKIES_FILE}`)
+        console.log(`📊 Cookie count: ${cookies.split('\n').filter(l => l.trim() && !l.startsWith('#')).length}`)
+        
+        res.writeHead(200, { 
+          ...corsHeaders,
+          'Content-Type': 'application/json' 
+        })
+        res.end(JSON.stringify({
+          status: 'success',
+          message: 'Cookies saved successfully',
+          path: COOKIES_FILE
+        }))
+      } catch (error) {
+        console.error('❌ Error saving cookies:', error.message)
+        res.writeHead(500, { 
+          ...corsHeaders,
+          'Content-Type': 'application/json' 
+        })
+        res.end(JSON.stringify({
+          error: 'Failed to save cookies',
+          message: error instanceof Error ? error.message : 'Unknown error'
+        }))
+      }
+    })
+    return
+  }
+
+  // Enable browser cookies endpoint - receive cookies from frontend
+  if (url.pathname === '/api/enable-cookies' && req.method === 'POST') {
+    let body = ''
+    
+    req.on('data', chunk => {
+      body += chunk.toString()
+    })
+    
+    req.on('end', async () => {
+      try {
+        const data = JSON.parse(body)
+        const { cookies } = data
+        
+        if (!cookies || typeof cookies !== 'string') {
+          // If no cookies provided, just enable the flag for browser-based extraction
+          useBrowserCookies = true
+          res.writeHead(200, { 
+            ...corsHeaders,
+            'Content-Type': 'application/json' 
+          })
+          res.end(JSON.stringify({
+            status: 'success',
+            message: 'Browser cookies enabled.'
+          }))
+          return
+        }
+        
+        // Cookies were sent from frontend - save to file
+        const cookieDir = dirname(COOKIES_FILE)
+        if (!existsSync(cookieDir)) {
+          mkdirSync(cookieDir, { recursive: true })
+        }
+        
+        // Write cookies to file
+        writeFileSync(COOKIES_FILE, cookies, 'utf-8')
+        useBrowserCookies = false  // Use file-based cookies since we have them
+        
+        console.log(`🔐 Cookies received from frontend and saved.`)
+        console.log(`📊 Cookie count: ${cookies.split('\n').filter(l => l.trim() && !l.startsWith('#')).length}`)
+        
+        res.writeHead(200, { 
+          ...corsHeaders,
+          'Content-Type': 'application/json' 
+        })
+        res.end(JSON.stringify({
+          status: 'success',
+          message: 'Cookies received and saved. Downloads will now bypass bot detection.'
+        }))
+      } catch (error) {
+        console.error('❌ Error handling cookies:', error.message)
+        res.writeHead(500, { 
+          ...corsHeaders,
+          'Content-Type': 'application/json' 
+        })
+        res.end(JSON.stringify({
+          error: 'Failed to save cookies',
+          message: error instanceof Error ? error.message : 'Unknown error'
+        }))
+      }
+    })
     return
   }
 

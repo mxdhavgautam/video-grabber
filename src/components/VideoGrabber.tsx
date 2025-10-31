@@ -8,10 +8,11 @@ import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { useToast } from '@/components/ui/use-toast'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Loader2, Download, Video, Music, Link2, Clipboard } from 'lucide-react'
-import { extractVideoInfo, detectPlatform } from '@/lib/video-extractor'
+import { Loader2, Download, Video, Music, Link2, Clipboard, Lock } from 'lucide-react'
+import { extractVideoInfo, detectPlatform, enableBrowserCookies } from '@/lib/video-extractor'
 import { extractAudioFromVideo } from '@/lib/ffmpeg'
 import { downloadBlob, formatFileSize, formatDuration, formatViewCount, sanitizeFilename, type VideoInfo, type VideoFormat } from '@/lib/types'
+import { CookiePermissionDialog } from './CookiePermissionDialog'
 
 // Detect API base URL based on current path
 function getApiBaseUrl(): string {
@@ -59,6 +60,12 @@ async function downloadFormatWithoutProgress(url: string): Promise<Blob> {
 // Helper to download specific format via yt-dlp backend
 async function downloadFormat(videoPageUrl: string, formatId: string, onProgress?: (progress: number) => void): Promise<Blob> {
   const proxyUrl = `${getApiBaseUrl()}/download?url=${encodeURIComponent(videoPageUrl)}&format=${encodeURIComponent(formatId)}`
+  
+  // Start tracking from 0 - obtaining cookies
+  onProgress?.(0)
+  
+  console.log(`📥 Starting download for format ${formatId} from ${proxyUrl}`)
+  
   const response = await fetch(proxyUrl)
   
   if (!response.ok) {
@@ -74,6 +81,8 @@ async function downloadFormat(videoPageUrl: string, formatId: string, onProgress
 
   // Check if response is actually video data (not JSON error)
   const contentType = response.headers.get('content-type') || ''
+  console.log(`📥 Response content-type: ${contentType}`)
+  
   if (contentType.includes('application/json')) {
     const errorText = await response.text()
     try {
@@ -84,9 +93,14 @@ async function downloadFormat(videoPageUrl: string, formatId: string, onProgress
     }
   }
 
+  // Stage 1-3 complete: Obtaining cookies + Processing + Waiting for size (0-60%)
+  onProgress?.(60)
+
   // Download video data with progress tracking
   const contentLength = response.headers.get('content-length')
   const total = contentLength ? parseInt(contentLength, 10) : 0
+  
+  console.log(`📥 Content-Length: ${total} bytes`)
 
   const reader = response.body?.getReader()
   if (!reader) {
@@ -95,6 +109,8 @@ async function downloadFormat(videoPageUrl: string, formatId: string, onProgress
 
   const chunks: BlobPart[] = []
   let received = 0
+  const startTime = Date.now()
+  const TIMEOUT_MS = 120000 // 2 minute timeout for download
 
   while (true) {
     const { done, value } = await reader.read()
@@ -102,22 +118,46 @@ async function downloadFormat(videoPageUrl: string, formatId: string, onProgress
     if (value) {
       chunks.push(value)
       received += value.length
+      
+      // Check for timeout
+      if (Date.now() - startTime > TIMEOUT_MS) {
+        reader.cancel('Download timeout')
+        throw new Error(`Download timeout after 2 minutes (received ${(received / 1024 / 1024).toFixed(2)}MB)`)
+      }
     }
-    if (onProgress && total > 0) {
-      onProgress((received / total) * 100)
+    // Stage 4: Downloading (60-100%)
+    if (onProgress) {
+      if (total > 0) {
+        onProgress(60 + (received / total) * 40)
+      } else {
+        // If no content-length, just increment slowly
+        onProgress(Math.min(95, 60 + (received / (1024 * 1024)) * 5))
+      }
+    }
+    
+    // Log progress every 10MB
+    if (received % (10 * 1024 * 1024) < (value?.length || 0)) {
+      console.log(`📊 Downloaded ${(received / 1024 / 1024).toFixed(1)}MB...`)
     }
   }
 
   const blob = new Blob(chunks)
   
+  console.log(`✅ Download complete: ${blob.size} bytes (${(blob.size / 1024 / 1024).toFixed(2)}MB)`)
+  
   // Validate blob size - if it's suspiciously small, it might be an error
-  if (blob.size < 1000 && blob.size > 0) {
-    // Try to read as text to see if it's an error message
+  if (blob.size < 5000) {
+    // Very small file - likely an error
     const text = await blob.text()
     if (text.trim().startsWith('{') || text.trim().startsWith('<')) {
       throw new Error(`Server returned error response: ${text.substring(0, 200)}`)
     }
+    // If very small, it's probably incomplete
+    throw new Error(`Downloaded file is too small (${blob.size} bytes) - may be incomplete. Try again.`)
   }
+
+  // Finished downloading
+  onProgress?.(100)
 
   return blob
 }
@@ -166,7 +206,40 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
   const [formatType, setFormatType] = useState<'video' | 'audio' | 'video-only'>('video')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [prevUrl, setPrevUrl] = useState<string>('')
+  const [showCookieDialog, setShowCookieDialog] = useState(false)
+  const [cookieDialogLoading, setCookieDialogLoading] = useState(false)
   const { toast } = useToast()
+
+  // Handle cookie permission allow
+  const handleCookieAllow = async () => {
+    setCookieDialogLoading(true)
+    try {
+      await enableBrowserCookies()
+      setShowCookieDialog(false)
+      toast({
+        title: 'Success',
+        description: 'YouTube cookies enabled. Downloads will now bypass bot detection.',
+      })
+    } catch (error) {
+      console.error('Cookie error:', error)
+      toast({
+        title: 'Cookie Error',
+        description: error instanceof Error ? error.message : 'Failed to enable cookies',
+        variant: 'destructive',
+      })
+    } finally {
+      setCookieDialogLoading(false)
+    }
+  }
+
+  // Handle cookie permission deny
+  const handleCookieDeny = () => {
+    setShowCookieDialog(false)
+    toast({
+      title: 'Cookies Skipped',
+      description: 'You can still download videos, but bot detection may block some requests.',
+    })
+  }
 
   // Notify parent when extracting state changes
   useEffect(() => {
@@ -629,10 +702,29 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
           if (format18) {
             // Download Format 18 directly without any processing
             setDownloadProgress(10)
+            toast({
+              title: 'Processing',
+              description: '🔐 Obtaining cookies...',
+            })
             const videoBlob = await downloadFormatWithFallback(
               videoInfo.webpage_url,
               format18,
-              (progress) => setDownloadProgress(10 + progress * 0.85)
+              (progress) => {
+                // Map 0-100 to 10-95
+                // 0-20% = Cookies (10-20%)
+                // 20-40% = Processing with cookies (20-35%)
+                // 40-60% = Waiting for download size (35-45%)
+                // 60-100% = Downloading (45-95%)
+                if (progress < 20) {
+                  setDownloadProgress(10 + progress * 0.5)
+                } else if (progress < 40) {
+                  setDownloadProgress(20 + (progress - 20) * 0.75)
+                } else if (progress < 60) {
+                  setDownloadProgress(35 + (progress - 40) * 0.5)
+                } else {
+                  setDownloadProgress(45 + (progress - 60) * 0.5)
+                }
+              }
             )
             
             setDownloadProgress(95)
@@ -656,37 +748,104 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
         }
 
         // Get best format from this quality option
-        // CRITICAL: Prefer formats that match output format to avoid slow transcoding
-        // If output is MP4, prefer MP4 formats (H.264) over WebM (VP9)
-        // VP9->H.264 transcoding is extremely slow in browser WebAssembly
-        let videoFormat = qualityOption.formats[0]
+        // CRITICAL: Find the closest format match to avoid processing
+        // Strategy: Find formats that match or nearly match requested height/fps
+        // Prefer native formats (MP4 for MP4 output, WebM for WebM output) to skip transcoding
         
-        // If output format is MP4, prefer MP4 formats (faster, no transcoding needed)
-        if (selectedVideoFileType === 'mp4' || selectedVideoFileType === 'mov') {
-          const mp4Format = qualityOption.formats.find(f => 
-            (f.ext === 'mp4' || !f.ext || f.ext === 'mov') && 
-            (!f.video_codec?.includes('vp9') && !f.video_codec?.includes('VP9'))
-          )
-          if (mp4Format) {
-            videoFormat = mp4Format
-            console.log('Selected MP4 format to avoid transcoding:', mp4Format.format_id)
-          } else {
-            console.warn('No MP4 format found for this quality, transcoding may be slow:', {
-              availableFormats: qualityOption.formats.map(f => ({
-                id: f.format_id,
-                ext: f.ext,
-                codec: f.video_codec
-              }))
-            })
+        const requestedHeight = qualityOption.height
+        const requestedFps = qualityOption.fps
+        const requestedExt = selectedVideoFileType
+        
+        // Score function: lower is better
+        // Prefer exact matches, then near matches, prioritize native codec matches
+        const scoreFormat = (f: VideoFormat): number => {
+          let score = 0
+          
+          // CRITICAL: Exclude codecs that FFmpeg WASM cannot decode
+          // AV1 is not supported in browser WebAssembly FFmpeg - it will crash
+          const codec = f.video_codec || ''
+          
+          // Check if this is an AV1 format - these CANNOT be decoded by browser FFmpeg
+          if (codec.toLowerCase().includes('av1') || codec.toLowerCase().includes('av01')) {
+            // Return very high score to exclude this format (it's not usable)
+            return 999999
           }
-        } else if (selectedVideoFileType === 'webm') {
-          // If output is WebM, prefer WebM formats
-          const webmFormat = qualityOption.formats.find(f => f.ext === 'webm')
-          if (webmFormat) {
-            videoFormat = webmFormat
-            console.log('Selected WebM format to avoid transcoding:', webmFormat.format_id)
+          
+          // 1. Height match (most important) - exact match = 0 points
+          const formatHeight = f.height || 0
+          const heightDiff = Math.abs(formatHeight - requestedHeight)
+          score += heightDiff * 100
+          
+          // 2. FPS match - exact match = 0 points
+          const formatFps = f.fps || 0
+          const fpsDiff = Math.abs(formatFps - requestedFps)
+          score += fpsDiff * 50
+          
+          // 3. Format match
+          // Native format match = 0 points (no transcoding)
+          // Different format = 500 points (requires transcoding)
+          const formatExt = f.ext || 'mp4'
+          const isNativeFormat = 
+            (requestedExt === 'mp4' && (formatExt === 'mp4' || formatExt === 'm4v')) ||
+            (requestedExt === 'webm' && formatExt === 'webm') ||
+            (requestedExt === 'mov' && (formatExt === 'mov' || formatExt === 'mp4')) ||
+            (requestedExt === 'mkv' && formatExt === 'mkv')
+          
+          if (!isNativeFormat) {
+            score += 500
           }
+          
+          // 4. Video codec preference - prefer H.264 over VP9 (H.264 is faster and more compatible)
+          // VP9 is slower but works. AV1 is already filtered out above.
+          if (codec.includes('vp9') || codec.includes('VP9')) {
+            score += 50  // Small penalty for VP9, but it's acceptable
+          }
+          
+          return score
         }
+        
+        // Filter available formats and score them
+        const scoredFormats = qualityOption.formats
+          .filter(f => f.format_id && f.height) // Must have ID and height
+          .map(f => ({ format: f, score: scoreFormat(f) }))
+          .sort((a, b) => a.score - b.score)
+        
+        if (scoredFormats.length === 0) {
+          throw new Error('No suitable formats available')
+        }
+        
+        const bestFormat = scoredFormats[0].format
+        const bestScore = scoredFormats[0].score
+        
+        // Log format selection strategy
+        console.log('📊 Format Selection:', {
+          requested: { height: requestedHeight, fps: requestedFps, ext: requestedExt },
+          selected: { 
+            formatId: bestFormat.format_id, 
+            height: bestFormat.height, 
+            fps: bestFormat.fps,
+            ext: bestFormat.ext,
+            codec: bestFormat.video_codec
+          },
+          score: bestScore,
+          topCandidates: scoredFormats.slice(0, 3).map(s => ({
+            id: s.format.format_id,
+            h: s.format.height,
+            fps: s.format.fps,
+            ext: s.format.ext,
+            score: s.score
+          }))
+        })
+        
+        // Determine if processing is needed
+        const needsProcessing = bestScore > 10 // Only if significant mismatch
+        if (!needsProcessing) {
+          console.log('✨ Direct download: Format matches requirements perfectly!')
+        } else {
+          console.log(`⚠️  Processing needed (score: ${bestScore})`)
+        }
+        
+        let videoFormat = bestFormat
         
         if (!videoFormat.format_id) {
           throw new Error('Video format not available')
@@ -694,7 +853,7 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
 
         toast({
           title: 'Processing',
-          description: 'Downloading and processing video...',
+          description: '🔐 Obtaining cookies...',
         })
 
         // Get audio formats based on selected audio track
@@ -1334,6 +1493,17 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
                         </>
                       )}
                     </Button>
+                    <Button
+                      onClick={() => setShowCookieDialog(true)}
+                      disabled={loading}
+                      variant="outline"
+                      className="w-full sm:w-auto text-xs sm:text-sm h-11 sm:h-12 px-2 sm:px-3 border-amber-200 hover:bg-amber-50 dark:border-amber-900 dark:hover:bg-amber-950/30"
+                      title="Enable cookies to bypass YouTube bot detection"
+                      aria-label="Configure YouTube cookies"
+                    >
+                      <Lock className="h-3.5 w-3.5 mr-1 sm:mr-0 text-amber-600" />
+                      <span className="hidden sm:inline">Cookies</span>
+                    </Button>
                   </div>
                 </div>
               </div>
@@ -1616,6 +1786,12 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
           </CardContent>
         </Card>
       )}
+      <CookiePermissionDialog
+        isOpen={showCookieDialog}
+        onAllow={handleCookieAllow}
+        onDeny={handleCookieDeny}
+        isLoading={cookieDialogLoading}
+      />
     </div>
   )
 }
