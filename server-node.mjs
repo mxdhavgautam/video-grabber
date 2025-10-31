@@ -463,71 +463,153 @@ const server = createServer(async (req, res) => {
     try {
       console.log(`📥 Downloading format ${formatId} from: ${videoUrl}`)
 
-      // Use spawn instead of exec to stream large files without maxBuffer issues
-      const proc = spawn('yt-dlp', ['-f', formatId, '--no-warnings', '-o', '-', videoUrl])
+      // First, get the file size using yt-dlp --print-json
+      exec(`yt-dlp -f "${formatId}" --print-json -o - "${videoUrl}" 2>/dev/null | head -c 1 > /dev/null && yt-dlp -f "${formatId}" --simulate --dump-json "${videoUrl}" 2>/dev/null`, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+        try {
+          const videoInfo = JSON.parse(stdout)
+          const selectedFormat = videoInfo.formats?.find(f => f.format_id === formatId)
+          const fileSize = selectedFormat?.filesize || selectedFormat?.filesize_approx || 0
 
-      // Set up headers before streaming starts
-      res.writeHead(200, {
-        ...corsHeaders,
-        'Content-Type': 'application/octet-stream',
-        'Cache-Control': 'public, max-age=3600',
-        'X-Format-Id': formatId,
-        'Transfer-Encoding': 'chunked',
-      })
+          // Use spawn to stream the actual video data
+          const proc = spawn('yt-dlp', ['-f', formatId, '--no-warnings', '-o', '-', videoUrl])
 
-      let totalBytes = 0
-      let errorOccurred = false
-
-      // Stream stdout directly to response
-      proc.stdout.on('data', (chunk) => {
-        totalBytes += chunk.length
-        res.write(chunk)
-      })
-
-      proc.stderr.on('data', (chunk) => {
-        const message = chunk.toString()
-        if (!message.includes('WARNING') && message.trim()) {
-          console.warn(`yt-dlp stderr: ${message}`)
-        }
-      })
-
-      proc.on('close', (code) => {
-        if (code === 0) {
-          console.log(`✅ Successfully downloaded ${totalBytes} bytes for format ${formatId}`)
-          res.end()
-        } else if (!errorOccurred) {
-          console.error(`❌ yt-dlp exited with code ${code}`)
-          if (!res.headersSent) {
-            res.writeHead(500, { 
-              ...corsHeaders,
-              'Content-Type': 'application/json' 
-            })
-          }
-          if (!res.writableEnded) {
-            res.end(JSON.stringify({
-              error: 'Download failed',
-              message: `yt-dlp process exited with code ${code}`,
-            }))
-          }
-        }
-      })
-
-      proc.on('error', (error) => {
-        errorOccurred = true
-        console.error('❌ Spawn error:', error.message)
-        if (!res.headersSent) {
-          res.writeHead(500, { 
+          let sentBytes = 0
+          const headers = {
             ...corsHeaders,
-            'Content-Type': 'application/json' 
+            'Content-Type': 'application/octet-stream',
+            'Cache-Control': 'public, max-age=3600',
+            'X-Format-Id': formatId,
+          }
+          
+          // Add Content-Length if we know the file size
+          if (fileSize > 0) {
+            headers['Content-Length'] = fileSize.toString()
+          }
+
+          res.writeHead(200, headers)
+
+          let totalBytes = 0
+          let errorOccurred = false
+
+          // Stream stdout directly to response
+          proc.stdout.on('data', (chunk) => {
+            totalBytes += chunk.length
+            sentBytes += chunk.length
+            res.write(chunk)
+          })
+
+          proc.stderr.on('data', (chunk) => {
+            const message = chunk.toString()
+            if (!message.includes('WARNING') && message.trim()) {
+              console.warn(`yt-dlp stderr: ${message}`)
+            }
+          })
+
+          proc.on('close', (code) => {
+            if (code === 0) {
+              console.log(`✅ Successfully downloaded ${totalBytes} bytes for format ${formatId}`)
+              res.end()
+            } else if (!errorOccurred) {
+              console.error(`❌ yt-dlp exited with code ${code}`)
+              if (!res.headersSent) {
+                res.writeHead(500, { 
+                  ...corsHeaders,
+                  'Content-Type': 'application/json' 
+                })
+              }
+              if (!res.writableEnded) {
+                res.end(JSON.stringify({
+                  error: 'Download failed',
+                  message: `yt-dlp process exited with code ${code}`,
+                }))
+              }
+            }
+          })
+
+          proc.on('error', (error) => {
+            errorOccurred = true
+            console.error('❌ Spawn error:', error.message)
+            if (!res.headersSent) {
+              res.writeHead(500, { 
+                ...corsHeaders,
+                'Content-Type': 'application/json' 
+              })
+            }
+            if (!res.writableEnded) {
+              res.end(JSON.stringify({
+                error: 'Download failed',
+                message: error.message,
+              }))
+            }
+          })
+        } catch (parseError) {
+          console.warn('Could not get file size info:', parseError.message)
+          
+          // Fallback: stream without Content-Length
+          const proc = spawn('yt-dlp', ['-f', formatId, '--no-warnings', '-o', '-', videoUrl])
+
+          res.writeHead(200, {
+            ...corsHeaders,
+            'Content-Type': 'application/octet-stream',
+            'Cache-Control': 'public, max-age=3600',
+            'X-Format-Id': formatId,
+          })
+
+          let totalBytes = 0
+          let errorOccurred = false
+
+          proc.stdout.on('data', (chunk) => {
+            totalBytes += chunk.length
+            res.write(chunk)
+          })
+
+          proc.stderr.on('data', (chunk) => {
+            const message = chunk.toString()
+            if (!message.includes('WARNING') && message.trim()) {
+              console.warn(`yt-dlp stderr: ${message}`)
+            }
+          })
+
+          proc.on('close', (code) => {
+            if (code === 0) {
+              console.log(`✅ Successfully downloaded ${totalBytes} bytes for format ${formatId}`)
+              res.end()
+            } else if (!errorOccurred) {
+              console.error(`❌ yt-dlp exited with code ${code}`)
+              if (!res.headersSent) {
+                res.writeHead(500, { 
+                  ...corsHeaders,
+                  'Content-Type': 'application/json' 
+                })
+              }
+              if (!res.writableEnded) {
+                res.end(JSON.stringify({
+                  error: 'Download failed',
+                  message: `yt-dlp process exited with code ${code}`,
+                }))
+              }
+            }
+          })
+
+          proc.on('error', (error) => {
+            errorOccurred = true
+            console.error('❌ Spawn error:', error.message)
+            if (!res.headersSent) {
+              res.writeHead(500, { 
+                ...corsHeaders,
+                'Content-Type': 'application/json' 
+              })
+            }
+            if (!res.writableEnded) {
+              res.end(JSON.stringify({
+                error: 'Download failed',
+                message: error.message,
+              }))
+            }
           })
         }
-        if (!res.writableEnded) {
-          res.end(JSON.stringify({
-            error: 'Download failed',
-            message: error.message,
-          }))
-        }
       })
+      return
     } catch (error) {
       console.error('❌ Download error:', error.message)
       if (!res.headersSent) {
