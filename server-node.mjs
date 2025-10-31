@@ -295,12 +295,12 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     // Build yt-dlp command - explicitly request JSON output for extraction
     let command = `yt-dlp -j --dump-single-json --quiet --no-warnings`
     
-    // Add cookies - prefer browser extraction, fallback to file
-    if (useBrowserCookies) {
-      const profilePath = getOrCreateChromeProfile()
-      command += ` --cookies-from-browser "chromium:${profilePath}"`
+    // Use pre-warmed Chrome profile from environment (set by start.sh)
+    // The profile is created and pre-warmed at startup, so we use it directly
+    if (useBrowserCookies && process.env.CHROME_PROFILE_DIR) {
+      command += ` --cookies-from-browser "chromium:${process.env.CHROME_PROFILE_DIR}"`
       if (retryCount === 0) {
-        console.log(`🔐 Using cookies from browser (Chromium at ${profilePath})`)
+        console.log(`🔐 Using cookies from pre-warmed Chrome profile`)
       }
     } else if (hasCookies) {
       command += ` --cookies "${COOKIES_FILE}"`
@@ -308,7 +308,8 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
         console.log(`🔐 Using cookies from: ${COOKIES_FILE}`)
       }
     } else if (retryCount === 0) {
-      console.log(`⚠️ No cookies available - some videos may be blocked by bot detection`)
+      console.log(`⚠️ No cookies available - attempting with geo-bypass`)
+      command += ` --geo-bypass`
     }
     
     // Add URL
@@ -762,15 +763,15 @@ const server = createServer(async (req, res) => {
 
       // Prepare cookie flags for yt-dlp
       let cookieFlags = []
-      if (useBrowserCookies) {
-        const profilePath = getOrCreateChromeProfile()
-        cookieFlags = ['--cookies-from-browser', `chromium:${profilePath}`]
-        console.log(`🔐 Using cookies from browser (${profilePath})...`)
+      if (useBrowserCookies && process.env.CHROME_PROFILE_DIR) {
+        cookieFlags = ['--cookies-from-browser', `chromium:${process.env.CHROME_PROFILE_DIR}`]
+        console.log(`🔐 Using cookies from pre-warmed Chrome profile...`)
       } else if (hasCookies) {
         console.log(`🔐 Using cookies from frontend...`)
         cookieFlags = ['--cookies', COOKIES_FILE]
       } else {
-        console.log(`🔐 No cookies - trying without...`)
+        console.log(`🌍 No cookies - using geo-bypass...`)
+        cookieFlags = ['--geo-bypass']
       }
 
       // Create temporary file path for this download
