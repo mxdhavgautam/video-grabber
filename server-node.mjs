@@ -1,15 +1,21 @@
 import { createServer } from 'http'
 import { exec, spawn } from 'child_process'
-import { promisify } from 'util'
+import { promisify as _promisify } from 'util'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
+import { existsSync } from 'fs'
+import { join } from 'path'
 
-const execPromise = promisify(exec)
+const execPromise = _promisify(exec)
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
 const PORT = process.env.PORT || 3001
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS || '*'
+
+// Path to cookies file (can be provided as environment variable)
+const COOKIES_FILE = process.env.COOKIES_FILE || join(__dirname, '.yt-dlp', 'cookies.txt')
+const hasCookies = existsSync(COOKIES_FILE)
 
 /**
  * Extract video ID from YouTube URL
@@ -38,44 +44,6 @@ function extractVideoId(url) {
 }
 
 /**
- * Extract cookies from Firefox/Chrome and return as temporary file path
- * This allows yt-dlp to authenticate with YouTube
- */
-async function getCookiesFile() {
-  try {
-    // Try Firefox first
-    try {
-      const { execSync } = await import('child_process')
-      const result = execSync('test -d "$HOME/Library/Application Support/Firefox/Profiles" && echo firefox', { 
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'ignore'] 
-      }).trim()
-      if (result === 'firefox') return 'firefox'
-    } catch (e) {
-      // Firefox not found, try Chrome
-    }
-    
-    // Try Chrome
-    try {
-      const { execSync } = await import('child_process')
-      const result = execSync('test -d "$HOME/Library/Application Support/Google/Chrome" && echo chrome', { 
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'ignore'] 
-      }).trim()
-      if (result === 'chrome') return 'chrome'
-    } catch (e) {
-      // Chrome not found either
-    }
-    
-    // No browsers with cookies found
-    return null
-  } catch (e) {
-    console.warn('⚠️ Could not detect browser cookies:', e.message)
-    return null
-  }
-}
-
-/**
  * Execute yt-dlp with robust retry logic for bot-protected videos
  * Uses exponential backoff and server-side mechanisms to bypass restrictions
  */
@@ -87,24 +55,22 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
       await new Promise(r => setTimeout(r, delayMs))
     }
     
-    let cookieSource = null
-    
-    // Try to get cookies on first attempt only
-    if (retryCount === 0) {
-      // DISABLED: Cookie extraction from browser is unreliable
-      // cookieSource = await getCookiesFile()
-      // if (cookieSource) {
-      //   console.log(`🔐 Using cookies from ${cookieSource}`)
-      // }
-    }
-    
     // Build yt-dlp command using config file
       // Config file at ~/.yt-dlp/config provides optimal settings
     let command = `yt-dlp -j --config-location ~/.yt-dlp/config`
     
     // Add cookies if available
-    if (cookieSource) {
-      command += ` --cookies-from-browser ${cookieSource}`
+    if (hasCookies) {
+      command += ` --cookies "${COOKIES_FILE}"`
+      if (retryCount === 0) {
+        console.log(`🔐 Using cookies from: ${COOKIES_FILE}`)
+      }
+    } else if (retryCount === 0) {
+      console.log(`⚠️ No cookies file found at ${COOKIES_FILE}`)
+      console.log(`📝 To use cookies, export them from your browser:`)
+      console.log(`   1. Use browser extension "Get cookies.txt LOCALLY" (Chrome) or "cookies.txt" (Firefox)`)
+      console.log(`   2. Save as: ${COOKIES_FILE}`)
+      console.log(`   3. Restart server for changes to take effect`)
     }
     
     // Add URL
