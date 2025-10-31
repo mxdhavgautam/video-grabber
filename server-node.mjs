@@ -496,26 +496,21 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     // Strategy 2: Switch to mweb client with PO Token support (attempt 2+)
     //   Per https://github.com/yt-dlp/yt-dlp/wiki/Extractors#youtube
     //   mweb client can use PO Tokens to bypass bot detection
-    const COOKIES_FILE = process.env.CHROME_PROFILE_DIR ? `${process.env.CHROME_PROFILE_DIR}/cookies.txt` : null
-    const cookiesExist = COOKIES_FILE && require('fs').existsSync(COOKIES_FILE)
+    const profileCookiesFile = process.env.CHROME_PROFILE_DIR ? `${process.env.CHROME_PROFILE_DIR}/cookies.txt` : null
+    const cookiesExist = profileCookiesFile ? existsSync(profileCookiesFile) : false
     
     if (retryCount < 2) {
-      // First attempts: Use exported cookies file if available
       if (cookiesExist) {
-        command += ` --cookies "${COOKIES_FILE}"`
-        if (retryCount === 0) {
-          console.log(`🔐 Strategy 1: Using exported cookies from: ${COOKIES_FILE}`)
-        } else {
-          console.log(`🔐 Retry ${retryCount}: Retrying with cookies file`)
-        }
+        command += ` --cookies "${profileCookiesFile}"`
+        console.log(`🔐 Strategy 1.${retryCount === 0 ? 'A' : 'B'}: Using exported cookies file (${profileCookiesFile})`)
+      } else if (useBrowserCookies && process.env.CHROME_PROFILE_DIR) {
+        command += ` --cookies-from-browser "chromium:${process.env.CHROME_PROFILE_DIR}"`
+        console.log(`🔐 Strategy 1.${retryCount === 0 ? 'C' : 'D'}: Using Chromium profile via --cookies-from-browser`)  
       } else {
-        console.log(`⚠️ No cookies file available, attempting direct extraction`)
+        console.log(`⚠️ Strategy 1: No cookies available; proceeding without auth (likely to fail)`)
       }
     } else {
-      // Retry 2+: Switch to mweb client with PO Token support
-      // Per documentation: https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
-      // mweb client can leverage installed PO Token provider plugins
-      console.log(`🎬 Retry ${retryCount}: Switching to mweb client with PO Token support`)
+      console.log(`🎬 Strategy 2: Switching to mweb client with PO Token support`)
       command += ` --extractor-args "youtube:player-client=mweb"`
     }
     
@@ -994,16 +989,18 @@ const server = createServer(async (req, res) => {
 
       // Prepare cookie flags for yt-dlp
       let cookieFlags = []
-      if (useBrowserCookies && process.env.CHROME_PROFILE_DIR) {
-        // Use --cookies-from-browser to let yt-dlp read directly from Chromium's SQLite database
+      const profileCookiesFile = process.env.CHROME_PROFILE_DIR ? `${process.env.CHROME_PROFILE_DIR}/cookies.txt` : null
+      const cookiesExist = profileCookiesFile ? existsSync(profileCookiesFile) : false
+
+      if (cookiesExist) {
+        cookieFlags = ['--cookies', profileCookiesFile]
+        console.log(`🔐 Download Strategy: Using exported cookies file (${profileCookiesFile})`)
+      } else if (useBrowserCookies && process.env.CHROME_PROFILE_DIR) {
         cookieFlags = ['--cookies-from-browser', `chromium:${process.env.CHROME_PROFILE_DIR}`]
-        console.log(`🔐 Using cookies from pre-warmed Chrome profile: ${process.env.CHROME_PROFILE_DIR}`)
-      } else if (hasCookies) {
-        console.log(`🔐 Using cookies from frontend...`)
-        cookieFlags = ['--cookies', COOKIES_FILE]
+        console.log(`🔐 Download Strategy: Falling back to --cookies-from-browser chromium:${process.env.CHROME_PROFILE_DIR}`)
       } else {
-        console.log(`🌍 No cookies - using geo-bypass...`)
         cookieFlags = ['--geo-bypass']
+        console.log(`🌍 Download Strategy: No cookies available, using geo-bypass`)
       }
 
       // Create temporary file path for this download
