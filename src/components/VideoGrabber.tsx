@@ -1,14 +1,14 @@
 import { useState, useMemo, useEffect } from 'react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { useToast } from '@/components/ui/use-toast'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Loader2, Download, Video, Music, Link2, Info, Clipboard } from 'lucide-react'
+import { Loader2, Download, Video, Music, Link2, Clipboard } from 'lucide-react'
 import { extractVideoInfo, detectPlatform } from '@/lib/video-extractor'
 import { extractAudioFromVideo } from '@/lib/ffmpeg'
 import { downloadBlob, formatFileSize, formatDuration, formatViewCount, sanitizeFilename, type VideoInfo, type VideoFormat } from '@/lib/types'
@@ -28,16 +28,14 @@ function getApiBaseUrl(): string {
 }
 
 // Helper function to fetch through proxy (bypasses CORS)
-async function fetchThroughProxy(url: string, onProgress?: (progress: number) => void): Promise<Blob> {
+async function downloadFormatWithoutProgress(url: string): Promise<Blob> {
   const proxyUrl = `${getApiBaseUrl()}/download?url=${encodeURIComponent(url)}`
   const response = await fetch(proxyUrl)
   
   if (!response.ok) {
-    throw new Error(`Failed to download: ${response.statusText}`)
+    const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
+    throw new Error(errorData.error || `Failed to download: ${response.statusText}`)
   }
-
-  const contentLength = response.headers.get('content-length')
-  const total = contentLength ? parseInt(contentLength, 10) : 0
 
   const reader = response.body?.getReader()
   if (!reader) {
@@ -45,7 +43,6 @@ async function fetchThroughProxy(url: string, onProgress?: (progress: number) =>
   }
 
   const chunks: BlobPart[] = []
-  let received = 0
 
   while (true) {
     const { done, value } = await reader.read()
@@ -53,20 +50,15 @@ async function fetchThroughProxy(url: string, onProgress?: (progress: number) =>
 
     if (value) {
       chunks.push(value)
-      received += value.length
-    }
-
-    if (onProgress && total > 0) {
-      onProgress((received / total) * 100)
     }
   }
 
   return new Blob(chunks)
 }
 
-// Helper to stream via server - server uses youtubei.js HTTP client to avoid 403 errors
-async function fetchYTDLStream(videoPageUrl: string, itag: string, onProgress?: (progress: number) => void): Promise<Blob> {
-  const proxyUrl = `${getApiBaseUrl()}/download?videoUrl=${encodeURIComponent(videoPageUrl)}&itag=${encodeURIComponent(itag)}`
+// Helper to download specific format via yt-dlp backend
+async function downloadFormat(videoPageUrl: string, formatId: string, onProgress?: (progress: number) => void): Promise<Blob> {
+  const proxyUrl = `${getApiBaseUrl()}/download?url=${encodeURIComponent(videoPageUrl)}&format=${encodeURIComponent(formatId)}`
   const response = await fetch(proxyUrl)
   
   if (!response.ok) {
@@ -77,7 +69,7 @@ async function fetchYTDLStream(videoPageUrl: string, itag: string, onProgress?: 
       throw new Error(errorJson.error || `Failed to download: ${response.status} ${response.statusText}`)
     } catch {
       throw new Error(`Failed to download: ${response.status} ${response.statusText} ${errText ? `- ${errText.substring(0, 200)}` : ''}`)
-  }
+    }
   }
 
   // Check if response is actually video data (not JSON error)
@@ -92,7 +84,7 @@ async function fetchYTDLStream(videoPageUrl: string, itag: string, onProgress?: 
     }
   }
 
-  // Server streams the video through proxy (uses youtubei.js HTTP client to avoid 403)
+  // Download video data with progress tracking
   const contentLength = response.headers.get('content-length')
   const total = contentLength ? parseInt(contentLength, 10) : 0
 
@@ -130,27 +122,24 @@ async function fetchYTDLStream(videoPageUrl: string, itag: string, onProgress?: 
   return blob
 }
 
-// Attempt download using format URL via proxy
+// Attempt download using format ID via yt-dlp backend
 async function downloadFormatWithFallback(
   videoPageUrl: string,
   format: VideoFormat,
   onProgress?: (p: number) => void
 ): Promise<Blob> {
-  // Prefer ytdl streaming if we have an itag
+  // Use yt-dlp format ID for download
   if (format.format_id) {
     try {
-      return await fetchYTDLStream(videoPageUrl, format.format_id, onProgress)
+      return await downloadFormat(videoPageUrl, format.format_id, onProgress)
     } catch (err) {
-      // Continue to fallback
-      console.warn('ytdl stream failed, falling back to direct url if present', err)
+      // Continue to fallback or rethrow
+      console.warn('Format download failed:', err)
+      throw err
     }
   }
 
-  if (format.url) {
-    return await fetchThroughProxy(format.url, onProgress)
-  }
-
-  throw new Error('No available source for selected format')
+  throw new Error('No format ID available for download')
 }
 
 interface QualityOption {
@@ -160,7 +149,7 @@ interface QualityOption {
   formats: VideoFormat[]
 }
 
-export function VideoGrabber() {
+export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: boolean) => void }) {
   const [url, setUrl] = useState('')
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null)
   const [loading, setLoading] = useState(false)
@@ -176,7 +165,21 @@ export function VideoGrabber() {
   const [selectedVideoOnlyFileType, setSelectedVideoOnlyFileType] = useState<string>('mp4')
   const [formatType, setFormatType] = useState<'video' | 'audio' | 'video-only'>('video')
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [prevUrl, setPrevUrl] = useState<string>('')
   const { toast } = useToast()
+
+  // Notify parent when extracting state changes
+  useEffect(() => {
+    onExtracting?.(videoInfo !== null || loading)
+  }, [loading, onExtracting, videoInfo])
+
+  // Handle URL changes - fade out old results
+  useEffect(() => {
+    if (url !== prevUrl && videoInfo) {
+      // URL changed, update prevUrl to track it
+      setPrevUrl(url)
+    }
+  }, [url, prevUrl, videoInfo])
 
   // Suppress browser extension errors that clutter the console
   useEffect(() => {
@@ -250,7 +253,8 @@ export function VideoGrabber() {
   }, [])
 
   // Get distinct quality options (resolution + fps combinations)
-  // Limited to 720p max due to YouTube Format 18 source limitation
+  // Now with yt-dlp backend: ALL YouTube formats are available natively
+  // No more Format 18 limitation - we get native 2160p, 1440p, 1080p, 720p, etc.
   const qualityOptions = useMemo(() => {
     if (!videoInfo) return []
 
@@ -261,27 +265,27 @@ export function VideoGrabber() {
       ((f.height && f.width) || f.hasVideo === true || (f.video_codec && f.video_codec !== 'none'))
     )
 
-    // If no formats are available from the API, provide default options for Format 18 upscaling
+    // If no formats are available from the API, show a friendly message
     if (videoFormats.length === 0) {
-      console.log('[Frontend] No video formats from API, providing default Format 18 upscaling options')
+      console.log('[Frontend] No video formats from API')
       return [
         {
           key: '720p@30fps',
           height: 720,
           fps: 30,
-          formats: [] // Empty formats - download will use Format 18 and upscale
+          formats: []
         },
         {
           key: '480p@30fps',
           height: 480,
           fps: 30,
-          formats: [] // Empty formats - download will use Format 18 and upscale
+          formats: []
         },
         {
-          key: '360p@30fps', // Default Format 18 resolution
+          key: '360p@30fps',
           height: 360,
           fps: 30,
-          formats: [] // Empty formats - download will use Format 18 directly
+          formats: []
         }
       ]
     }
@@ -290,30 +294,19 @@ export function VideoGrabber() {
     const qualityMap = new Map<string, QualityOption>()
 
     videoFormats.forEach(format => {
-      // Try to get height from format.height, or parse from resolution/format_note, or default to 360p (Format 18)
+      // Get height from format.height
       let height = typeof format.height === 'number' && format.height > 0 ? format.height : 0
 
-      // If height is missing, try to parse from resolution string (e.g., "360p", "720p")
-      if (height === 0 && format.resolution) {
-        const match = format.resolution.match(/(\d+)p/i)
-        if (match) height = parseInt(match[1], 10)
-      }
-
-      // If still no height, try to parse from format_note
+      // If height is missing, try to parse from format_note
       if (height === 0 && format.format_note) {
         const match = format.format_note.match(/(\d+)p/i)
         if (match) height = parseInt(match[1], 10)
       }
 
-      // Default to 360p (Format 18) if height is still missing
+      // Default to 360p if height is still missing
       if (height === 0) height = 360
 
       const fps = format.fps || 30
-
-      // Filter out resolutions above 720p (due to Format 18 limitation)
-      // We download 360p source and FFmpeg can upscale to max 720p
-      if (height > 720) return
-
       const key = `${height}p@${fps}fps`
 
       if (!qualityMap.has(key)) {
@@ -398,67 +391,103 @@ export function VideoGrabber() {
   }, [videoInfo])
 
   // Set defaults when videoInfo changes
-  // Default to Format 18's actual specs (height, fps, format) dynamically
+  // Default to highest resolution + fps in MP4 for Combined, same for Video Only, highest MP3 for Audio Only
   useEffect(() => {
-    if (videoInfo && format18 && qualityOptions.length > 0 && !selectedVideoQuality) {
-      // Use Format 18's actual height and fps
-      const format18Height = format18.height || 360
-      const format18Fps = format18.fps || 25
+    if (videoInfo && qualityOptions.length > 0 && !selectedVideoQuality) {
+      // For Combined: Find highest resolution in highest fps, preferring MP4
+      // Sort by height descending, then fps descending
+      const sortedQualities = [...qualityOptions].sort((a, b) => {
+        if (a.height !== b.height) return b.height - a.height
+        return b.fps - a.fps
+      })
       
-      // Find the quality option that matches Format 18's specs
-      const format18Quality = qualityOptions.find(q => 
-        q.height === format18Height && q.fps === format18Fps
+      // Try to find an option that has MP4 format available
+      let bestQuality = sortedQualities[0]
+      for (const quality of sortedQualities) {
+        // Check if this quality has any formats in MP4
+        const hasMp4 = quality.formats.some(f => f.ext === 'mp4' || !f.ext || f.ext === 'mov')
+        if (hasMp4) {
+          bestQuality = quality
+          break
+        }
+      }
+      
+      setSelectedVideoQuality(bestQuality.key)
+      console.log('[Frontend] Set Combined quality to:', bestQuality.key)
+    }
+    
+    if (videoInfo && qualityOptions.length > 0 && !selectedVideoOnlyQuality) {
+      // For Video Only: Same as Combined (highest resolution + fps)
+      const sortedQualities = [...qualityOptions].sort((a, b) => {
+        if (a.height !== b.height) return b.height - a.height
+        return b.fps - a.fps
+      })
+      setSelectedVideoOnlyQuality(sortedQualities[0].key)
+      console.log('[Frontend] Set Video Only quality to:', sortedQualities[0].key)
+    }
+    
+    if (videoInfo && !selectedVideoFileType) {
+      // Default to MP4 for combined
+      setSelectedVideoFileType('mp4')
+    }
+    
+    if (videoInfo && !selectedVideoOnlyFileType) {
+      // Default to MP4 for video only
+      setSelectedVideoOnlyFileType('mp4')
+    }
+    
+    if (videoInfo && audioQualityOptions.length > 0 && !selectedAudioSource) {
+      // For Audio Only: Find highest quality MP3
+      // First, look for MP3 options and sort by bitrate descending
+      const mp3Options = audioQualityOptions.filter(q => 
+        q.formats && q.formats.length > 0 && q.formats[0].ext === 'mp3'
       )
       
-      // Fall back to closest match if exact match not found
-      const defaultQuality = format18Quality || qualityOptions.find(q => q.height === format18Height) || qualityOptions[qualityOptions.length - 1]
-      setSelectedVideoQuality(defaultQuality.key)
+      if (mp3Options.length > 0) {
+        // Sort by bitrate descending
+        mp3Options.sort((a, b) => b.bitrate - a.bitrate)
+        setSelectedAudioSource(mp3Options[0].key)
+        console.log('[Frontend] Set Audio Only to highest MP3:', mp3Options[0].key, 'bitrate:', mp3Options[0].bitrate)
+      } else {
+        // Fallback to highest bitrate audio regardless of format
+        const sortedAudio = [...audioQualityOptions].sort((a, b) => b.bitrate - a.bitrate)
+        setSelectedAudioSource(sortedAudio[0].key)
+        console.log('[Frontend] No MP3 found, using highest bitrate audio:', sortedAudio[0].key)
+      }
     }
     
-    if (videoInfo && format18 && qualityOptions.length > 0 && !selectedVideoOnlyQuality) {
-      // Use Format 18's actual height and fps
-      const format18Height = format18.height || 360
-      const format18Fps = format18.fps || 25
+    if (videoInfo && !selectedAudioFormat) {
+      // Default to MP3 for audio only
+      setSelectedAudioFormat('mp3')
+    }
+    
+    // Smart audio track selection: prefer English, then Hindi, then first available
+    if (videoInfo && selectedAudioTrack === 'default' && audioTracks && audioTracks.length > 0) {
+      let bestTrackIndex = 0
       
-      // Find the quality option that matches Format 18's specs
-      const format18Quality = qualityOptions.find(q => 
-        q.height === format18Height && q.fps === format18Fps
+      // Try to find English track
+      const englishTrack = audioTracks.findIndex(track => 
+        track.language_code?.toLowerCase().startsWith('en') || 
+        track.language?.toLowerCase().includes('english')
       )
+      if (englishTrack >= 0) {
+        bestTrackIndex = englishTrack
+      } else {
+        // Try to find Hindi track
+        const hindiTrack = audioTracks.findIndex(track => 
+          track.language_code?.toLowerCase().startsWith('hi') || 
+          track.language?.toLowerCase().includes('hindi')
+        )
+        if (hindiTrack >= 0) {
+          bestTrackIndex = hindiTrack
+        }
+        // Otherwise use first track (index 0)
+      }
       
-      // Fall back to closest match if exact match not found
-      const defaultQuality = format18Quality || qualityOptions.find(q => q.height === format18Height) || qualityOptions[qualityOptions.length - 1]
-      setSelectedVideoOnlyQuality(defaultQuality.key)
+      setSelectedAudioTrack(bestTrackIndex.toString())
+      console.log('[Frontend] Auto-selected audio track:', bestTrackIndex, audioTracks[bestTrackIndex]?.language)
     }
-    
-    if (videoInfo && format18 && !selectedVideoFileType) {
-      // Use Format 18's native file format (usually 'mp4')
-      const format18Ext = format18.ext || 'mp4'
-      setSelectedVideoFileType(format18Ext === 'm4a' ? 'mp4' : format18Ext) // m4a -> mp4 for video
-    }
-    
-    if (videoInfo && format18 && !selectedVideoOnlyFileType) {
-      // Use Format 18's native file format (usually 'mp4')
-      const format18Ext = format18.ext || 'mp4'
-      setSelectedVideoOnlyFileType(format18Ext === 'm4a' ? 'mp4' : format18Ext) // m4a -> mp4 for video
-    }
-    
-    if (videoInfo && format18 && audioQualityOptions.length > 0 && !selectedAudioSource) {
-      // Find audio quality that matches Format 18's audio specs
-      // Format 18 has AAC audio, typically 128kbps
-      const format18AudioBitrate = parseInt(format18.format_note?.match(/(\d+)kbps/)?.[1] || '0') || 
-                                   (format18.audio_codec ? 128 : 0) // Default to 128kbps for Format 18
-      
-      // Find matching audio quality or use highest available
-      const matchingAudio = audioQualityOptions.find(q => q.bitrate === format18AudioBitrate)
-      const defaultAudio = matchingAudio || audioQualityOptions[0]
-      setSelectedAudioSource(defaultAudio.key)
-    }
-    
-    if (videoInfo && format18 && !selectedAudioFormat) {
-      // Format 18 is MP4 container with AAC audio, so M4A is the native audio format
-      setSelectedAudioFormat('m4a')
-    }
-  }, [videoInfo, format18, qualityOptions, audioQualityOptions, selectedVideoQuality, selectedVideoOnlyQuality, selectedAudioSource, selectedVideoFileType, selectedVideoOnlyFileType, selectedAudioFormat])
+  }, [videoInfo, qualityOptions, audioQualityOptions, selectedVideoQuality, selectedVideoOnlyQuality, selectedAudioSource, selectedVideoFileType, selectedVideoOnlyFileType, selectedAudioFormat, selectedAudioTrack, audioTracks])
 
   const handleExtract = async () => {
     if (!url.trim()) {
@@ -496,6 +525,7 @@ export function VideoGrabber() {
       }
 
       setVideoInfo(info)
+      setPrevUrl(url)
       setErrorMessage(null)
       
       // No success toast - extraction happens automatically
@@ -543,7 +573,7 @@ export function VideoGrabber() {
           console.log('📹 No API formats available, using Format 18 + FFmpeg upscaling approach')
           // Download Format 18 and upscale to selected resolution
           setDownloadProgress(10)
-          const videoData = await fetchYTDLStream(videoInfo.webpage_url, '18', (progress) => setDownloadProgress(10 + progress * 0.4))
+          const videoData = await downloadFormat(videoInfo.webpage_url, '18', (progress) => setDownloadProgress(10 + progress * 0.4))
 
           setDownloadProgress(50)
 
@@ -913,7 +943,7 @@ export function VideoGrabber() {
             // Download subtitle file through proxy
             const subtitleUrl = `${subtitleTrack.base_url}&fmt=vtt`
             try {
-              const subtitleBlob = await fetchThroughProxy(subtitleUrl)
+              const subtitleBlob = await downloadFormatWithoutProgress(subtitleUrl)
               const subtitleText = await subtitleBlob.text()
               finalData = await burnSubtitlesIntoVideo(
                 finalData,
@@ -1203,7 +1233,7 @@ export function VideoGrabber() {
           '192k',
             (progress: number) => setDownloadProgress(60 + progress * 0.35)
         )
-
+ 
         setDownloadProgress(95)
         // Ensure we use a regular ArrayBuffer (not SharedArrayBuffer)
         const buffer = finalAudioData.buffer instanceof ArrayBuffer 
@@ -1221,231 +1251,218 @@ export function VideoGrabber() {
           console.log('Downloading converted audio file:', { filename, title: videoInfo.title, fileType: selectedAudioFormat, blobSize: finalBlob.size })
           
         downloadBlob(finalBlob, filename)
-
+ 
         toast({
           title: 'Success',
           description: 'Audio extracted and downloaded successfully',
         })
         }
-      } catch (error) {
-        console.error('Error downloading audio:', error)
-        toast({
-          title: 'Error',
-          description: error instanceof Error ? error.message : 'Failed to download audio',
-          variant: 'destructive',
-        })
-      } finally {
-        setDownloading(false)
-        setDownloadProgress(0)
-      }
-    }
-  }
-
-  return (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Enter Video URL</CardTitle>
-          <CardDescription>
-            Paste a link from YouTube
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-col sm:flex-row gap-2">
-            <div className="flex-1" data-form-type="other" data-lpignore="true" data-1p-ignore="true" data-bwignore="true">
-              <Input
-                type="url"
-                placeholder="https://..."
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    handleExtract()
-                  }
-                }}
-                className="w-full"
-                autoComplete="new-password"
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                name="video-url-input"
-                id="video-url-input"
-                role="textbox"
-                aria-label="Video URL input"
-                data-form-type="other"
-                data-lpignore="true"
-                data-1p-ignore="true"
-                data-bwignore="true"
-                data-dashlane-ignore="true"
-                data-kwignore="true"
-                data-nordpass-ignore="true"
-                data-apple-keychain="ignore"
-                data-credential-hint="false"
-                tabIndex={0}
-              />
+       } catch (error) {
+         console.error('Error downloading audio:', error)
+         toast({
+           title: 'Error',
+           description: error instanceof Error ? error.message : 'Failed to download audio',
+           variant: 'destructive',
+         })
+       } finally {
+         setDownloading(false)
+         setDownloadProgress(0)
+       }
+     }
+   }
+ 
+   return (
+    <div className={`w-full ${videoInfo ? 'space-y-2' : 'space-y-3 sm:space-y-4'}`}>
+      {/* URL Input Section - Always visible */}
+      <Card className={`border-0 shadow-sm bg-card/50 backdrop-blur-sm`}>
+          <CardContent className={`p-3 sm:p-4`}>
+            <div className={`space-y-2`}>
+              <div className="space-y-1">
+                <Label htmlFor="video-url" className="text-xs sm:text-sm font-medium">
+                  Video URL
+                </Label>
+                <div className="flex flex-col sm:flex-row gap-1.5 sm:gap-2">
+                  <div className="flex-1 relative">
+                    <Input
+                      id="video-url"
+                      type="url"
+                      placeholder="Paste YouTube link..."
+                      value={url}
+                      onChange={(e) => setUrl(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          handleExtract()
+                        }
+                      }}
+                      className="w-full pr-10 bg-background/50 text-sm h-11 sm:h-12"
+                      autoComplete="off"
+                      aria-label="YouTube video URL"
+                      disabled={loading}
+                    />
+                    <div className="absolute inset-y-0 right-0 flex items-center pointer-events-none">
+                      <Link2 className="h-3.5 w-3.5 text-muted-foreground mr-2.5" />
+                    </div>
+                  </div>
+                  <div className="flex gap-1 flex-col sm:flex-row sm:w-auto">
+                    <Button
+                      onClick={handlePaste}
+                      disabled={loading}
+                      variant="outline"
+                      className="w-full sm:w-auto text-xs sm:text-sm h-11 sm:h-12 px-2 sm:px-3"
+                      title="Paste from clipboard"
+                      aria-label="Paste URL from clipboard"
+                    >
+                      <Clipboard className="h-3.5 w-3.5 mr-1 sm:mr-0" />
+                      <span className="sm:hidden">Paste</span>
+                    </Button>
+                    <Button
+                      onClick={handleExtract}
+                      disabled={loading || !url.trim()}
+                      className="w-full sm:w-auto bg-primary hover:bg-primary/90 text-xs sm:text-sm h-11 sm:h-12 px-2 sm:px-3"
+                      aria-label={loading ? "Extracting video information..." : "Extract video information"}
+                    >
+                      {loading ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                          <span className="hidden sm:inline">Extracting...</span>
+                          <span className="sm:hidden">...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Link2 className="h-3.5 w-3.5 mr-1 sm:mr-0" />
+                          <span className="hidden sm:inline">Extract</span>
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                </div>
+              </div>
             </div>
-            <Button
-              onClick={handlePaste}
-              disabled={loading}
-              variant="outline"
-              className="w-full sm:w-auto"
-              title="Paste from clipboard"
-            >
-              <Clipboard className="mr-2 h-4 w-4" />
-              Paste
-            </Button>
-            <Button
-              onClick={handleExtract}
-              disabled={loading || !url.trim()}
-              className="w-full sm:w-auto"
-            >
-              {loading ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Extracting...
-                </>
-              ) : (
-                <>
-                  <Link2 className="mr-2 h-4 w-4" />
-                  Extract
-                </>
-              )}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
 
+      {/* Error Alert */}
       {errorMessage && (
-        <Alert className="bg-yellow-50 border-yellow-200">
-          <div className="flex items-start gap-3">
-            <div className="text-yellow-800 flex-1">
-              <p className="font-semibold text-sm">Error</p>
-              <p className="text-sm mt-1">{errorMessage}</p>
-            </div>
+        <Alert className="bg-destructive/10 border-destructive/20 text-destructive py-2 px-3">
+          <AlertDescription className="flex items-start justify-between gap-2 text-xs sm:text-sm">
+            <span>{errorMessage}</span>
             <button
               onClick={() => setErrorMessage(null)}
-              className="text-yellow-600 hover:text-yellow-800 flex-shrink-0 mt-1"
-              aria-label="Close error message"
+              className="flex-shrink-0 hover:opacity-70 transition-opacity"
+              aria-label="Dismiss error message"
             >
               ✕
             </button>
-          </div>
+          </AlertDescription>
         </Alert>
       )}
 
+      {/* Video Info - Hidden in compact mode */}
       {videoInfo && (
-        <Card>
-          <CardHeader>
-            <div className="flex items-start gap-4 flex-col sm:flex-row">
-              {videoInfo.thumbnail && (
+        <Card className="border-0 shadow-sm overflow-hidden">
+          {/* Video Header - Thumbnail + Info */}
+          <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 p-3 sm:p-4 border-b border-border/50">
+            {videoInfo.thumbnail && (
+              <div className="flex-shrink-0 w-full sm:w-24">
                 <img
                   src={videoInfo.thumbnail}
                   alt={videoInfo.title}
-                  className="w-full sm:w-32 h-auto sm:h-20 object-cover rounded-md"
+                  className="w-full h-auto sm:h-20 object-cover rounded-lg"
+                  loading="lazy"
                 />
-              )}
-              <div className="flex-1 w-full">
-                <CardTitle className="line-clamp-2 leading-normal pb-1 min-h-[3rem]">{videoInfo.title}</CardTitle>
-                <CardDescription>
-                  <span className="block">
-                    {videoInfo.duration > 0 && formatDuration(videoInfo.duration)}
-                    {videoInfo.uploader && ` • ${videoInfo.uploader}`}
-                    {videoInfo.view_count && ` • ${formatViewCount(videoInfo.view_count)}`}
-                  </span>
-                  {videoInfo.description && (
-                    <span className="block text-xs text-muted-foreground line-clamp-2 mt-1">
-                      {videoInfo.description.length > 150 
-                        ? `${videoInfo.description.substring(0, 150)}...` 
-                        : videoInfo.description}
-                    </span>
-                  )}
-                </CardDescription>
+              </div>
+            )}
+            <div className="flex-1 min-w-0">
+              <h2 className="text-sm sm:text-base font-semibold line-clamp-2 mb-1">
+                {videoInfo.title}
+              </h2>
+              <div className="space-y-0.5 text-xs sm:text-sm text-muted-foreground">
+                {videoInfo.uploader && (
+                  <p>
+                    <span className="font-medium text-foreground/70">Channel:</span> {videoInfo.uploader}
+                  </p>
+                )}
+                {videoInfo.duration > 0 && (
+                  <p>
+                    <span className="font-medium text-foreground/70">Duration:</span> {formatDuration(videoInfo.duration)}
+                  </p>
+                )}
+                {videoInfo.view_count && (
+                  <p>
+                    <span className="font-medium text-foreground/70">Views:</span> {formatViewCount(videoInfo.view_count)}
+                  </p>
+                )}
               </div>
             </div>
-          </CardHeader>
-          <CardContent>
-            {/* YouTube Format 18 Limitation Notice */}
-            <Alert className="mb-4 border-blue-200 bg-blue-50 dark:border-blue-900 dark:bg-blue-950">
-              <Info className="h-4 w-4 text-blue-600 dark:text-blue-400" />
-              <AlertDescription className="text-sm text-blue-800 dark:text-blue-300">
-                <strong>Quality Note:</strong> Due to YouTube's recent restrictions, we download Format 18 source and upscale to your selected resolution using FFmpeg. Max quality: 720p. Audio quality unaffected. Upscaling processes at 1x speed (real-time), so a 3 min 15s video takes ~3 min 15s to upscale to 720p.
-              </AlertDescription>
-            </Alert>
-            
-            <Tabs value={formatType} onValueChange={(v) => setFormatType(v as 'video' | 'audio' | 'video-only')}>
-              <TabsList className="grid w-full grid-cols-3">
-                <TabsTrigger value="video">
-                  <Video className="mr-1 h-4 w-4" />
-                  <Music className="mr-2 h-4 w-4" />
-                  Combined
+          </div>
+
+          {/* Download Tabs */}
+          <CardContent className="p-3 sm:p-4">
+            <Tabs value={formatType} onValueChange={(v) => setFormatType(v as 'video' | 'audio' | 'video-only')} className="w-full">
+              <TabsList className="grid w-full grid-cols-3 gap-0 h-auto">
+                <TabsTrigger value="video" className="text-xs sm:text-sm py-1.5 px-0.5 sm:px-2 gap-0.5 sm:gap-1">
+                  <Video className="h-3.5 w-3.5 flex-shrink-0" />
+                  <span className="hidden sm:inline">Video+Audio</span>
+                  <span className="sm:hidden">Video</span>
                 </TabsTrigger>
-                <TabsTrigger value="video-only">
-                  <Video className="mr-2 h-4 w-4" />
-                  Video Only
+                <TabsTrigger value="video-only" className="text-xs sm:text-sm py-1.5 px-0.5 sm:px-2 gap-0.5 sm:gap-1">
+                  <Video className="h-3.5 w-3.5 flex-shrink-0" />
+                  <span className="hidden sm:inline">Video Only</span>
+                  <span className="sm:hidden">Only</span>
                 </TabsTrigger>
-                <TabsTrigger value="audio">
-                  <Music className="mr-2 h-4 w-4" />
-                  Audio Only
+                <TabsTrigger value="audio" className="text-xs sm:text-sm py-1.5 px-0.5 sm:px-2 gap-0.5 sm:gap-1">
+                  <Music className="h-3.5 w-3.5 flex-shrink-0" />
+                  <span className="hidden sm:inline">Audio</span>
+                  <span className="sm:hidden">Audio</span>
                 </TabsTrigger>
               </TabsList>
 
-              <TabsContent value="video" className="space-y-4 mt-4">
-                <div className="space-y-2">
-                  <Label>Video Quality</Label>
-                  <Select
-                    value={selectedVideoQuality}
-                    onValueChange={setSelectedVideoQuality}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select quality" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {qualityOptions.length === 0 ? (
-                        <SelectItem value="no-formats" disabled>
-                          No formats available
-                        </SelectItem>
-                      ) : (
-                        qualityOptions.map((option) => (
-                          <SelectItem key={option.key} value={option.key}>
-                            {option.height}p @ {option.fps}fps
+              {/* Combined Tab */}
+              <TabsContent value="video" className="space-y-2 sm:space-y-3 mt-3 sm:mt-4">
+                <div className="grid gap-2 sm:gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="video-quality" className="text-xs sm:text-sm font-medium">Quality</Label>
+                    <Select value={selectedVideoQuality} onValueChange={setSelectedVideoQuality}>
+                      <SelectTrigger id="video-quality" className="text-xs sm:text-sm h-8 sm:h-9">
+                        <SelectValue placeholder="Select quality" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {qualityOptions.length === 0 ? (
+                          <SelectItem value="no-formats" disabled>
+                            No formats available
                           </SelectItem>
-                        ))
-                      )}
-                    </SelectContent>
-                  </Select>
+                        ) : (
+                          qualityOptions.map((option) => (
+                            <SelectItem key={option.key} value={option.key}>
+                              {option.height}p @ {option.fps}fps
+                            </SelectItem>
+                          ))
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="video-format" className="text-xs sm:text-sm font-medium">Format</Label>
+                    <Select value={selectedVideoFileType} onValueChange={setSelectedVideoFileType}>
+                      <SelectTrigger id="video-format" className="text-xs sm:text-sm h-8 sm:h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="mp4">MP4</SelectItem>
+                        <SelectItem value="webm">WebM</SelectItem>
+                        <SelectItem value="mov">MOV</SelectItem>
+                        <SelectItem value="mkv">MKV</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
-
-                <div className="space-y-2">
-                  <Label>File Type</Label>
-                  <Select
-                    value={selectedVideoFileType}
-                    onValueChange={setSelectedVideoFileType}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
+                <div className="space-y-1">
+                  <Label htmlFor="audio-track" className="text-xs sm:text-sm font-medium">Audio Track</Label>
+                  <Select value={selectedAudioTrack} onValueChange={setSelectedAudioTrack}>
+                    <SelectTrigger id="audio-track" className="text-xs sm:text-sm h-8 sm:h-9">
+                      <SelectValue placeholder="Select audio track" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="mp4">MP4</SelectItem>
-                      <SelectItem value="mov">MOV</SelectItem>
-                      <SelectItem value="webm">WebM</SelectItem>
-                      <SelectItem value="avi">AVI</SelectItem>
-                      <SelectItem value="mkv">MKV</SelectItem>
-                      <SelectItem value="flv">FLV</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Audio Track</Label>
-                  <Select
-                    value={selectedAudioTrack}
-                    onValueChange={setSelectedAudioTrack}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Default track" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="default">Default Track (Recommended)</SelectItem>
                       {audioTracks.map((track, index) => (
                         <SelectItem key={track.format_id || `track-${index}`} value={index.toString()}>
                           {track.language} ({track.language_code})
@@ -1454,19 +1471,15 @@ export function VideoGrabber() {
                     </SelectContent>
                   </Select>
                 </div>
-
                 {subtitleTracks.length > 0 && (
-                  <div className="space-y-2">
-                    <Label>Subtitle Track (Optional)</Label>
-                    <Select
-                      value={selectedSubtitleTrack}
-                      onValueChange={setSelectedSubtitleTrack}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="No subtitles" />
+                  <div className="space-y-1">
+                    <Label htmlFor="subtitle-track" className="text-xs sm:text-sm font-medium">Subtitles (Optional)</Label>
+                    <Select value={selectedSubtitleTrack} onValueChange={setSelectedSubtitleTrack}>
+                      <SelectTrigger id="subtitle-track" className="text-xs sm:text-sm h-8 sm:h-9">
+                        <SelectValue placeholder="Select subtitles" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="none">No Subtitles</SelectItem>
+                        <SelectItem value="none">None</SelectItem>
                         {subtitleTracks.map((track, index) => (
                           <SelectItem key={track.format_id || `track-${index}`} value={index.toString()}>
                             {track.language} ({track.language_code})
@@ -1478,110 +1491,102 @@ export function VideoGrabber() {
                 )}
               </TabsContent>
 
-              <TabsContent value="video-only" className="space-y-4 mt-4">
-                <div className="space-y-2">
-                  <Label>Video Quality</Label>
-                  <Select
-                    value={selectedVideoOnlyQuality}
-                    onValueChange={setSelectedVideoOnlyQuality}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select quality" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {qualityOptions.length === 0 ? (
-                        <SelectItem value="no-formats" disabled>
-                          No formats available
-                        </SelectItem>
-                      ) : (
-                        qualityOptions.map((option) => (
-                          <SelectItem key={option.key} value={option.key}>
-                            {option.height}p @ {option.fps}fps
+              {/* Video Only Tab */}
+              <TabsContent value="video-only" className="space-y-2 sm:space-y-3 mt-3 sm:mt-4">
+                <div className="grid gap-2 sm:gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="video-only-quality" className="text-xs sm:text-sm font-medium">Quality</Label>
+                    <Select value={selectedVideoOnlyQuality} onValueChange={setSelectedVideoOnlyQuality}>
+                      <SelectTrigger id="video-only-quality" className="text-xs sm:text-sm h-8 sm:h-9">
+                        <SelectValue placeholder="Select quality" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {qualityOptions.length === 0 ? (
+                          <SelectItem value="no-formats" disabled>
+                            No formats available
                           </SelectItem>
-                        ))
-                      )}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>File Type</Label>
-                  <Select
-                    value={selectedVideoOnlyFileType}
-                    onValueChange={setSelectedVideoOnlyFileType}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="mp4">MP4</SelectItem>
-                      <SelectItem value="mov">MOV</SelectItem>
-                      <SelectItem value="webm">WebM</SelectItem>
-                      <SelectItem value="avi">AVI</SelectItem>
-                      <SelectItem value="mkv">MKV</SelectItem>
-                      <SelectItem value="flv">FLV</SelectItem>
-                    </SelectContent>
-                  </Select>
+                        ) : (
+                          qualityOptions.map((option) => (
+                            <SelectItem key={option.key} value={option.key}>
+                              {option.height}p @ {option.fps}fps
+                            </SelectItem>
+                          ))
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="video-only-format" className="text-xs sm:text-sm font-medium">Format</Label>
+                    <Select value={selectedVideoOnlyFileType} onValueChange={setSelectedVideoOnlyFileType}>
+                      <SelectTrigger id="video-only-format" className="text-xs sm:text-sm h-8 sm:h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="mp4">MP4</SelectItem>
+                        <SelectItem value="webm">WebM</SelectItem>
+                        <SelectItem value="mov">MOV</SelectItem>
+                        <SelectItem value="mkv">MKV</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
               </TabsContent>
 
-              <TabsContent value="audio" className="space-y-4 mt-4">
-                <div className="space-y-2">
-                  <Label>Audio Quality</Label>
-                  <Select
-                    value={selectedAudioSource}
-                    onValueChange={setSelectedAudioSource}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select quality" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {audioQualityOptions.length === 0 ? (
-                        <SelectItem value="no-formats" disabled>
-                          No audio formats available
-                        </SelectItem>
-                      ) : (
-                        audioQualityOptions.map((option) => (
-                          <SelectItem key={option.key} value={option.key}>
-                            {option.bitrate > 0 ? `${option.bitrate}kbps` : 'Audio'}
-                            {option.filesize > 0 && ` • ${formatFileSize(option.filesize)}`}
-                            {option.language && option.language !== 'default' && ` • ${option.language}`}
+              {/* Audio Only Tab */}
+              <TabsContent value="audio" className="space-y-2 sm:space-y-3 mt-3 sm:mt-4">
+                <div className="grid gap-2 sm:gap-3 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label htmlFor="audio-quality" className="text-xs sm:text-sm font-medium">Quality</Label>
+                    <Select value={selectedAudioSource} onValueChange={setSelectedAudioSource}>
+                      <SelectTrigger id="audio-quality" className="text-xs sm:text-sm h-8 sm:h-9">
+                        <SelectValue placeholder="Select quality" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {audioQualityOptions.length === 0 ? (
+                          <SelectItem value="no-formats" disabled>
+                            No audio available
                           </SelectItem>
-                        ))
-                      )}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Audio Format</Label>
-                  <Select
-                    value={selectedAudioFormat}
-                    onValueChange={setSelectedAudioFormat}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="mp3">MP3</SelectItem>
-                      <SelectItem value="m4a">M4A (AAC)</SelectItem>
-                      <SelectItem value="ogg">OGG</SelectItem>
-                      <SelectItem value="wav">WAV</SelectItem>
-                    </SelectContent>
-                  </Select>
+                        ) : (
+                          audioQualityOptions.map((option) => (
+                            <SelectItem key={option.key} value={option.key}>
+                              {option.bitrate > 0 ? `${option.bitrate}kbps` : 'Audio'}
+                              {option.filesize > 0 && ` • ${formatFileSize(option.filesize)}`}
+                            </SelectItem>
+                          ))
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="audio-format" className="text-xs sm:text-sm font-medium">Format</Label>
+                    <Select value={selectedAudioFormat} onValueChange={setSelectedAudioFormat}>
+                      <SelectTrigger id="audio-format" className="text-xs sm:text-sm h-8 sm:h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="mp3">MP3</SelectItem>
+                        <SelectItem value="m4a">M4A</SelectItem>
+                        <SelectItem value="ogg">OGG</SelectItem>
+                        <SelectItem value="wav">WAV</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
               </TabsContent>
             </Tabs>
 
+            {/* Download Progress */}
             {downloading && (
-              <div className="mt-4 space-y-2">
-                <Progress value={downloadProgress} />
-                <p className="text-sm text-muted-foreground text-center">
-                  {downloadProgress.toFixed(0)}% complete
-                </p>
+              <div className="mt-3 sm:mt-4 space-y-2 p-2 sm:p-3 bg-muted/50 rounded-lg">
+                <Progress value={downloadProgress} className="h-1.5" />
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium text-foreground">{downloadProgress.toFixed(0)}%</span>
+                  <span className="text-muted-foreground">Processing...</span>
+                </div>
               </div>
             )}
 
+            {/* Download Button */}
             <Button
               onClick={handleDownload}
               disabled={
@@ -1593,18 +1598,18 @@ export function VideoGrabber() {
                  formatType === 'video-only' ? selectedVideoOnlyQuality === 'no-formats' :
                  selectedAudioSource === 'no-formats')
               }
-              className="w-full mt-4"
-              size="lg"
+              className="w-full mt-3 sm:mt-4 h-11 sm:h-12 text-sm font-semibold bg-primary hover:bg-primary/90"
+              aria-label={`Download ${formatType === 'video' ? 'video with audio' : formatType === 'video-only' ? 'video only' : 'audio only'}`}
             >
               {downloading ? (
                 <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Processing...
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Processing
                 </>
               ) : (
                 <>
-                  <Download className="mr-2 h-4 w-4" />
-                  Download {formatType === 'video' ? 'Combined' : formatType === 'video-only' ? 'Video Only' : 'Audio Only'}
+                  <Download className="h-4 w-4 mr-2" />
+                  Download
                 </>
               )}
             </Button>

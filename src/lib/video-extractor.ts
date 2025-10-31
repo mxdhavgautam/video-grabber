@@ -33,7 +33,7 @@ export { detectPlatform }
  */
 export async function extractVideoInfo(url: string): Promise<VideoInfo | null> {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/api/extract?url=${encodeURIComponent(url)}`)
+    const response = await fetch(`${getApiBaseUrl()}/extract?url=${encodeURIComponent(url)}`)
     
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
@@ -49,19 +49,25 @@ export async function extractVideoInfo(url: string): Promise<VideoInfo | null> {
 }
 
 /**
- * Download video through proxy (for CORS bypass)
+ * Download video through proxy using format ID (for CORS bypass)
+ * Format ID is now from yt-dlp and can represent:
+ * - Combined video+audio (e.g., "18", "22")
+ * - Video-only (e.g., "401", "137")
+ * - Audio-only (e.g., "140", "251")
  */
 export async function downloadVideo(
   url: string,
+  formatId: string,
   onProgress?: (progress: number) => void
 ): Promise<Blob> {
   try {
-    // Use API proxy for downloads
-    const proxyUrl = `${getApiBaseUrl()}/api/download?url=${encodeURIComponent(url)}`
+    // Use new API endpoint with format parameter
+    const proxyUrl = `${getApiBaseUrl()}/download?url=${encodeURIComponent(url)}&format=${encodeURIComponent(formatId)}`
     
     const response = await fetch(proxyUrl)
     if (!response.ok) {
-      throw new Error(`Failed to download: ${response.statusText}`)
+      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
+      throw new Error(errorData.error || `Failed to download: ${response.statusText}`)
     }
 
     const contentLength = response.headers.get('content-length')
