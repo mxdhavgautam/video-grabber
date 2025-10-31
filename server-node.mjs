@@ -29,6 +29,12 @@ const hasCookies = existsSync(COOKIES_FILE)
 // Chrome profile directory for cookies persistence
 const CHROME_PROFILE_DIR = process.env.CHROME_PROFILE_DIR || join(__dirname, 'chrome-profiles')
 
+// Chrome profile management
+const CHROME_PROFILES_BASE = CHROME_PROFILE_DIR
+let currentChromeProfile = null
+let lastProfileCleanup = Date.now()
+const PROFILE_ROTATION_INTERVAL = 24 * 60 * 60 * 1000 // 24 hours
+
 // Flag to enable automatic browser cookie extraction
 // On server: always enable chromium cookies extraction since we're running full Chrome
 let useBrowserCookies = true
@@ -185,6 +191,45 @@ function cleanupOldTempFiles() {
   }
 }
 
+// Chrome profile rotation - daily
+function getOrCreateChromeProfile() {
+  try {
+    const now = Date.now()
+    
+    // Check if we need to rotate profiles (24h rotation)
+    if (now - lastProfileCleanup > PROFILE_ROTATION_INTERVAL) {
+      console.log('🔄 Chrome profile rotation time - creating fresh profile')
+      
+      // Delete old profile
+      if (currentChromeProfile) {
+        try {
+          execSync(`rm -rf "${join(CHROME_PROFILES_BASE, currentChromeProfile)}"`)
+          console.log(`🗑️  Deleted old Chrome profile: ${currentChromeProfile}`)
+        } catch (e) {}
+      }
+      
+      currentChromeProfile = `profile-${Date.now()}`
+      lastProfileCleanup = now
+    }
+    
+    // Create profile directory if it doesn't exist
+    if (!currentChromeProfile) {
+      currentChromeProfile = `profile-${Date.now()}`
+    }
+    
+    const profilePath = join(CHROME_PROFILES_BASE, currentChromeProfile)
+    if (!existsSync(profilePath)) {
+      mkdirSync(profilePath, { recursive: true })
+      console.log(`✅ Created Chrome profile: ${currentChromeProfile}`)
+    }
+    
+    return profilePath
+  } catch (error) {
+    console.error('❌ Error managing Chrome profile:', error)
+    throw error
+  }
+}
+
 // Clean up on startup
 cleanupOldTempFiles()
 
@@ -252,7 +297,7 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     
     // Add cookies - prefer browser extraction, fallback to file
     if (useBrowserCookies) {
-      command += ` --cookies-from-browser chromium --browser-executable-path /usr/bin/chromium --chromium-user-data-dir "${CHROME_PROFILE_DIR}"`
+      command += ` --cookies-from-browser chromium --browser-executable-path /usr/bin/chromium --chromium-user-data-dir "${getOrCreateChromeProfile()}"`
       if (retryCount === 0) {
         console.log(`🔐 Using cookies from browser (Chromium at ${CHROME_PROFILE_DIR})`)
       }
@@ -717,7 +762,7 @@ const server = createServer(async (req, res) => {
       // Prepare cookie flags for yt-dlp
       let cookieFlags = []
       if (useBrowserCookies) {
-        cookieFlags = ['--cookies-from-browser', 'chromium', '--browser-executable-path', '/usr/bin/chromium', '--chromium-user-data-dir', CHROME_PROFILE_DIR]
+        cookieFlags = ['--cookies-from-browser', 'chromium', '--browser-executable-path', '/usr/bin/chromium', '--chromium-user-data-dir', getOrCreateChromeProfile()]
         console.log(`🔐 Using cookies from browser...`)
       } else if (hasCookies) {
         console.log(`🔐 Using cookies from frontend...`)
