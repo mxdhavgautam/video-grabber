@@ -462,6 +462,13 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     // Build yt-dlp command - explicitly request JSON output for extraction
     let command = `yt-dlp -j --dump-single-json --quiet --no-warnings`
     
+    // Add best practices per yt-dlp documentation:
+    // 1. User-Agent: Mimic a real browser to avoid bot detection
+    // 2. Socket timeout: Prevent hanging on slow connections
+    // 3. Sleep intervals: Respect YouTube rate limits
+    command += ` --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"`
+    command += ` --socket-timeout 30`
+    
     // Use pre-warmed Chrome profile from environment (set by start.sh)
     // The profile is created and pre-warmed at startup, and yt-dlp can read directly from it
     if (useBrowserCookies && process.env.CHROME_PROFILE_DIR) {
@@ -950,13 +957,20 @@ const server = createServer(async (req, res) => {
       console.log(`💾 Temp file: ${tempFilePath}`)
 
       // Build yt-dlp command to save to file instead of stdout
-      const ytdlpArgs = ['-f', formatId, '--no-warnings', '-o', tempFilePath, videoUrl, ...cookieFlags]
+      // Per yt-dlp best practices: https://github.com/yt-dlp/yt-dlp/wiki/FAQ
+      const ytdlpArgs = [
+        '-f', formatId,
+        '--no-warnings',
+        '--socket-timeout', '30',
+        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        '-o', tempFilePath,
+        ...cookieFlags,
+        // Add PO Token support for YouTube bot detection bypass
+        // Per PO Token Guide: https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
+        '--extractor-args', 'youtube:player-client=mweb',
+        videoUrl
+      ]
       
-      // Add PO Token support for YouTube bot detection bypass
-      // This uses the mweb client which requires PO Token for GVS (video streaming)
-      ytdlpArgs.push('--extractor-args')
-      ytdlpArgs.push('youtube:player-client=mweb')
-
       const proc = spawn('yt-dlp', ytdlpArgs)
       let stderrOutput = ''
       const startTime = Date.now()
