@@ -6,7 +6,7 @@ import { detectPlatform } from '@/lib/types'
 function getApiBaseUrl(): string {
   // First priority: Check for VITE_API_URL environment variable (production)
   const envUrl = (import.meta as any).env?.VITE_API_URL
-  if (envUrl) {
+  if (envUrl && envUrl !== '' && !envUrl.includes('undefined')) {
     console.log('[API Config] Using VITE_API_URL from environment:', envUrl)
     return envUrl
   }
@@ -14,6 +14,7 @@ function getApiBaseUrl(): string {
   // Fallback: Check window location for local development
   if (typeof window !== 'undefined') {
     const pathname = window.location.pathname
+    console.log('[API Config] pathname:', pathname, 'env:', envUrl)
     if (pathname.startsWith('/grabber')) {
       console.log('[API Config] Using local /grabber/api path')
       return '/grabber/api'
