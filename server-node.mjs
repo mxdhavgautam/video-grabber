@@ -1,152 +1,26 @@
 import { createServer } from 'http'
+import { exec, spawn } from 'child_process'
+import { promisify } from 'util'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
-import { createContext, runInNewContext } from 'vm'
-import { Innertube, Platform } from 'youtubei.js'
 
-// Set up JavaScript interpreter for signature deciphering
-// This is REQUIRED for formats that need signature deciphering
-// The interpreter executes YouTube's player script to transform signatures and n parameters
-Platform.shim.eval = async (data, env) => {
-  // data: BuildScriptResult object containing:
-  //   - output: JavaScript code string (wrapped in IIFE that creates exportedVars)
-  //   - exported: Array of exported variable names ['sigFunction', 'nFunction', ...]
-  //   - exportedRawValues: Optional raw values like signature timestamp
-  // env: Object with keys 'sig' and/or 'n' containing the values to transform
-  
-  console.log('[Interpreter] Called with env:', Object.keys(env), 'has sig:', !!env.sig, 'has n:', !!env.n)
-  
-  if (!data || !data.output) {
-    throw new Error('Invalid player script data: missing output')
-  }
-  
-  try {
-    // The script output structure is:
-    // const exportedVars = (function(...) {
-    //   // ... code ...
-    //   return { sigFunction, nFunction, ... };
-    // })({});
-    //
-    // The issue: vm.createContext() + runInNewContext() with const declarations
-    // doesn't always make variables accessible as properties.
-    // Solution: Wrap the script to explicitly assign exportedVars to our sandbox.
-    const originalScriptCode = data.output
-    
-    // Create a sandbox with a property to capture exportedVars
-    const sandbox = {
-      __capturedExportedVars: null,
-      // Provide console for debugging if needed
-      console: {
-        log: (...args) => console.log('[Player Script]', ...args),
-        error: (...args) => console.error('[Player Script]', ...args),
-        warn: (...args) => console.warn('[Player Script]', ...args),
-      },
-      // These are provided by the script itself, but we include them for compatibility
-      window: {},
-      document: {},
-      self: {},
-    }
-    
-    // Wrap the script to capture exportedVars explicitly
-    // Original: const exportedVars = (function() {...})();
-    // Wrapped:  const exportedVars = (function() {...})(); __capturedExportedVars = exportedVars;
-    const wrappedScriptCode = originalScriptCode + '\n__capturedExportedVars = exportedVars;'
-    
-    // Create a context from the sandbox
-    const context = createContext(sandbox)
-    
-    // Execute the wrapped script in the sandboxed context
-    runInNewContext(wrappedScriptCode, context, {
-      timeout: 5000, // 5 second timeout
-      breakOnSigint: false,
-    })
-    
-    // After execution, exportedVars should be captured in our sandbox property
-    const exportedVars = context.__capturedExportedVars || context.exportedVars
-    
-    // If still not found, check all keys in context (for debugging)
-    if (!exportedVars) {
-      const allKeys = Object.getOwnPropertyNames(context).filter(k => 
-        k !== 'console' && k !== 'window' && k !== 'document' && k !== 'self'
-      )
-      console.error('exportedVars not found. Available keys:', allKeys)
-      console.error('Script preview (first 500 chars):', originalScriptCode.substring(0, 500))
-      throw new Error(`Player script execution failed: exportedVars is undefined. Available keys: ${allKeys.join(', ')}`)
-    }
-    
-    // Validate exportedVars
-    if (exportedVars === null || typeof exportedVars !== 'object' || Array.isArray(exportedVars)) {
-      throw new Error(`Player script execution failed: exportedVars is ${exportedVars === null ? 'null' : Array.isArray(exportedVars) ? 'array' : typeof exportedVars}`)
-    }
-    
-    // Build result object with transformed values
-    const result = {}
-    
-    // Transform signature if provided
-    if (env.sig && typeof env.sig === 'string') {
-      if (!exportedVars.sigFunction || typeof exportedVars.sigFunction !== 'function') {
-        throw new Error(`Player script missing sigFunction. Available: ${Object.keys(exportedVars).join(', ')}`)
-      }
-      result.sig = exportedVars.sigFunction(env.sig)
-      if (typeof result.sig !== 'string') {
-        throw new Error(`sigFunction returned invalid type: ${typeof result.sig}`)
-      }
-      console.log('[Interpreter] Successfully transformed signature:', env.sig.substring(0, 10) + '... -> ' + result.sig.substring(0, 10) + '...')
-    }
-    
-    // Transform n parameter if provided
-    if (env.n && typeof env.n === 'string') {
-      if (!exportedVars.nFunction || typeof exportedVars.nFunction !== 'function') {
-        throw new Error(`Player script missing nFunction. Available: ${Object.keys(exportedVars).join(', ')}`)
-      }
-      result.n = exportedVars.nFunction(env.n)
-      if (typeof result.n !== 'string') {
-        throw new Error(`nFunction returned invalid type: ${typeof result.n}`)
-      }
-      console.log('[Interpreter] Successfully transformed n parameter:', env.n.substring(0, 10) + '... -> ' + result.n.substring(0, 10) + '...')
-    }
-    
-    console.log('[Interpreter] Returning result:', Object.keys(result))
-    return result
-  } catch (error) {
-    console.error('JavaScript interpreter error:', error)
-    console.error('Error details:', {
-      message: error.message,
-      stack: error.stack,
-      hasOutput: !!data.output,
-      outputLength: data.output?.length,
-      exported: data.exported,
-      envKeys: Object.keys(env)
-    })
-    throw error
-  }
-}
+const execPromise = promisify(exec)
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
 
-// Lazily initialize YouTube InnerTube client (deciphers formats reliably)
-let ytClient
-async function getYT() {
-  if (!ytClient) {
-    try {
-    ytClient = await Innertube.create({ hl: 'en', gl: 'US' })
-      console.log('YouTube client initialized successfully with JavaScript interpreter')
-    } catch (e) {
-      console.error('Failed to initialize YouTube client:', e)
-      throw e
-    }
-  }
-  return ytClient
-}
+const PORT = process.env.PORT || 3001
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS || '*'
 
-// Extract video ID from YouTube URL
+/**
+ * Extract video ID from YouTube URL
+ * Supports:
+ * - https://www.youtube.com/watch?v=VIDEO_ID
+ * - https://youtube.com/watch?v=VIDEO_ID
+ * - https://youtu.be/VIDEO_ID
+ * - https://www.youtube.com/embed/VIDEO_ID
+ */
 function extractVideoId(url) {
   if (!url) return null
-  
-  // Match patterns:
-  // https://www.youtube.com/watch?v=VIDEO_ID
-  // https://youtube.com/watch?v=VIDEO_ID
-  // https://youtu.be/VIDEO_ID
-  // https://www.youtube.com/embed/VIDEO_ID
-  // https://youtube.com/watch?v=VIDEO_ID&list=...
   
   const patterns = [
     /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
@@ -163,11 +37,262 @@ function extractVideoId(url) {
   return null
 }
 
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
+/**
+ * Extract cookies from Firefox/Chrome and return as temporary file path
+ * This allows yt-dlp to authenticate with YouTube
+ */
+async function getCookiesFile() {
+  try {
+    // Try Firefox first
+    try {
+      const { execSync } = await import('child_process')
+      const result = execSync('test -d "$HOME/Library/Application Support/Firefox/Profiles" && echo firefox', { 
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'ignore'] 
+      }).trim()
+      if (result === 'firefox') return 'firefox'
+    } catch (e) {
+      // Firefox not found, try Chrome
+    }
+    
+    // Try Chrome
+    try {
+      const { execSync } = await import('child_process')
+      const result = execSync('test -d "$HOME/Library/Application Support/Google/Chrome" && echo chrome', { 
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'ignore'] 
+      }).trim()
+      if (result === 'chrome') return 'chrome'
+    } catch (e) {
+      // Chrome not found either
+    }
+    
+    // No browsers with cookies found
+    return null
+  } catch (e) {
+    console.warn('⚠️ Could not detect browser cookies:', e.message)
+    return null
+  }
+}
 
-const PORT = process.env.PORT || 3001
-const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS || '*'
+/**
+ * Execute yt-dlp with robust retry logic for bot-protected videos
+ * Uses exponential backoff and server-side mechanisms to bypass restrictions
+ */
+async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
+  return new Promise(async (resolve, reject) => {
+    // Add exponential backoff delay before retry
+    if (retryCount > 0) {
+      console.log(`⏳ Retry #${retryCount} - Waiting ${delayMs}ms before attempting...`)
+      await new Promise(r => setTimeout(r, delayMs))
+    }
+    
+    let cookieSource = null
+    
+    // Try to get cookies on first attempt only
+    if (retryCount === 0) {
+      cookieSource = await getCookiesFile()
+      if (cookieSource) {
+        console.log(`🔐 Using cookies from ${cookieSource}`)
+      }
+    }
+    
+    // Build yt-dlp command using config file
+      // Config file at ~/.yt-dlp/config provides optimal settings
+    let command = `yt-dlp -j --config-location ~/.yt-dlp/config`
+    
+    // Add cookies if available
+    if (cookieSource) {
+      command += ` --cookies-from-browser ${cookieSource}`
+    }
+    
+    // Add URL
+    command += ` "${videoUrl}"`
+    
+    let stdout = ''
+    let stderr = ''
+    
+    exec(command, { maxBuffer: 10 * 1024 * 1024 }, async (error, out, err) => {
+      stdout = out
+      stderr = err
+      
+      // Check for bot-protection error
+      const isBotProtected = stderr && stderr.includes('Sign in to confirm you\'re not a bot')
+      const isGeoBocked = stderr && (stderr.includes('geo-blocked') || stderr.includes('not available in your country'))
+      const isAgeRestricted = stderr && stderr.includes('age-restricted')
+      const isLoginRequired = stderr && stderr.includes('Login required')
+      
+      // Log status
+      if (error) {
+        console.error(`⚠️ Attempt ${retryCount + 1} failed:`, stderr.substring(0, 150))
+      }
+      
+      // Specific error cases
+      if (isGeoBocked && retryCount < 2) {
+        console.log(`🌍 Geo-blocked, retrying with geo-bypass...`)
+        try {
+          const result = await getVideoInfo(videoUrl, retryCount + 1, delayMs * 2)
+          return resolve(result)
+        } catch (retryError) {
+          return reject(new Error('GEO_BLOCKED'))
+        }
+      }
+      
+      // Retry with exponential backoff if bot-protected and haven't exceeded retries
+      if (isBotProtected && retryCount < 4) {
+        const nextDelay = Math.min(delayMs * (2 ** retryCount), 16000) // Max 16s wait
+        console.log(`🔄 Bot protection detected, retrying with ${nextDelay}ms delay...`)
+        try {
+          const result = await getVideoInfo(videoUrl, retryCount + 1, nextDelay)
+          return resolve(result)
+        } catch (retryError) {
+          return reject(retryError)
+        }
+      }
+      
+      // If still bot-protected after retries, return specific error
+      if (isBotProtected) {
+        return reject(new Error('BOT_PROTECTED'))
+      }
+      
+      // If age-restricted or login required
+      if (isAgeRestricted) {
+        return reject(new Error('AGE_RESTRICTED'))
+      }
+      
+      if (isLoginRequired) {
+        return reject(new Error('LOGIN_REQUIRED'))
+      }
+      
+      // General error handling
+      if (error && !stdout) {
+        return reject(new Error(stderr.substring(0, 300) || error.message))
+      }
+      
+      // Try to parse the output
+      try {
+        const data = JSON.parse(stdout)
+        if (retryCount > 0) {
+          console.log(`✅ Success after ${retryCount} retry attempt(s)`)
+        }
+        resolve(data)
+      } catch (parseError) {
+        reject(new Error(`Failed to parse yt-dlp output: ${parseError.message}`))
+      }
+    })
+  })
+}
+
+/**
+ * Transform yt-dlp format data to our API format
+ */
+function transformFormats(ytdlpData) {
+  if (!ytdlpData.formats || !Array.isArray(ytdlpData.formats)) {
+    return { videoFormats: [], audioFormats: [] }
+  }
+
+  const videoFormats = []
+  const audioFormats = []
+  const audioTracksMap = new Map()
+
+  ytdlpData.formats.forEach(format => {
+    // Skip formats without URL (not downloadable)
+    if (!format.url && !format.fragment_base_url) {
+      return
+    }
+
+    const formatObj = {
+      format_id: format.format_id || String(format.itag || format.format),
+      ext: format.ext || 'unknown',
+      format_note: format.format_note || format.height ? `${format.height}p` : 'Unknown',
+      filesize: format.filesize || null,
+      fps: format.fps || null,
+      video_codec: format.vcodec && format.vcodec !== 'none' ? format.vcodec : undefined,
+      audio_codec: format.acodec && format.acodec !== 'none' ? format.acodec : undefined,
+      url: format.url || format.fragment_base_url || null,
+      width: format.width || null,
+      height: format.height || null,
+      tbr: format.tbr || null, // Total bitrate
+      vbr: format.vbr || null, // Video bitrate
+      abr: format.abr || null, // Audio bitrate
+      asr: format.asr || null, // Audio sample rate
+      protocol: format.protocol || null,
+      language: format.language || null,
+      format: format.format || null,
+    }
+
+    // Categorize as video or audio
+    const hasVideo = format.vcodec && format.vcodec !== 'none'
+    const hasAudio = format.acodec && format.acodec !== 'none'
+
+    if (hasVideo) {
+      formatObj.hasVideo = true
+      formatObj.hasAudio = hasAudio
+      videoFormats.push(formatObj)
+    } else if (hasAudio) {
+      formatObj.hasAudio = true
+      formatObj.hasVideo = false
+      audioFormats.push(formatObj)
+
+      // Track unique audio formats by language
+      const language = format.language || 'Default'
+      if (!audioTracksMap.has(language)) {
+        audioTracksMap.set(language, {
+          language: language,
+          language_code: format.language_code || format.language || 'default',
+          format_ids: [],
+        })
+      }
+      audioTracksMap.get(language).format_ids.push(formatObj.format_id)
+    }
+  })
+
+  const audioTracks = Array.from(audioTracksMap.values()).map((track, index) => ({
+    ...track,
+    format_id: index.toString(),
+  }))
+
+  if (audioTracks.length === 0 && audioFormats.length > 0) {
+    audioTracks.push({
+      language: 'Default',
+      language_code: 'default',
+      format_id: '0',
+      format_ids: audioFormats.map(f => f.format_id),
+    })
+  }
+
+  return {
+    videoFormats: videoFormats.sort((a, b) => (b.height || 0) - (a.height || 0)), // Sort by height descending
+    audioFormats: audioFormats.sort((a, b) => (b.abr || 0) - (a.abr || 0)), // Sort by bitrate descending
+    audioTracks,
+  }
+}
+
+/**
+ * Get subtitle tracks from yt-dlp data
+ */
+function getSubtitleTracks(ytdlpData) {
+  if (!ytdlpData.subtitles || typeof ytdlpData.subtitles !== 'object') {
+    return []
+  }
+
+  const tracks = []
+  let index = 0
+
+  for (const [langCode, subs] of Object.entries(ytdlpData.subtitles)) {
+    if (Array.isArray(subs) && subs.length > 0) {
+      tracks.push({
+        language: langCode,
+        language_code: langCode,
+        format_id: index.toString(),
+        url: subs[0].url || null,
+      })
+      index++
+    }
+  }
+
+  return tracks
+}
 
 const server = createServer(async (req, res) => {
   // Determine allowed origin(s)
@@ -198,7 +323,7 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url || '', `http://${req.headers.host}`)
 
   // Extract endpoint
-  if (url.pathname === '/api/extract') {
+  if (url.pathname === '/extract') {
     const videoUrl = url.searchParams.get('url')
 
     if (!videoUrl) {
@@ -221,186 +346,31 @@ const server = createServer(async (req, res) => {
     }
 
     try {
-      // Extract video ID from URL
+      console.log(`📥 Extracting video info from: ${videoUrl}`)
+      
+      // Use yt-dlp to get video info
+      const ytdlpData = await getVideoInfo(videoUrl)
+
+      if (!ytdlpData) {
+        throw new Error('Failed to get video information from yt-dlp')
+      }
+
+      // Extract video ID for consistency
       const videoId = extractVideoId(videoUrl)
-      if (!videoId) {
-        res.writeHead(400, { 
-          ...corsHeaders,
-          'Content-Type': 'application/json' 
-        })
-        res.end(JSON.stringify({ error: 'Could not extract video ID from URL' }))
-        return
-      }
 
-      const yt = await getYT()
-      let info
-      try {
-        // Try getInfo without options first (default client)
-        info = await yt.getInfo(videoId)
-      } catch (e) {
-        console.log('Default getInfo failed, trying with client options:', e.message)
-        try {
-          // Try with client option
-          info = await yt.getInfo(videoId, { client: 'ANDROID' })
-        } catch (e2) {
-          console.log('ANDROID client failed, trying TV:', e2.message)
-          try {
-            info = await yt.getInfo(videoId, { client: 'TV' })
-          } catch (e3) {
-            console.log('TV client failed, trying WEB:', e3.message)
-            info = await yt.getInfo(videoId, { client: 'WEB' })
-          }
-        }
-      }
-      
-      if (!info) {
-        throw new Error('Failed to get video info from any client')
-      }
-      
-      console.log('Successfully fetched video info:', {
-        title: info?.basic_info?.title || 'N/A',
-        hasStreamingData: !!info?.streaming_data,
-        adaptiveFormats: info?.streaming_data?.adaptive_formats?.length || 0
-      })
+      // Transform formats
+      const { videoFormats, audioFormats, audioTracks } = transformFormats(ytdlpData)
+      const subtitleTracks = getSubtitleTracks(ytdlpData)
 
-      // Access streaming data from VideoInfo object
-      // VideoInfo has streaming_data property that contains formats
-      const sd = info?.streaming_data || {}
-      const adaptive = sd?.adaptive_formats || []
-      const formatsMuxed = sd?.formats || []
-      
-      // Debug: log if no formats found
-      if (adaptive.length === 0 && formatsMuxed.length === 0) {
-        console.log('No formats found in streaming_data, checking info structure:', {
-          hasStreamingData: !!info?.streaming_data,
-          infoKeys: Object.keys(info || {}),
-          streamingDataKeys: info?.streaming_data ? Object.keys(info.streaming_data) : []
-        })
-      }
-
-      // Get all video formats (with or without audio)
-      const videoFormats = [...adaptive, ...formatsMuxed]
-        .filter(format => format.has_video)
-        .map(format => ({
-          format_id: String(format.itag),
-          format_note: format.quality_label || format.quality || undefined,
-          ext: (format.mime_type || '').includes('webm') ? 'webm' : (format.mime_type || '').includes('mp4') ? 'mp4' : 'mp4',
-          resolution: format.quality_label || format.quality || undefined,
-          filesize: format.content_length ? parseInt(format.content_length) : undefined,
-          fps: format.fps,
-          video_codec: format.codecs,
-          audio_codec: format.audio_codec || undefined,
-          url: format.url,
-          protocol: format.protocol || undefined,
-          width: format.width,
-          height: format.height,
-          hasAudio: !!format.has_audio,
-          hasVideo: true, // All formats here have video
-        }))
-
-      // Get audio-only formats with language information
-      const audioFormats = [...adaptive]
-        .filter(format => format.has_audio && !format.has_video)
-        .map(format => ({
-          format_id: String(format.itag),
-          format_note: format.bitrate ? `${Math.round((format.bitrate || 0) / 1000)}kbps` : 'Audio',
-          ext: (format.mime_type || '').includes('webm') ? 'webm' : (format.mime_type || '').includes('mp4') ? 'm4a' : 'm4a',
-          filesize: format.content_length ? parseInt(format.content_length) : undefined,
-          audio_codec: format.codecs,
-          video_codec: undefined, // Explicitly set to undefined for audio-only formats
-          url: format.url,
-          protocol: format.protocol || undefined,
-          language: format.audio_track?.display_name || format.language || undefined,
-          audio_track_id: format.audio_track?.id || undefined,
-          hasAudio: true,
-          hasVideo: false, // Explicitly mark as audio-only
-        }))
-
-      // Get unique audio tracks from adaptive formats (if available)
-      const adaptiveFormats = adaptive
-      const audioTracksMap = new Map()
-      
-      // Group audio formats by language/track
-      adaptiveFormats
-        .filter(f => f.mimeType?.includes('audio'))
-        .forEach(format => {
-          const language = format.language || 'default'
-          const trackId = format.audioTrack?.id || format.itag?.toString()
-          
-          if (!audioTracksMap.has(language)) {
-            audioTracksMap.set(language, {
-              language: language === 'default' ? 'Default' : language,
-              language_code: format.language || 'default',
-              format_ids: [],
-              track_id: trackId,
-            })
-          }
-          
-          if (format.itag) {
-            audioTracksMap.get(language).format_ids.push(format.itag.toString())
-          }
-        })
-      
-      // Also check formats for audio tracks
-      adaptive
-        .filter(f => f.has_audio && !f.has_video)
-        .forEach(format => {
-          const language = format.audio_track?.display_name || format.language || 'default'
-          const trackId = format.audio_track?.id || String(format.itag)
-          
-          if (!audioTracksMap.has(language)) {
-            audioTracksMap.set(language, {
-              language: language === 'default' ? 'Default' : language,
-              language_code: format.language || 'default',
-              format_ids: [],
-              track_id: trackId,
-            })
-          }
-          
-          if (format.itag) {
-            const formatId = format.itag.toString()
-            if (!audioTracksMap.get(language).format_ids.includes(formatId)) {
-              audioTracksMap.get(language).format_ids.push(formatId)
-            }
-          }
-        })
-
-      let audioTracks = Array.from(audioTracksMap.values()).map((track, index) => ({
-        ...track,
-        format_id: index.toString(),
-      }))
-
-      // If no audio tracks detected, create a default one
-      if (audioTracks.length === 0) {
-        audioTracks = [{
-          language: 'Default',
-          language_code: 'default',
-          format_id: '0',
-          format_ids: audioFormats.map(f => f.format_id),
-        }]
-      }
-
-      // Get subtitle/caption tracks
-      const subtitleTracks = info?.captions?.tracks
-        ?.map((track, index) => ({
-          language: track?.name?.simpleText || track?.name?.runs?.[0]?.text || track?.language_code || 'Unknown',
-          language_code: track?.language_code || 'und',
-          base_url: track?.base_url,
-          format_id: index.toString(),
-        })) || []
-
-      // Debug: log format counts
-      console.log('Format counts:', {
-        videoFormats: videoFormats.length,
-        audioFormats: audioFormats.length,
-        totalFormats: videoFormats.length + audioFormats.length
-      })
+      console.log(`✅ Successfully extracted video: ${ytdlpData.title || 'Unknown'}`)
+      console.log(`  - Video formats: ${videoFormats.length}`)
+      console.log(`  - Audio formats: ${audioFormats.length}`)
+      console.log(`  - Subtitle tracks: ${subtitleTracks.length}`)
 
       // Check if no formats are available
       if (videoFormats.length === 0 && audioFormats.length === 0) {
         console.warn('⚠️ No formats available for this video')
-        // Always show Format 18 message when no formats are available
-        const errorMessage = 'This video has no Format 18 streams available to parse, please stay tuned while we support more streams!'
+        const errorMessage = 'This video is not available for download (no compatible formats found). Please try another video.'
         
         res.writeHead(400, { 
           ...corsHeaders,
@@ -409,9 +379,8 @@ const server = createServer(async (req, res) => {
         res.end(JSON.stringify({
           error: errorMessage,
           details: {
-            playabilityStatus: info?.playability_status?.status || 'UNKNOWN',
-            hasStreamingData: !!info?.streaming_data,
-            videoId: videoId
+            videoId: videoId,
+            url: videoUrl,
           }
         }))
         return
@@ -422,150 +391,173 @@ const server = createServer(async (req, res) => {
         'Content-Type': 'application/json' 
       })
       res.end(JSON.stringify({
-        id: info?.basic_info?.id || info?.id || '',
-        title: info?.basic_info?.title || '',
-        thumbnail: (info?.basic_info?.thumbnail?.[info?.basic_info?.thumbnail?.length - 1]?.url) || '',
-        duration: info?.basic_info?.duration || 0,
-        formats: [...videoFormats, ...audioFormats], // Combine video and audio formats
+        id: ytdlpData.id || videoId || '',
+        title: ytdlpData.title || 'Unknown',
+        thumbnail: ytdlpData.thumbnail || null,
+        duration: ytdlpData.duration || 0,
+        formats: [...videoFormats, ...audioFormats],
         subtitle_tracks: subtitleTracks,
         audio_tracks: audioTracks,
         webpage_url: videoUrl,
         platform: 'youtube',
-        description: info?.basic_info?.short_description || undefined,
-        uploader: info?.basic_info?.author || undefined,
-        view_count: info?.basic_info?.view_count ? Number(info.basic_info.view_count) : undefined,
+        description: ytdlpData.description || null,
+        uploader: ytdlpData.uploader || ytdlpData.channel || null,
+        view_count: ytdlpData.view_count || null,
       }))
     } catch (error) {
-      console.error('Error:', error)
-      res.writeHead(500, { 
+      console.error('❌ Error:', error.message)
+      
+      // Check for specific errors and return appropriate messages
+      let errorMessage = 'Failed to fetch video information'
+      let statusCode = 500
+      
+      if (error.message === 'BOT_PROTECTED') {
+        console.warn('⚠️ Video is protected by YouTube bot detection')
+        errorMessage = '🤖 YouTube is blocking this request. Try again in a few seconds, or try a different video.'
+        statusCode = 400
+      } else if (error.message === 'GEO_BLOCKED') {
+        console.warn('⚠️ Video is geo-blocked')
+        errorMessage = '🌍 This video is not available in your region.'
+        statusCode = 400
+      } else if (error.message === 'AGE_RESTRICTED') {
+        console.warn('⚠️ Video is age-restricted')
+        errorMessage = '18+ Age restriction detected. YouTube requires manual verification for this content.'
+        statusCode = 400
+      } else if (error.message === 'LOGIN_REQUIRED') {
+        console.warn('⚠️ Video requires login')
+        errorMessage = '🔒 This video requires YouTube account login. Please log in to YouTube and try again.'
+        statusCode = 400
+      } else if (error.message.includes('Requested format is not available')) {
+        console.warn('⚠️ No compatible formats found')
+        errorMessage = 'This video is unavailable for download (no compatible formats found). This usually means the video is age-restricted, region-blocked, or has special restrictions.'
+        statusCode = 400
+      } else {
+        errorMessage = error instanceof Error ? error.message : 'Failed to fetch video information'
+      }
+      
+      res.writeHead(statusCode, { 
         ...corsHeaders,
         'Content-Type': 'application/json' 
       })
       res.end(JSON.stringify({
-        error: 'Failed to fetch video information',
-        message: error instanceof Error ? error.message : 'Unknown error',
+        error: errorMessage,
       }))
     }
     return
   }
 
   // Download proxy
-  if (url.pathname === '/api/download') {
-    // Support two modes:
-    // 1) Direct proxy via `url` (googlevideo URL)
-    // 2) youtubei streaming resolve via `videoUrl` (watch URL) + `itag`
-    let directUrl = url.searchParams.get('url')
-    const pageVideoUrl = url.searchParams.get('videoUrl')
-    const itagParam = url.searchParams.get('itag')
-    
-    // Extract video ID early if we have pageVideoUrl
-    let videoId = null
-    if (pageVideoUrl) {
-      videoId = extractVideoId(pageVideoUrl)
-      if (!videoId) {
-        res.writeHead(400, { ...corsHeaders, 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Could not extract video ID from URL' }))
-        return
-      }
-    }
+  if (url.pathname === '/download') {
+    const videoUrl = url.searchParams.get('url')
+    const formatId = url.searchParams.get('format')
 
-    if (!directUrl && pageVideoUrl && itagParam) {
-      try {
-        const requestedItag = parseInt(itagParam, 10)
-        
-        const yt = await getYT()
-        
-        // SOLE STRATEGY: Always download Format 18 (360p combined video+audio)
-        // Frontend will handle all processing via FFmpeg.wasm
-        console.log(`📥 User requested format ${requestedItag} → Downloading Format 18 (universal source)`)
-        
-        try {
-          const info = await yt.getInfo(videoId, { client: 'ANDROID' })
-          
-          if (!info) {
-            throw new Error('Failed to get video info')
-          }
-          
-          // Always download Format 18 (360p H.264 + AAC)
-          const stream = await info.download({ itag: 18 })
-          
-          console.log('✅ Format 18 stream obtained successfully')
-          
-          // Set headers for streaming
-          const responseHeaders = {
-        ...corsHeaders,
-            'Content-Type': 'video/mp4',
-        'Cache-Control': 'public, max-age=3600',
-            'Accept-Ranges': 'bytes',
-            'X-Source-Format': '18',
-            'X-Requested-Format': requestedItag.toString(),
-          }
-          
-          res.writeHead(200, responseHeaders)
-
-          // Stream to client
-          const reader = stream.getReader()
-          let bytesStreamed = 0
-          
-          try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        if (value) {
-          res.write(Buffer.from(value))
-                bytesStreamed += value.length
-        }
-      }
-
-            console.log(`✅ Streamed ${bytesStreamed} bytes (Format 18)`)
-            res.end()
-            return
-          } catch (streamError) {
-            // If we streamed significant data, consider it success
-            if (bytesStreamed > 1000 && res.headersSent) {
-              console.log(`✅ Stream completed: ${bytesStreamed} bytes (ignoring post-stream metadata error)`)
-      res.end()
-              return
-            }
-            throw streamError
-          } finally {
-            try { reader.releaseLock() } catch (e) {}
-          }
-    } catch (error) {
-          console.error('❌ Format 18 download failed:', error.message)
-          res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' })
-          res.end(JSON.stringify({ 
-            error: 'Format 18 download failed', 
-            message: error.message 
-          }))
-          return
-        }
-      } catch (err) {
-        console.error('❌ Fatal error downloading Format 18:', err)
-        res.writeHead(500, { ...corsHeaders, 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ 
-          error: 'Format 18 download failed', 
-          message: err.message 
-        }))
-        return
-      }
-    }
-
-    // Not using videoUrl+itag mode - not supported anymore
-    res.writeHead(400, { 
+    if (!videoUrl || !formatId) {
+      res.writeHead(400, { 
         ...corsHeaders,
         'Content-Type': 'application/json' 
       })
-    res.end(JSON.stringify({ error: 'Only videoUrl+itag mode is supported' }))
+      res.end(JSON.stringify({ error: 'url and format parameters are required' }))
+      return
+    }
+
+    try {
+      console.log(`📥 Downloading format ${formatId} from: ${videoUrl}`)
+
+      // Use spawn instead of exec to stream large files without maxBuffer issues
+      const proc = spawn('yt-dlp', ['-f', formatId, '--no-warnings', '-o', '-', videoUrl])
+
+      // Set up headers before streaming starts
+      res.writeHead(200, {
+        ...corsHeaders,
+        'Content-Type': 'application/octet-stream',
+        'Cache-Control': 'public, max-age=3600',
+        'X-Format-Id': formatId,
+        'Transfer-Encoding': 'chunked',
+      })
+
+      let totalBytes = 0
+      let errorOccurred = false
+
+      // Stream stdout directly to response
+      proc.stdout.on('data', (chunk) => {
+        totalBytes += chunk.length
+        res.write(chunk)
+      })
+
+      proc.stderr.on('data', (chunk) => {
+        const message = chunk.toString()
+        if (!message.includes('WARNING') && message.trim()) {
+          console.warn(`yt-dlp stderr: ${message}`)
+        }
+      })
+
+      proc.on('close', (code) => {
+        if (code === 0) {
+          console.log(`✅ Successfully downloaded ${totalBytes} bytes for format ${formatId}`)
+          res.end()
+        } else if (!errorOccurred) {
+          console.error(`❌ yt-dlp exited with code ${code}`)
+          if (!res.headersSent) {
+            res.writeHead(500, { 
+              ...corsHeaders,
+              'Content-Type': 'application/json' 
+            })
+          }
+          if (!res.writableEnded) {
+            res.end(JSON.stringify({
+              error: 'Download failed',
+              message: `yt-dlp process exited with code ${code}`,
+            }))
+          }
+        }
+      })
+
+      proc.on('error', (error) => {
+        errorOccurred = true
+        console.error('❌ Spawn error:', error.message)
+        if (!res.headersSent) {
+          res.writeHead(500, { 
+            ...corsHeaders,
+            'Content-Type': 'application/json' 
+          })
+        }
+        if (!res.writableEnded) {
+          res.end(JSON.stringify({
+            error: 'Download failed',
+            message: error.message,
+          }))
+        }
+      })
+    } catch (error) {
+      console.error('❌ Download error:', error.message)
+      if (!res.headersSent) {
+        res.writeHead(500, { 
+          ...corsHeaders,
+          'Content-Type': 'application/json' 
+        })
+      }
+      res.end(JSON.stringify({
+        error: 'Download failed',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      }))
+    }
     return
   }
 
-  res.writeHead(404)
-  res.end('Not found')
+  // Health check endpoint
+  if (url.pathname === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString() }))
+    return
+  }
+
+  res.writeHead(404, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ error: 'Not found' }))
 })
+
 server.listen(PORT, () => {
   console.log(`✅ API server running on http://localhost:${PORT}`)
+  console.log('📊 Using yt-dlp backend (supports all YouTube formats)')
   console.log('Ready to accept requests!')
 })
 
