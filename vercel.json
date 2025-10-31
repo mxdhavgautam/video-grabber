@@ -1,6 +1,12 @@
 {
   "buildCommand": "bun run build",
   "outputDirectory": "dist",
+  "env": {
+    "VITE_API_URL": {
+      "description": "URL of the backend API (Render deployment)",
+      "default": "https://video-grabber-backend.onrender.com"
+    }
+  },
   "rewrites": [
     {
       "source": "/api/extract",

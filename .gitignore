@@ -105,3 +105,4 @@ pnpm-lock.yaml
 
 # Portfolio folder (separate project, should not be tracked here)
 portfolio/
+.env.production
