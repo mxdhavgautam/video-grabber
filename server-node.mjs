@@ -601,25 +601,21 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
           const data = JSON.parse(jsonStr)
 
           // Transform and validate the data
+          const formatsData = transformFormats(data)
           const videoInfo = {
             id: data.id,
             title: data.title || 'Unknown Title',
             thumbnail: data.thumbnail,
             duration: data.duration,
             webpage_url: data.webpage_url || videoUrl,
-            formats: transformFormats(data.formats || []),
+            formats: [...(formatsData.videoFormats || []), ...(formatsData.audioFormats || [])],
             subtitle_tracks: data.subtitles ? Object.entries(data.subtitles).map(([lang, tracks]) => ({
               language: lang,
               language_code: lang,
               format_id: '0',
               url: tracks[0]?.url || ''
             })) : [],
-            audio_tracks: data.automatic_captions ? Object.entries(data.automatic_captions).map(([lang, tracks]) => ({
-              language: lang,
-              language_code: lang,
-              format_ids: [],
-              format_id: '0'
-            })) : [],
+            audio_tracks: formatsData.audioTracks || [],
             platform: 'youtube',
             description: data.description || '',
             uploader: data.uploader || '',
@@ -645,7 +641,7 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
  */
 function transformFormats(ytdlpData) {
   if (!ytdlpData.formats || !Array.isArray(ytdlpData.formats)) {
-    return { videoFormats: [], audioFormats: [] }
+    return { videoFormats: [], audioFormats: [], audioTracks: [] }
   }
 
   const videoFormats = []
