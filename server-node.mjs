@@ -475,12 +475,21 @@ function normalizeYouTubeUrl(url) {
  * Execute yt-dlp with robust retry logic for bot-protected videos
  * Uses exponential backoff and automatic browser cookie extraction to bypass restrictions
  */
-async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
+async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000, forceNewProfile = false) {
   return new Promise(async (resolve, reject) => {
     // Add exponential backoff delay before retry
     if (retryCount > 0) {
       console.log(`⏳ Retry #${retryCount} - Waiting ${delayMs}ms before attempting...`)
       await new Promise(r => setTimeout(r, delayMs))
+      
+      // On retry attempt 2+, regenerate Chrome profile with fresh cookies
+      if (retryCount >= 2 && !forceNewProfile) {
+        console.log(`🔄 Regenerating Chrome profile with fresh cookies...`)
+        const newProfile = `${CHROME_PROFILES_BASE}/profile-${Date.now()}`
+        process.env.CHROME_PROFILE_DIR = newProfile
+        await getOrCreateChromeProfile()
+        console.log(`✅ Fresh Chrome profile created: ${newProfile}`)
+      }
     }
     
     // Build yt-dlp command - explicitly request JSON output for extraction
@@ -499,6 +508,8 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
       command += ` --cookies-from-browser "chromium:${process.env.CHROME_PROFILE_DIR}"`
       if (retryCount === 0) {
         console.log(`🔐 Using cookies from pre-warmed Chrome profile`)
+      } else {
+        console.log(`🔐 Retrying with profile: ${process.env.CHROME_PROFILE_DIR}`)
       }
     } else if (hasCookies) {
       command += ` --cookies "${COOKIES_FILE}"`
@@ -516,103 +527,121 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     let stdout = ''
     let stderr = ''
     
-    exec(command, { maxBuffer: 50 * 1024 * 1024 }, async (error, out, err) => {
-      stdout = out
-      stderr = err
-      
-      // Check for bot-protection error
-      const isBotProtected = stderr && stderr.includes('Sign in to confirm you\'re not a bot')
-      const isGeoBocked = stderr && (stderr.includes('geo-blocked') || stderr.includes('not available in your country'))
-      const isAgeRestricted = stderr && stderr.includes('age-restricted')
-      const isLoginRequired = stderr && stderr.includes('Login required')
-      
-      // Log status
-      if (error) {
-        console.error(`⚠️ Attempt ${retryCount + 1} failed:`, stderr.substring(0, 150))
-      }
-      
-      // Specific error cases
-      if (isGeoBocked && retryCount < 2) {
-        console.log(`🌍 Geo-blocked, retrying with geo-bypass...`)
-        try {
-          const result = await getVideoInfo(videoUrl, retryCount + 1, delayMs * 2)
-          return resolve(result)
-        } catch (retryError) {
-          return reject(new Error('GEO_BLOCKED'))
-        }
-      }
-      
-      // Retry with exponential backoff if bot-protected and haven't exceeded retries
-      if (isBotProtected && retryCount < 4) {
-        const nextDelay = Math.min(delayMs * (2 ** retryCount), 16000) // Max 16s wait
-        console.log(`🔄 Bot protection detected, retrying with ${nextDelay}ms delay...`)
-        try {
-          const result = await getVideoInfo(videoUrl, retryCount + 1, nextDelay)
-          return resolve(result)
-        } catch (retryError) {
-          return reject(retryError)
-        }
-      }
-      
-      // If still bot-protected after retries, return specific error
-      if (isBotProtected) {
-        return reject(new Error('BOT_PROTECTED'))
-      }
-      
-      // If age-restricted or login required
-      if (isAgeRestricted) {
-        return reject(new Error('AGE_RESTRICTED'))
-      }
-      
-      if (isLoginRequired) {
-        return reject(new Error('LOGIN_REQUIRED'))
-      }
-      
-      // General error handling
-      if (error && !stdout) {
-        return reject(new Error(stderr.substring(0, 300) || error.message))
-      }
-      
-      // Try to parse the output - handle trailing non-JSON content
-      try {
-        let jsonStr = stdout.trim()
+    exec(command, { maxBuffer: 50 * 1024 * 1024 },
+      async (error, out, err) => {
+        stdout = out
+        stderr = err
         
-        // If there's trailing non-JSON content, find the last closing brace
-        if (!jsonStr.startsWith('{')) {
-          const firstBrace = jsonStr.indexOf('{')
-          if (firstBrace !== -1) {
-            jsonStr = jsonStr.substring(firstBrace)
+        // Check for bot detection errors and retry with fresh profile
+        if (error && stderr.includes("Sign in to confirm you're not a bot")) {
+          console.warn(`⚠️ Bot detection triggered on attempt ${retryCount + 1}`)
+          
+          // Retry with exponential backoff
+          if (retryCount < 3) {
+            const nextDelay = Math.min(delayMs * Math.pow(2, retryCount + 1), 30000)
+            return getVideoInfo(videoUrl, retryCount + 1, nextDelay, true)
+          } else {
+            return reject(new Error('Failed to get video information from yt-dlp - Bot detection could not be bypassed'))
           }
         }
         
-        // Find the complete JSON object by counting braces
-        let braceCount = 0
-        let jsonEnd = -1
-        for (let i = 0; i < jsonStr.length; i++) {
-          if (jsonStr[i] === '{') braceCount++
-          else if (jsonStr[i] === '}') {
-            braceCount--
-            if (braceCount === 0) {
-              jsonEnd = i + 1
-              break
+        if (error) {
+          if (stderr) {
+            console.error(`❌ Attempt ${retryCount + 1} failed: ${stderr.substring(0, 200)}`)
+          }
+
+          // Retry on transient network errors
+          if (retryCount < 2 && (stderr.includes('Connection') || stderr.includes('timeout'))) {
+            const nextDelay = Math.min(delayMs * Math.pow(2, retryCount + 1), 30000)
+            return getVideoInfo(videoUrl, retryCount + 1, nextDelay)
+          }
+
+          return reject(error)
+        }
+
+        try {
+          // Find the start of JSON to handle any leading output
+          const jsonStart = stdout.indexOf('{')
+          if (jsonStart === -1) {
+            throw new Error('No JSON object found in output')
+          }
+
+          // Count braces to find the complete JSON object
+          let braceCount = 0
+          let inString = false
+          let escapeNext = false
+          let jsonEnd = jsonStart
+
+          for (let i = jsonStart; i < stdout.length; i++) {
+            const char = stdout[i]
+
+            if (escapeNext) {
+              escapeNext = false
+              continue
+            }
+
+            if (char === '\\') {
+              escapeNext = true
+              continue
+            }
+
+            if (char === '"' && !escapeNext) {
+              inString = !inString
+              continue
+            }
+
+            if (!inString) {
+              if (char === '{') braceCount++
+              if (char === '}') {
+                braceCount--
+                if (braceCount === 0) {
+                  jsonEnd = i + 1
+                  break
+                }
+              }
             }
           }
+
+          const jsonStr = stdout.substring(jsonStart, jsonEnd)
+          const data = JSON.parse(jsonStr)
+
+          // Transform and validate the data
+          const videoInfo = {
+            id: data.id,
+            title: data.title || 'Unknown Title',
+            thumbnail: data.thumbnail,
+            duration: data.duration,
+            webpage_url: data.webpage_url || videoUrl,
+            formats: transformFormats(data.formats || []),
+            subtitle_tracks: data.subtitles ? Object.entries(data.subtitles).map(([lang, tracks]) => ({
+              language: lang,
+              language_code: lang,
+              format_id: '0',
+              url: tracks[0]?.url || ''
+            })) : [],
+            audio_tracks: data.automatic_captions ? Object.entries(data.automatic_captions).map(([lang, tracks]) => ({
+              language: lang,
+              language_code: lang,
+              format_ids: [],
+              format_id: '0'
+            })) : [],
+            platform: 'youtube',
+            description: data.description || '',
+            uploader: data.uploader || '',
+            view_count: data.view_count || 0
+          }
+
+          console.log(`✅ Successfully extracted video: ${videoInfo.title}`)
+          console.log(`  - Video formats: ${videoInfo.formats.filter(f => f.hasVideo).length}`)
+          console.log(`  - Audio formats: ${videoInfo.formats.filter(f => f.hasAudio).length}`)
+          console.log(`  - Subtitle tracks: ${videoInfo.subtitle_tracks.length}`)
+
+          resolve(videoInfo)
+        } catch (parseError) {
+          reject(new Error(`JSON Parse error: ${parseError.message}`))
         }
-        
-        if (jsonEnd !== -1) {
-          jsonStr = jsonStr.substring(0, jsonEnd)
-        }
-        
-        const data = JSON.parse(jsonStr)
-        if (retryCount > 0) {
-          console.log(`✅ Success after ${retryCount} retry attempt(s)`)
-        }
-        resolve(data)
-      } catch (parseError) {
-        console.error(`📝 Raw output preview:`, stdout.substring(0, 200))
-        reject(new Error(`Failed to parse yt-dlp output: ${parseError.message}`))
       }
-    })
+    )
   })
 }
 
