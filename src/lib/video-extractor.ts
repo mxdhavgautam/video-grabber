@@ -32,7 +32,7 @@ export { detectPlatform }
  */
 export async function extractVideoInfo(url: string): Promise<VideoInfo | null> {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/extract?url=${encodeURIComponent(url)}`)
+    const response = await fetch(`${getApiBaseUrl()}/api/extract?url=${encodeURIComponent(url)}`)
     
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
@@ -56,7 +56,7 @@ export async function downloadVideo(
 ): Promise<Blob> {
   try {
     // Use API proxy for downloads
-    const proxyUrl = `${getApiBaseUrl()}/download?url=${encodeURIComponent(url)}`
+    const proxyUrl = `${getApiBaseUrl()}/api/download?url=${encodeURIComponent(url)}`
     
     const response = await fetch(proxyUrl)
     if (!response.ok) {
