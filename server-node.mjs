@@ -166,13 +166,26 @@ function extractVideoId(url) {
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
-const PORT = 3001
+const PORT = process.env.PORT || 3001
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS || '*'
 
 const server = createServer(async (req, res) => {
-  // CORS headers
+  // Determine allowed origin(s)
+  let corsOrigin = '*'
+  if (ALLOWED_ORIGINS !== '*') {
+    const origins = ALLOWED_ORIGINS.split(',').map(o => o.trim())
+    const requestOrigin = req.headers.origin || '*'
+    if (origins.includes(requestOrigin) || ALLOWED_ORIGINS === '*') {
+      corsOrigin = requestOrigin
+    } else if (origins.includes('*')) {
+      corsOrigin = '*'
+    }
+  }
+
+  // CORS headers with dynamic origin
   const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Origin': corsOrigin,
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
   }
 
