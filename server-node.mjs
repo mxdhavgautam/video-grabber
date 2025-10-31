@@ -479,96 +479,88 @@ function normalizeYouTubeUrl(url) {
  */
 async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
   return new Promise(async (resolve, reject) => {
-    // Add exponential backoff delay before retry
     if (retryCount > 0) {
       console.log(`⏳ Retry #${retryCount} - Waiting ${delayMs}ms before attempting...`)
       await new Promise(r => setTimeout(r, delayMs))
     }
-    
-    // Build yt-dlp command - explicitly request JSON output for extraction
+
     let command = `yt-dlp -j --dump-single-json --quiet --no-warnings`
-    
-    // Add best practices per yt-dlp documentation:
-    // 1. User-Agent: Mimic a real browser to avoid bot detection
-    // 2. Socket timeout: Prevent hanging on slow connections
     command += ` --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"`
     command += ` --socket-timeout 30`
-    
-    // Strategy 1: Try with exported cookies file (attempt 0-1)
-    // Strategy 2: Switch to mweb client with PO Token support (attempt 2+)
-    //   Per https://github.com/yt-dlp/yt-dlp/wiki/Extractors#youtube
-    //   mweb client can use PO Tokens to bypass bot detection
+
     const profileCookiesFile = process.env.CHROME_PROFILE_DIR ? `${process.env.CHROME_PROFILE_DIR}/cookies.txt` : null
     const cookiesExist = profileCookiesFile ? existsSync(profileCookiesFile) : false
-    
-    if (retryCount < 2) {
-      if (cookiesExist) {
-        command += ` --cookies "${profileCookiesFile}"`
-        console.log(`🔐 Strategy 1.${retryCount === 0 ? 'A' : 'B'}: Using exported cookies file (${profileCookiesFile})`)
-      } else if (useBrowserCookies && process.env.CHROME_PROFILE_DIR) {
-        command += ` --cookies-from-browser "chromium:${process.env.CHROME_PROFILE_DIR}"`
-        console.log(`🔐 Strategy 1.${retryCount === 0 ? 'C' : 'D'}: Using Chromium profile via --cookies-from-browser`)  
-      } else {
-        console.log(`⚠️ Strategy 1: No cookies available; proceeding without auth (likely to fail)`)
-      }
+
+    if (retryCount === 0 && cookiesExist) {
+      command += ` --cookies "${profileCookiesFile}"`
+      console.log(`🔐 Strategy 1.A: Using exported cookies file (${profileCookiesFile})`)
+    } else if (retryCount < 2 && useBrowserCookies && process.env.CHROME_PROFILE_DIR) {
+      command += ` --cookies-from-browser "chromium:${process.env.CHROME_PROFILE_DIR}"`
+      console.log(`🔐 Strategy 1.${retryCount === 0 ? 'B' : 'C'}: Using Chromium profile via --cookies-from-browser`)
     } else {
-      console.log(`🎬 Strategy 2: Switching to mweb client with PO Token support`)
-      command += ` --extractor-args "youtube:player-client=mweb"`
-      if (POT_PROVIDER_BASE_URL) {
-        let potArgs = `youtubepot-bgutilhttp:base_url=${POT_PROVIDER_BASE_URL}`
-        if (retryCount >= 3) {
-          potArgs += ';disable_innertube=1'
-        }
-        command += ` --extractor-args "${potArgs}"`
+      console.log(`⚠️ Strategy 1 fallback: No usable cookies, relying on PO token provider`)
+    }
+
+    // Always include mweb client and PO token provider when available
+    let extractorArgs = ` --extractor-args "youtube:player-client=mweb"`
+    if (POT_PROVIDER_BASE_URL) {
+      let potArg = `youtubepot-bgutilhttp:base_url=${POT_PROVIDER_BASE_URL}`
+      if (retryCount >= 2) {
+        potArg += ';disable_innertube=1'
+      }
+      extractorArgs += ` --extractor-args "${potArg}"`
+      if (retryCount >= 2) {
+        console.log(`🔑 Using PO token provider at ${POT_PROVIDER_BASE_URL} with disable_innertube=1`)
+      } else {
+        console.log(`🔑 Using PO token provider at ${POT_PROVIDER_BASE_URL}`)
       }
     }
-    
-    // Add URL
+    command += extractorArgs
+
     command += ` "${videoUrl}"`
-    
+
     let stdout = ''
     let stderr = ''
-    
+
     exec(command, { maxBuffer: 50 * 1024 * 1024 },
       async (error, out, err) => {
         stdout = out
         stderr = err
-        
-        // Check for bot detection errors
+
+        const retryWith = (nextDelay) => {
+          return getVideoInfo(videoUrl, retryCount + 1, nextDelay)
+            .then(resolve)
+            .catch(reject)
+        }
+
         if (error && stderr && stderr.includes("Sign in to confirm you're not a bot")) {
           console.warn(`⚠️ Bot detection triggered on attempt ${retryCount + 1}`)
-          
-          // Retry with different strategy
           if (retryCount < 3) {
             const nextDelay = Math.min(delayMs * Math.pow(2, retryCount + 1), 30000)
-            return getVideoInfo(videoUrl, retryCount + 1, nextDelay)
-          } else {
-            return reject(new Error('Failed to get video information from yt-dlp - Bot detection could not be bypassed after 3 retries'))
+            return retryWith(nextDelay)
           }
+          return reject(new Error('Failed to get video information from yt-dlp - Bot detection could not be bypassed after 3 retries'))
         }
-        
+
         if (error) {
           if (stderr) {
             console.error(`❌ Attempt ${retryCount + 1} failed: ${stderr.substring(0, 300)}`)
           }
 
-          // Retry on transient network errors
           if (retryCount < 2 && (stderr.includes('Connection') || stderr.includes('timeout'))) {
             const nextDelay = Math.min(delayMs * Math.pow(2, retryCount + 1), 30000)
-            return getVideoInfo(videoUrl, retryCount + 1, nextDelay)
+            return retryWith(nextDelay)
           }
 
           return reject(error)
         }
 
         try {
-          // Find the start of JSON to handle any leading output
           const jsonStart = stdout.indexOf('{')
           if (jsonStart === -1) {
             throw new Error('No JSON object found in output')
           }
 
-          // Count braces to find the complete JSON object
           let braceCount = 0
           let inString = false
           let escapeNext = false
@@ -606,8 +598,6 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
 
           const jsonStr = stdout.substring(jsonStart, jsonEnd)
           const data = JSON.parse(jsonStr)
-
-          // Pre-compute transformed formats for logging and reuse downstream
           const transformedFormats = transformFormats(data)
 
           console.log(`✅ Successfully extracted video: ${data.title || 'Unknown Title'}`)
@@ -615,7 +605,6 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
           console.log(`  - Audio formats: ${transformedFormats.audioFormats.length}`)
           console.log(`  - Subtitle tracks: ${(data.subtitles && Object.keys(data.subtitles).length) || 0}`)
 
-          // Attach transformed formats for downstream reuse
           data.__transformedFormats = transformedFormats
 
           resolve(data)
