@@ -8,7 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { useToast } from '@/components/ui/use-toast'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Loader2, Download, Video, Music, Link2, Info } from 'lucide-react'
+import { Loader2, Download, Video, Music, Link2, Info, Clipboard } from 'lucide-react'
 import { extractVideoInfo, detectPlatform } from '@/lib/video-extractor'
 import { extractAudioFromVideo } from '@/lib/ffmpeg'
 import { downloadBlob, formatFileSize, formatDuration, formatViewCount, sanitizeFilename, type VideoInfo, type VideoFormat } from '@/lib/types'
@@ -504,6 +504,17 @@ export function VideoGrabber() {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to extract video information')
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handlePaste = async () => {
+    try {
+      const text = await navigator.clipboard.readText()
+      setUrl(text)
+      setErrorMessage(null)
+    } catch (error) {
+      console.error('Failed to read clipboard:', error)
+      setErrorMessage('Unable to access clipboard. Please paste manually.')
     }
   }
 
@@ -1273,6 +1284,16 @@ export function VideoGrabber() {
                 tabIndex={0}
               />
             </div>
+            <Button
+              onClick={handlePaste}
+              disabled={loading}
+              variant="outline"
+              className="w-full sm:w-auto"
+              title="Paste from clipboard"
+            >
+              <Clipboard className="mr-2 h-4 w-4" />
+              Paste
+            </Button>
             <Button
               onClick={handleExtract}
               disabled={loading || !url.trim()}
