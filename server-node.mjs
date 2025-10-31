@@ -39,6 +39,8 @@ const PROFILE_ROTATION_INTERVAL = 24 * 60 * 60 * 1000 // 24 hours
 // On server: always enable chromium cookies extraction since we're running full Chrome
 let useBrowserCookies = true
 
+const POT_PROVIDER_BASE_URL = process.env.POT_PROVIDER_BASE_URL || 'http://pot-provider:4416'
+
 // =====================================================================
 // RATE LIMITING & SECURITY
 // =====================================================================
@@ -512,6 +514,13 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     } else {
       console.log(`🎬 Strategy 2: Switching to mweb client with PO Token support`)
       command += ` --extractor-args "youtube:player-client=mweb"`
+      if (POT_PROVIDER_BASE_URL) {
+        let potArgs = `youtubepot-bgutilhttp:base_url=${POT_PROVIDER_BASE_URL}`
+        if (retryCount >= 3) {
+          potArgs += ';disable_innertube=1'
+        }
+        command += ` --extractor-args "${potArgs}"`
+      }
     }
     
     // Add URL
@@ -1003,6 +1012,11 @@ const server = createServer(async (req, res) => {
 
       // Build yt-dlp command to save to file instead of stdout
       // Per yt-dlp best practices: https://github.com/yt-dlp/yt-dlp/wiki/FAQ
+      const extractorArgs = ['--extractor-args', 'youtube:player-client=mweb']
+      if (POT_PROVIDER_BASE_URL) {
+        extractorArgs.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${POT_PROVIDER_BASE_URL}`)
+      }
+
       const ytdlpArgs = [
         '-f', formatId,
         '--no-warnings',
@@ -1010,9 +1024,7 @@ const server = createServer(async (req, res) => {
         '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         '-o', tempFilePath,
         ...cookieFlags,
-        // Add PO Token support for YouTube bot detection bypass
-        // Per PO Token Guide: https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
-        '--extractor-args', 'youtube:player-client=mweb',
+        ...extractorArgs,
         normalizedVideoUrl
       ]
       
