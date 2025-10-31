@@ -399,19 +399,8 @@ const server = createServer(async (req, res) => {
       // Check if no formats are available
       if (videoFormats.length === 0 && audioFormats.length === 0) {
         console.warn('⚠️ No formats available for this video')
-        // Check playability status to provide better error message
-        const playabilityStatus = info?.playability_status
-        let errorMessage = 'This video has no Format 18 streams available to parse, please stay tuned while we support more streams!'
-        
-        if (playabilityStatus?.status === 'UNPLAYABLE') {
-          errorMessage = 'This video has no Format 18 streams available to parse, please stay tuned while we support more streams!'
-        } else if (playabilityStatus?.status === 'LOGIN_REQUIRED') {
-          errorMessage = 'This video requires login to access'
-        } else if (playabilityStatus?.status === 'ERROR') {
-          errorMessage = 'YouTube returned an error for this video'
-        } else if (info?.streaming_data === null || info?.streaming_data === undefined) {
-          errorMessage = 'This video has no Format 18 streams available to parse, please stay tuned while we support more streams!'
-        }
+        // Always show Format 18 message when no formats are available
+        const errorMessage = 'This video has no Format 18 streams available to parse, please stay tuned while we support more streams!'
         
         res.writeHead(400, { 
           ...corsHeaders,
@@ -420,7 +409,7 @@ const server = createServer(async (req, res) => {
         res.end(JSON.stringify({
           error: errorMessage,
           details: {
-            playabilityStatus: playabilityStatus?.status || 'UNKNOWN',
+            playabilityStatus: info?.playability_status?.status || 'UNKNOWN',
             hasStreamingData: !!info?.streaming_data,
             videoId: videoId
           }
