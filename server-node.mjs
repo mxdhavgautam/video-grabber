@@ -91,10 +91,11 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     
     // Try to get cookies on first attempt only
     if (retryCount === 0) {
-      cookieSource = await getCookiesFile()
-      if (cookieSource) {
-        console.log(`🔐 Using cookies from ${cookieSource}`)
-      }
+      // DISABLED: Cookie extraction from browser is unreliable
+      // cookieSource = await getCookiesFile()
+      // if (cookieSource) {
+      //   console.log(`🔐 Using cookies from ${cookieSource}`)
+      // }
     }
     
     // Build yt-dlp command using config file
