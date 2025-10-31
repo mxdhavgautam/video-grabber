@@ -951,6 +951,11 @@ const server = createServer(async (req, res) => {
 
       // Build yt-dlp command to save to file instead of stdout
       const ytdlpArgs = ['-f', formatId, '--no-warnings', '-o', tempFilePath, videoUrl, ...cookieFlags]
+      
+      // Add PO Token support for YouTube bot detection bypass
+      // This uses the mweb client which requires PO Token for GVS (video streaming)
+      ytdlpArgs.push('--extractor-args')
+      ytdlpArgs.push('youtube:player-client=mweb')
 
       const proc = spawn('yt-dlp', ytdlpArgs)
       let stderrOutput = ''
