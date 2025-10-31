@@ -29,6 +29,132 @@ const hasCookies = existsSync(COOKIES_FILE)
 // Flag to enable automatic browser cookie extraction
 let useBrowserCookies = hasCookies
 
+// =====================================================================
+// RATE LIMITING & SECURITY
+// =====================================================================
+
+// Rate limiter: Track requests per IP
+const ipRequestCounts = new Map() // Map<IP, {extract: count, download: count, lastReset: timestamp}>
+const blockedIPs = new Set() // Set of IPs temporarily blocked for abuse
+const RATE_LIMIT_WINDOW = 60 * 1000 // 1 minute
+const EXTRACT_RATE_LIMIT = 10 // 10 requests per minute
+const DOWNLOAD_RATE_LIMIT = 5 // 5 requests per minute
+const ABUSE_THRESHOLD = 100 // Block IPs making >100 requests/min
+const BLOCK_DURATION = 15 * 60 * 1000 // Block for 15 minutes
+
+// Request validation constants
+const MAX_URL_LENGTH = 2048
+const MAX_FORMAT_ID_LENGTH = 50
+const REQUEST_TIMEOUT = 30000 // 30 seconds
+
+/**
+ * Get client IP address from request
+ */
+function getClientIP(req) {
+  return req.headers['x-forwarded-for']?.split(',')[0].trim() || 
+         req.headers['x-real-ip'] || 
+         req.socket?.remoteAddress || 
+         'unknown'
+}
+
+/**
+ * Check if IP is rate limited
+ */
+function isRateLimited(ip, endpoint) {
+  const now = Date.now()
+  
+  // Check if IP is blocked for abuse
+  if (blockedIPs.has(ip)) {
+    console.warn(`🚫 Blocked IP attempted request: ${ip}`)
+    return { limited: true, reason: 'BLOCKED', retryAfter: 900 }
+  }
+  
+  // Initialize IP tracking
+  if (!ipRequestCounts.has(ip)) {
+    ipRequestCounts.set(ip, {
+      extract: 0,
+      download: 0,
+      lastReset: now,
+    })
+  }
+  
+  const ipData = ipRequestCounts.get(ip)
+  
+  // Reset if window has passed
+  if (now - ipData.lastReset > RATE_LIMIT_WINDOW) {
+    ipData.extract = 0
+    ipData.download = 0
+    ipData.lastReset = now
+  }
+  
+  // Check endpoint-specific limits
+  const limit = endpoint === 'extract' ? EXTRACT_RATE_LIMIT : DOWNLOAD_RATE_LIMIT
+  const current = ipData[endpoint]
+  
+  // Detect abuse (too many requests in window)
+  const totalRequests = ipData.extract + ipData.download
+  if (totalRequests > ABUSE_THRESHOLD) {
+    console.error(`🔴 ABUSE DETECTED: IP ${ip} made ${totalRequests} requests in 1 minute`)
+    blockedIPs.add(ip)
+    setTimeout(() => blockedIPs.delete(ip), BLOCK_DURATION)
+    return { limited: true, reason: 'BLOCKED_ABUSE', retryAfter: 900 }
+  }
+  
+  // Increment counter
+  ipData[endpoint]++
+  
+  // Check if over limit
+  if (current >= limit) {
+    const retryAfter = Math.ceil((RATE_LIMIT_WINDOW - (now - ipData.lastReset)) / 1000)
+    console.warn(`⏱️  Rate limit exceeded for ${endpoint} from IP ${ip}`)
+    return { limited: true, reason: 'RATE_LIMITED', retryAfter }
+  }
+  
+  return { limited: false }
+}
+
+/**
+ * Validate URL parameter
+ */
+function validateURL(url) {
+  if (!url) {
+    return { valid: false, error: 'URL is required' }
+  }
+  
+  if (url.length > MAX_URL_LENGTH) {
+    return { valid: false, error: `URL exceeds maximum length of ${MAX_URL_LENGTH} characters` }
+  }
+  
+  if (!/^https?:\/\//.test(url)) {
+    return { valid: false, error: 'URL must start with http:// or https://' }
+  }
+  
+  if (!/https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i.test(url)) {
+    return { valid: false, error: 'Only YouTube URLs are supported' }
+  }
+  
+  return { valid: true }
+}
+
+/**
+ * Validate format ID parameter
+ */
+function validateFormatID(formatId) {
+  if (!formatId) {
+    return { valid: false, error: 'Format ID is required' }
+  }
+  
+  if (formatId.length > MAX_FORMAT_ID_LENGTH) {
+    return { valid: false, error: `Format ID exceeds maximum length of ${MAX_FORMAT_ID_LENGTH} characters` }
+  }
+  
+  if (!/^[\w\-]+$/.test(formatId)) {
+    return { valid: false, error: 'Format ID contains invalid characters' }
+  }
+  
+  return { valid: true }
+}
+
 // Cleanup orphaned temp files on startup
 function cleanupOldTempFiles() {
   try {
@@ -118,7 +244,7 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     }
     
     // Build yt-dlp command - explicitly request JSON output for extraction
-    let command = `yt-dlp -j --dump-single-json`
+    let command = `yt-dlp -j --dump-single-json --quiet --no-warnings`
     
     // Add cookies - prefer browser extraction, fallback to file
     if (useBrowserCookies) {
@@ -141,7 +267,7 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     let stdout = ''
     let stderr = ''
     
-    exec(command, { maxBuffer: 10 * 1024 * 1024 }, async (error, out, err) => {
+    exec(command, { maxBuffer: 50 * 1024 * 1024 }, async (error, out, err) => {
       stdout = out
       stderr = err
       
@@ -198,14 +324,43 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
         return reject(new Error(stderr.substring(0, 300) || error.message))
       }
       
-      // Try to parse the output
+      // Try to parse the output - handle trailing non-JSON content
       try {
-        const data = JSON.parse(stdout)
+        let jsonStr = stdout.trim()
+        
+        // If there's trailing non-JSON content, find the last closing brace
+        if (!jsonStr.startsWith('{')) {
+          const firstBrace = jsonStr.indexOf('{')
+          if (firstBrace !== -1) {
+            jsonStr = jsonStr.substring(firstBrace)
+          }
+        }
+        
+        // Find the complete JSON object by counting braces
+        let braceCount = 0
+        let jsonEnd = -1
+        for (let i = 0; i < jsonStr.length; i++) {
+          if (jsonStr[i] === '{') braceCount++
+          else if (jsonStr[i] === '}') {
+            braceCount--
+            if (braceCount === 0) {
+              jsonEnd = i + 1
+              break
+            }
+          }
+        }
+        
+        if (jsonEnd !== -1) {
+          jsonStr = jsonStr.substring(0, jsonEnd)
+        }
+        
+        const data = JSON.parse(jsonStr)
         if (retryCount > 0) {
           console.log(`✅ Success after ${retryCount} retry attempt(s)`)
         }
         resolve(data)
       } catch (parseError) {
+        console.error(`📝 Raw output preview:`, stdout.substring(0, 200))
         reject(new Error(`Failed to parse yt-dlp output: ${parseError.message}`))
       }
     })
@@ -362,29 +517,40 @@ const server = createServer(async (req, res) => {
 
   // Extract endpoint
   if (url.pathname === '/extract') {
-    const videoUrl = url.searchParams.get('url')
-
-    if (!videoUrl) {
-      res.writeHead(400, { 
+    const clientIP = getClientIP(req)
+    
+    // Check rate limit
+    const rateLimitCheck = isRateLimited(clientIP, 'extract')
+    if (rateLimitCheck.limited) {
+      console.warn(`⏱️  Rate limit: ${rateLimitCheck.reason} from ${clientIP}`)
+      res.writeHead(429, { 
         ...corsHeaders,
-        'Content-Type': 'application/json' 
+        'Content-Type': 'application/json',
+        'Retry-After': rateLimitCheck.retryAfter
       })
-      res.end(JSON.stringify({ error: 'URL parameter is required' }))
+      res.end(JSON.stringify({ 
+        error: 'Too many requests. Please wait before trying again.',
+        reason: rateLimitCheck.reason,
+        retryAfter: rateLimitCheck.retryAfter
+      }))
       return
     }
+    
+    const videoUrl = url.searchParams.get('url')
 
-    // Only support YouTube (basic regex validation)
-    if (!/https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//i.test(videoUrl)) {
+    // Validate URL parameter
+    const urlValidation = validateURL(videoUrl)
+    if (!urlValidation.valid) {
       res.writeHead(400, { 
         ...corsHeaders,
         'Content-Type': 'application/json' 
       })
-      res.end(JSON.stringify({ error: 'Invalid YouTube URL' }))
+      res.end(JSON.stringify({ error: urlValidation.error }))
       return
     }
 
     try {
-      console.log(`📥 Extracting video info from: ${videoUrl}`)
+      console.log(`📥 Extracting video info from: ${videoUrl} (IP: ${clientIP})`)
       
       // Use yt-dlp to get video info
       const ytdlpData = await getVideoInfo(videoUrl)
@@ -486,16 +652,47 @@ const server = createServer(async (req, res) => {
 
   // Download format endpoint - stream video directly
   if (url.pathname === '/download' && req.method === 'GET') {
+    const clientIP = getClientIP(req)
+    
+    // Check rate limit
+    const rateLimitCheck = isRateLimited(clientIP, 'download')
+    if (rateLimitCheck.limited) {
+      console.warn(`⏱️  Rate limit: ${rateLimitCheck.reason} from ${clientIP}`)
+      res.writeHead(429, { 
+        ...corsHeaders,
+        'Content-Type': 'application/json',
+        'Retry-After': rateLimitCheck.retryAfter
+      })
+      res.end(JSON.stringify({ 
+        error: 'Too many download requests. Please wait before trying again.',
+        reason: rateLimitCheck.reason,
+        retryAfter: rateLimitCheck.retryAfter
+      }))
+      return
+    }
+    
     const queryParams = new URL(req.url, `http://${req.headers.host}`).searchParams
     const videoUrl = queryParams.get('url')
     const formatId = queryParams.get('format')
 
-    if (!videoUrl || !formatId) {
+    // Validate parameters
+    const urlValidation = validateURL(videoUrl)
+    if (!urlValidation.valid) {
       res.writeHead(400, { 
         ...corsHeaders,
         'Content-Type': 'application/json' 
       })
-      res.end(JSON.stringify({ error: 'url and format parameters are required' }))
+      res.end(JSON.stringify({ error: urlValidation.error }))
+      return
+    }
+    
+    const formatValidation = validateFormatID(formatId)
+    if (!formatValidation.valid) {
+      res.writeHead(400, { 
+        ...corsHeaders,
+        'Content-Type': 'application/json' 
+      })
+      res.end(JSON.stringify({ error: formatValidation.error }))
       return
     }
 
@@ -519,7 +716,7 @@ const server = createServer(async (req, res) => {
     console.log(`📊 Active downloads: ${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS}`)
 
     try {
-      console.log(`📥 Downloading format ${formatId} from: ${videoUrl}`)
+      console.log(`📥 Downloading format ${formatId} from: ${videoUrl} (IP: ${clientIP})`)
 
       // Build cookie flags - ONLY use file-based cookies, never --cookies-from-browser on server
       let cookieFlags = []
