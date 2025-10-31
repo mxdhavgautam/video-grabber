@@ -430,21 +430,45 @@ function checkFFprobeAvailability() {
  * - https://www.youtube.com/embed/VIDEO_ID
  */
 function extractVideoId(url) {
-  if (!url) return null
+  // Support multiple YouTube URL formats and normalize to standard format
   
-  const patterns = [
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
-    /youtube\.com\/watch\?.*v=([^&\n?#]+)/,
-  ]
-  
-  for (const pattern of patterns) {
-    const match = url.match(pattern)
-    if (match && match[1]) {
-      return match[1]
-    }
+  // youtu.be/VIDEO_ID (short URL)
+  let match = url.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/)
+  if (match && match[1]) {
+    return match[1]
   }
   
+  // youtube.com/watch?v=VIDEO_ID (standard URL)
+  match = url.match(/youtube\.com\/watch\?.*v=([a-zA-Z0-9_-]{11})/)
+  if (match && match[1]) {
+    return match[1]
+  }
+  
+  // youtube.com/embed/VIDEO_ID
+  match = url.match(/youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/)
+  if (match && match[1]) {
+    return match[1]
+  }
+  
+  // youtube.com/v/VIDEO_ID
+  match = url.match(/youtube\.com\/v\/([a-zA-Z0-9_-]{11})/)
+  if (match && match[1]) {
+    return match[1]
+  }
+
   return null
+}
+
+/**
+ * Normalize YouTube URLs to standard watch?v= format
+ * This removes sharing parameters and other metadata that can trigger bot detection
+ */
+function normalizeYouTubeUrl(url) {
+  const videoId = extractVideoId(url)
+  if (!videoId) {
+    return url  // Return original if can't extract
+  }
+  return `https://www.youtube.com/watch?v=${videoId}`
 }
 
 /**
@@ -769,8 +793,12 @@ const server = createServer(async (req, res) => {
     try {
       console.log(`📥 Extracting video info from: ${videoUrl} (IP: ${clientIP})`)
       
+      // Normalize the URL to a standard watch?v= format
+      const normalizedVideoUrl = normalizeYouTubeUrl(videoUrl)
+      console.log(`   Normalized URL: ${normalizedVideoUrl}`)
+
       // Use yt-dlp to get video info
-      const ytdlpData = await getVideoInfo(videoUrl)
+      const ytdlpData = await getVideoInfo(normalizedVideoUrl)
 
       if (!ytdlpData) {
         throw new Error('Failed to get video information from yt-dlp')
@@ -891,6 +919,12 @@ const server = createServer(async (req, res) => {
     const queryParams = new URL(req.url, `http://${req.headers.host}`).searchParams
     const videoUrl = queryParams.get('url')
     const formatId = queryParams.get('format')
+    
+    // Normalize the URL to standard format to avoid bot detection on shared URLs
+    const normalizedVideoUrl = normalizeYouTubeUrl(videoUrl)
+    console.log(`📥 Download request for format ${formatId}`)
+    console.log(`   Original URL: ${videoUrl}`)
+    console.log(`   Normalized URL: ${normalizedVideoUrl}`)
 
     // Validate parameters
     const urlValidation = validateURL(videoUrl)
@@ -933,7 +967,7 @@ const server = createServer(async (req, res) => {
     console.log(`📊 Active downloads: ${activeDownloads}/${MAX_CONCURRENT_DOWNLOADS}`)
 
     try {
-      console.log(`📥 Downloading format ${formatId} from: ${videoUrl} (IP: ${clientIP})`)
+      console.log(`📥 Downloading format ${formatId} from: ${normalizedVideoUrl} (IP: ${clientIP})`)
 
       // Prepare cookie flags for yt-dlp
       let cookieFlags = []
@@ -968,7 +1002,7 @@ const server = createServer(async (req, res) => {
         // Add PO Token support for YouTube bot detection bypass
         // Per PO Token Guide: https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
         '--extractor-args', 'youtube:player-client=mweb',
-        videoUrl
+        normalizedVideoUrl
       ]
       
       const proc = spawn('yt-dlp', ytdlpArgs)
