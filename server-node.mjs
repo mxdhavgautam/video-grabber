@@ -26,6 +26,9 @@ const downloadProgress = new Map()
 const COOKIES_FILE = process.env.COOKIES_FILE || join(__dirname, '.yt-dlp', 'cookies.txt')
 const hasCookies = existsSync(COOKIES_FILE)
 
+// Chrome profile directory for cookies persistence
+const CHROME_PROFILE_DIR = process.env.CHROME_PROFILE_DIR || join(__dirname, 'chrome-profiles')
+
 // Flag to enable automatic browser cookie extraction
 // On server: always enable chromium cookies extraction since we're running full Chrome
 let useBrowserCookies = true
@@ -249,9 +252,9 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     
     // Add cookies - prefer browser extraction, fallback to file
     if (useBrowserCookies) {
-      command += ` --cookies-from-browser chromium`
+      command += ` --cookies-from-browser chromium --browser-executable-path /usr/bin/chromium --chromium-user-data-dir "${CHROME_PROFILE_DIR}"`
       if (retryCount === 0) {
-        console.log(`🔐 Using cookies from browser (Chromium)`)
+        console.log(`🔐 Using cookies from browser (Chromium at ${CHROME_PROFILE_DIR})`)
       }
     } else if (hasCookies) {
       command += ` --cookies "${COOKIES_FILE}"`
@@ -711,9 +714,12 @@ const server = createServer(async (req, res) => {
     try {
       console.log(`📥 Downloading format ${formatId} from: ${videoUrl} (IP: ${clientIP})`)
 
-      // Build cookie flags - ONLY use file-based cookies, never --cookies-from-browser on server
+      // Prepare cookie flags for yt-dlp
       let cookieFlags = []
-      if (hasCookies) {
+      if (useBrowserCookies) {
+        cookieFlags = ['--cookies-from-browser', 'chromium', '--browser-executable-path', '/usr/bin/chromium', '--chromium-user-data-dir', CHROME_PROFILE_DIR]
+        console.log(`🔐 Using cookies from browser...`)
+      } else if (hasCookies) {
         console.log(`🔐 Using cookies from frontend...`)
         cookieFlags = ['--cookies', COOKIES_FILE]
       } else {
