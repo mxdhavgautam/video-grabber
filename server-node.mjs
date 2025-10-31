@@ -55,6 +55,43 @@ function cleanupOldTempFiles() {
   }
 }
 
+// Periodic cleanup of temp files every 30 minutes
+function startPeriodicCleanup() {
+  const CLEANUP_INTERVAL = 30 * 60 * 1000 // 30 minutes
+  
+  setInterval(() => {
+    try {
+      const tempDir = tmpdir()
+      const files = readdirSync(tempDir)
+      const now = Date.now()
+      const THIRTY_MINUTES = 30 * 60 * 1000
+      let cleaned = 0
+      
+      files.forEach(file => {
+        if (file.startsWith('yt-dlp-')) {
+          const filePath = join(tempDir, file)
+          try {
+            const stats = statSync(filePath)
+            // Delete files older than 30 minutes
+            if (now - stats.mtime.getTime() > THIRTY_MINUTES) {
+              unlinkSync(filePath)
+              cleaned++
+            }
+          } catch (e) {}
+        }
+      })
+      
+      if (cleaned > 0) {
+        console.log(`🧹 Periodic cleanup: Deleted ${cleaned} temp file(s)`)
+      }
+    } catch (error) {
+      console.warn('⚠️ Periodic cleanup failed:', error.message)
+    }
+  }, CLEANUP_INTERVAL)
+}
+
+cleanupOldTempFiles()
+
 // Chrome profile rotation - daily
 function getOrCreateChromeProfile() {
   try {
@@ -136,8 +173,6 @@ function checkTools() {
     }
   })
 }
-
-cleanupOldTempFiles()
 
 /**
  * Extract video ID from YouTube URL
@@ -545,6 +580,10 @@ server.listen(PORT, async () => {
   } catch (error) {
     console.error('❌ Chrome profile error:', error.message)
   }
+  
+  // Start periodic cleanup of temp files
+  startPeriodicCleanup()
+  console.log(`✅ Periodic cleanup task started (every 30 minutes)`)
   
   console.log('Ready to accept requests!')
 })
