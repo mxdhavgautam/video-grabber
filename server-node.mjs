@@ -492,21 +492,24 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     command += ` --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"`
     command += ` --socket-timeout 30`
     
-    // Strategy 1: Try with browser cookies (attempt 0-1)
+    // Strategy 1: Try with exported cookies file (attempt 0-1)
     // Strategy 2: Switch to mweb client with PO Token support (attempt 2+)
     //   Per https://github.com/yt-dlp/yt-dlp/wiki/Extractors#youtube
     //   mweb client can use PO Tokens to bypass bot detection
+    const COOKIES_FILE = process.env.CHROME_PROFILE_DIR ? `${process.env.CHROME_PROFILE_DIR}/cookies.txt` : null
+    const cookiesExist = COOKIES_FILE && require('fs').existsSync(COOKIES_FILE)
+    
     if (retryCount < 2) {
-      // First attempts: Use browser cookies if available
-      if (useBrowserCookies && process.env.CHROME_PROFILE_DIR) {
-        command += ` --cookies-from-browser "chromium:${process.env.CHROME_PROFILE_DIR}"`
+      // First attempts: Use exported cookies file if available
+      if (cookiesExist) {
+        command += ` --cookies "${COOKIES_FILE}"`
         if (retryCount === 0) {
-          console.log(`🔐 Strategy 1: Using cookies from Chrome profile`)
+          console.log(`🔐 Strategy 1: Using exported cookies from: ${COOKIES_FILE}`)
         } else {
-          console.log(`🔐 Retry ${retryCount}: Retrying with Chrome profile cookies`)
+          console.log(`🔐 Retry ${retryCount}: Retrying with cookies file`)
         }
       } else {
-        console.log(`⚠️ No Chrome profile available for cookies`)
+        console.log(`⚠️ No cookies file available, attempting direct extraction`)
       }
     } else {
       // Retry 2+: Switch to mweb client with PO Token support
