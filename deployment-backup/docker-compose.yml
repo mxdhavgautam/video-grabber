@@ -1,0 +1,40 @@
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: deployment-backup/Dockerfile
+    container_name: video-grabber-backend
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - NODE_ENV=production
+      - ALLOWED_ORIGINS=https://video-grabber.vercel.app,https://mxdhavgautam.com
+      - CHROME_PROFILE_DIR=/app/chrome-profiles
+      - CHROME_DEBUG_URL=http://127.0.0.1:9222
+    volumes:
+      # Persist Chrome profiles across container restarts
+      - chrome-profiles:/app/chrome-profiles
+      # Persist temp downloads
+      - temp-downloads:/app/temp-downloads
+    restart: unless-stopped
+    # Resource limits
+    mem_limit: 4g
+    memswap_limit: 4g
+    cpus: 3.5
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+volumes:
+  chrome-profiles:
+    driver: local
+  temp-downloads:
+    driver: local
+
+networks:
+  default:
+    name: video-grabber-network

@@ -4,13 +4,16 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:vite\"",
-    "dev:server": "node server-node.mjs",
+    "dev:server": "node server-simple.mjs",
     "dev:vite": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "render-build": "bash build.sh",
-    "start": "node server-node.mjs"
+    "start": "node server-simple.mjs",
+    "docker:build": "docker compose -f docker-compose.simple.yml build",
+    "docker:up": "docker compose -f docker-compose.simple.yml up -d",
+    "docker:down": "docker compose -f docker-compose.simple.yml down",
+    "docker:logs": "docker compose -f docker-compose.simple.yml logs -f"
   },
   "dependencies": {
     "@distube/ytdl-core": "^4.16.12",
