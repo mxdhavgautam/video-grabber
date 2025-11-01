@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import FormatParser from './format-parser.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -10,6 +11,7 @@ class YouTubeExtractor {
   constructor() {
     this.cookiesPath = process.env.COOKIES_FILE || path.join(process.cwd(), 'runtime', 'yt-dlp', 'cookies.txt');
     this.initialized = false;
+    this.formatParser = new FormatParser();
   }
 
   async init() {
@@ -162,10 +164,34 @@ class YouTubeExtractor {
       ytdlp.on('close', (code) => {
         if (code === 0) {
           try {
-            const videoInfo = JSON.parse(output);
+            const rawVideoInfo = JSON.parse(output);
             console.log('[yt-dlp] Successfully extracted video info');
-            resolve(videoInfo);
+            console.log(`[yt-dlp] Raw JSON keys: ${Object.keys(rawVideoInfo).join(', ')}`);
+            console.log(`[yt-dlp] Formats array length: ${Array.isArray(rawVideoInfo.formats) ? rawVideoInfo.formats.length : 'N/A'}`);
+            
+            // Parse and enhance format information for high-quality stream access
+            try {
+              const parsedVideoInfo = this.formatParser.parse(rawVideoInfo);
+              console.log(`[yt-dlp] Parsed ${parsedVideoInfo.metadata.format_count} formats`);
+              console.log(`[yt-dlp] Max resolution: ${parsedVideoInfo.metadata.max_resolution?.resolution || 'unknown'}`);
+              if (parsedVideoInfo.best_streams.best_combined) {
+                console.log(`[yt-dlp] Best combined format: ${parsedVideoInfo.best_streams.best_combined.format_id} (${parsedVideoInfo.best_streams.best_combined.resolution || 'unknown'})`);
+              }
+              if (parsedVideoInfo.best_streams.best_video_audio) {
+                console.log(`[yt-dlp] Best separate: video=${parsedVideoInfo.best_streams.best_video_audio.video.format_id} + audio=${parsedVideoInfo.best_streams.best_video_audio.audio.format_id}`);
+              }
+              
+              resolve(parsedVideoInfo);
+            } catch (parseError) {
+              console.error('[yt-dlp] Format parser error:', parseError.message);
+              console.error('[yt-dlp] Parse error stack:', parseError.stack);
+              // Fallback: return raw video info if parser fails
+              console.warn('[yt-dlp] Returning raw video info as fallback');
+              resolve(rawVideoInfo);
+            }
           } catch (e) {
+            console.error('[yt-dlp] JSON parse error:', e.message);
+            console.error('[yt-dlp] Output preview (first 500 chars):', output.substring(0, 500));
             reject(new Error(`Failed to parse yt-dlp output: ${e.message}`));
           }
         } else {
