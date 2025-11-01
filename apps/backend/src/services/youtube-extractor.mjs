@@ -19,7 +19,7 @@ class YouTubeExtractor {
     this.initialized = true;
   }
 
-  async extractWithYtDlp(videoId) {
+  async extractWithYtDlp(videoId, clientType = null) {
     return new Promise(async (resolve, reject) => {
       const args = [
         '--dump-json',
@@ -50,37 +50,40 @@ class YouTubeExtractor {
       // Build extractor args for YouTube client and PO token
       const extractorArgs = [];
       
-      // Strategy: Try clients that DON'T require PO tokens first
-      // TV client doesn't require PO tokens and works without cookies
-      // ANDROID client also has better success rate without auth
-      // Only use mweb if we have cookies (mweb needs PO token with cookies)
-      if (fs.existsSync(this.cookiesPath)) {
-        // If we have cookies, use mweb (but needs PO token)
-        extractorArgs.push('youtube:player_client=mweb');
-      } else {
-        // No cookies: Use TV or ANDROID clients (no PO token required)
-        // TV client has best success rate for unauthenticated access
-        extractorArgs.push('youtube:player_client=tv');
-        console.log('[yt-dlp] Using TV client - no PO token or cookies required');
+      // Use provided client type, or determine based on cookies
+      let selectedClient = clientType;
+      if (!selectedClient) {
+        if (fs.existsSync(this.cookiesPath)) {
+          // If we have cookies, use mweb (but needs PO token)
+          selectedClient = 'mweb';
+        } else {
+          // Default to ios for no cookies (better than tv)
+          selectedClient = 'ios';
+        }
       }
       
+      extractorArgs.push(`youtube:player_client=${selectedClient}`);
+      console.log(`[yt-dlp] Using ${selectedClient.toUpperCase()} client`);
+      
       // Only configure PO Token Provider if using mweb client (which requires it with cookies)
-      // TV and ANDROID clients don't need PO tokens - they work without authentication
+      // Mobile clients (IOS/ANDROID) and TV don't need PO tokens
       if (fs.existsSync(this.cookiesPath)) {
         const poProviderUrl = process.env.PO_TOKEN_PROVIDER_URL || 'http://po-token-provider:4416';
         extractorArgs.push(`youtubepot-bgutilhttp:base_url=${poProviderUrl}`);
         console.log(`[yt-dlp] Using PO Token Provider at: ${poProviderUrl}`);
       } else {
-        console.log('[yt-dlp] No cookies - skipping PO token provider (TV/ANDROID clients don\'t need it)');
+        console.log('[yt-dlp] No cookies - skipping PO token provider (mobile clients don\'t need it)');
       }
 
       if (extractorArgs.length > 0) {
         args.push('--extractor-args', extractorArgs.join(';'));
       }
 
-      // curl_cffi is automatically used by yt-dlp when installed (via [curl_cffi] extra)
-      // No command-line option needed - it mimics real browser TLS fingerprints
-      console.log('[yt-dlp] curl_cffi will be used automatically for TLS fingerprint impersonation');
+      // Use curl_cffi impersonation to mimic real browser TLS fingerprints
+      // This is critical for bypassing YouTube's bot detection
+      // curl_cffi must be explicitly enabled with --impersonate flag
+      args.push('--impersonate', 'chrome');
+      console.log('[yt-dlp] Using curl_cffi with Chrome impersonation for TLS fingerprint bypass');
 
       // Add user agent (use latest Chrome version)
       args.push('--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
@@ -146,9 +149,44 @@ class YouTubeExtractor {
 
       console.log(`[Extract] Starting extraction for video: ${videoId}`);
 
-      // Use yt-dlp with TV client (works without cookies) or mweb (with cookies + PO token provider)
-      const videoInfo = await this.extractWithYtDlp(videoId);
-      return videoInfo;
+      // Try multiple client strategies if first attempt fails (only when no cookies)
+      // Mobile clients (IOS/ANDROID) work better without authentication
+      if (!fs.existsSync(this.cookiesPath)) {
+        // Strategy 1: IOS client with impersonation (best for no cookies)
+        try {
+          console.log('[Extract] [1/3] Trying IOS client...');
+          const videoInfo = await this.extractWithYtDlp(videoId, 'ios');
+          return videoInfo;
+        } catch (iosError) {
+          console.warn('[Extract] IOS client failed, trying ANDROID client...');
+          console.warn('[Extract] IOS error:', iosError.message.substring(0, 200));
+          
+          // Strategy 2: ANDROID client
+          try {
+            console.log('[Extract] [2/3] Trying ANDROID client...');
+            const videoInfo = await this.extractWithYtDlp(videoId, 'android');
+            return videoInfo;
+          } catch (androidError) {
+            console.warn('[Extract] ANDROID client failed, trying TV client...');
+            console.warn('[Extract] ANDROID error:', androidError.message.substring(0, 200));
+            
+            // Strategy 3: TV client (last resort for no cookies)
+            try {
+              console.log('[Extract] [3/3] Trying TV client...');
+              const videoInfo = await this.extractWithYtDlp(videoId, 'tv');
+              return videoInfo;
+            } catch (tvError) {
+              console.error('[Extract] All client types failed');
+              console.error('[Extract] TV error:', tvError.message.substring(0, 200));
+              throw new Error(`All extraction attempts failed. Last error: ${tvError.message.substring(0, 200)}`);
+            }
+          }
+        }
+      } else {
+        // With cookies, just use mweb (which requires PO token provider)
+        const videoInfo = await this.extractWithYtDlp(videoId, 'mweb');
+        return videoInfo;
+      }
 
     } catch (error) {
       console.error('[Extract] Fatal error:', error.message);
