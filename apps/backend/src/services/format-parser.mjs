@@ -181,12 +181,26 @@ class FormatParser {
       }
     }
 
+    // Calculate bitrates (convert to kbps if needed - yt-dlp usually provides in kbps already)
+    const tbrRaw = format.tbr || format.abr || format.vbr || 0;
+    const abrRaw = format.abr || 0;
+    const vbrRaw = format.vbr || 0;
+    
+    // yt-dlp provides bitrates in kbps, but double-check and convert if needed
+    // If value is suspiciously high (>10000), it might be in bps, so divide by 1000
+    const tbr = Math.round(tbrRaw > 10000 ? tbrRaw / 1000 : tbrRaw);
+    const abr = Math.round(abrRaw > 10000 ? abrRaw / 1000 : abrRaw);
+    const vbr = Math.round(vbrRaw > 10000 ? vbrRaw / 1000 : vbrRaw);
+
     // Calculate quality score (0-10)
     const quality = this.calculateQuality(format, width, height);
 
+    // Generate format_note with bitrate info (needed for frontend parsing)
+    const formatNote = format.format_note || this.inferFormatNote(format, height, tbr, abr, vbr, hasVideo, hasAudio);
+
     return {
       format_id: format.format_id || '',
-      format_note: format.format_note || this.inferFormatNote(format, height),
+      format_note: formatNote,
       ext: format.ext || 'unknown',
       protocol: format.protocol || 'unknown',
       url: format.url || '',
@@ -209,10 +223,10 @@ class FormatParser {
       filesize: format.filesize || format.filesize_approx || 0,
       filesize_approx: format.filesize_approx || format.filesize || 0,
       
-      // Bitrate
-      tbr: format.tbr || format.abr || format.vbr || 0, // Total bitrate, audio bitrate, or video bitrate
-      abr: format.abr || 0, // Audio bitrate
-      vbr: format.vbr || 0, // Video bitrate
+      // Bitrate (all values in kbps for consistency)
+      tbr: tbr, // Total bitrate, audio bitrate, or video bitrate (kbps)
+      abr: abr, // Audio bitrate (kbps)
+      vbr: vbr, // Video bitrate (kbps)
       
       // Quality score
       quality: quality,
@@ -269,22 +283,57 @@ class FormatParser {
 
   /**
    * Infer format note from format properties
+   * Includes bitrate information in format expected by frontend (e.g., "128kbps")
    */
-  inferFormatNote(format, height) {
-    if (format.format_note) return format.format_note;
+  inferFormatNote(format, height, tbr = 0, abr = 0, vbr = 0, hasVideo = false, hasAudio = false) {
+    if (format.format_note) {
+      // If format_note already exists, enhance it with bitrate if missing
+      const existingNote = format.format_note;
+      const hasBitrate = existingNote.includes('kbps') || existingNote.includes('bps');
+      
+      // For audio-only formats, ensure bitrate is in format_note
+      if (!hasVideo && hasAudio && !hasBitrate) {
+        const bitrate = abr || tbr || 0;
+        if (bitrate > 0) {
+          return `${existingNote} - ${bitrate}kbps`;
+        }
+      }
+      
+      return existingNote;
+    }
     
+    // No format_note, generate one
+    // Audio-only format
+    if (!hasVideo && hasAudio) {
+      const bitrate = abr || tbr || 0;
+      if (bitrate > 0) {
+        // Format for frontend parsing: must include "kbps"
+        return `audio only - ${bitrate}kbps`;
+      }
+      return 'audio only';
+    }
+    
+    // Video format (with or without audio)
     const fps = format.fps || 0;
     const fpsStr = fps >= 60 ? '60' : fps >= 30 ? '30' : '';
     
-    if (height >= 2160) return `4K${fpsStr ? ` ${fpsStr}fps` : ''}`;
-    if (height >= 1440) return `1440p${fpsStr ? ` ${fpsStr}fps` : ''}`;
-    if (height >= 1080) return `1080p${fpsStr ? ` ${fpsStr}fps` : ''}`;
-    if (height >= 720) return `720p${fpsStr ? ` ${fpsStr}fps` : ''}`;
-    if (height >= 480) return `480p`;
-    if (height >= 360) return `360p`;
-    if (height >= 240) return `240p`;
-    if (format.acodec && format.acodec !== 'none') return 'audio only';
-    return 'unknown';
+    let note = '';
+    if (height >= 2160) note = `4K${fpsStr ? ` ${fpsStr}fps` : ''}`;
+    else if (height >= 1440) note = `1440p${fpsStr ? ` ${fpsStr}fps` : ''}`;
+    else if (height >= 1080) note = `1080p${fpsStr ? ` ${fpsStr}fps` : ''}`;
+    else if (height >= 720) note = `720p${fpsStr ? ` ${fpsStr}fps` : ''}`;
+    else if (height >= 480) note = `480p${fpsStr ? ` ${fpsStr}fps` : ''}`;
+    else if (height >= 360) note = `360p${fpsStr ? ` ${fpsStr}fps` : ''}`;
+    else if (height >= 240) note = `240p${fpsStr ? ` ${fpsStr}fps` : ''}`;
+    else if (height > 0) note = `${height}p${fpsStr ? ` ${fpsStr}fps` : ''}`;
+    else note = 'unknown';
+    
+    // Add video-only indicator if no audio
+    if (hasVideo && !hasAudio) {
+      note += ' (video only)';
+    }
+    
+    return note;
   }
 
   /**

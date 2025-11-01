@@ -19,6 +19,9 @@ export interface VideoFormat {
   hasVideo?: boolean
   language?: string
   audio_track_id?: string
+  tbr?: number  // Total bitrate in kbps
+  abr?: number  // Audio bitrate in kbps
+  vbr?: number  // Video bitrate in kbps
 }
 
 export interface SubtitleTrack {
