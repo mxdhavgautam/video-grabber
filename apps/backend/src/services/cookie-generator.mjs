@@ -505,27 +505,96 @@ class CookieGenerator {
       }
       
       // Strategy 2: Accept cookies/consent if dialog appears (do this early, before any navigation)
+      // CRITICAL: CONSENT cookie is required by YouTube for API access
       try {
-        // Use evaluate to find buttons with specific text (more reliable)
-        const consentButton = await this.page.evaluateHandle(() => {
-          const buttons = Array.from(document.querySelectorAll('button, yt-button-renderer, paper-button'));
-          for (const btn of buttons) {
-            const text = btn.textContent?.toLowerCase() || btn.innerText?.toLowerCase() || '';
-            const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
-            if ((text.includes('accept all') || text.includes('i agree') || 
-                 ariaLabel.includes('accept')) && 
-                btn.offsetWidth > 0 && btn.offsetHeight > 0) {
-              return btn;
+        // Try multiple methods to find and click consent button
+        const consentMethods = [
+          // Method 1: Direct button selectors
+          async () => {
+            const selectors = [
+              'button:has-text("Accept all")',
+              'button:has-text("I agree")',
+              'button[aria-label*="Accept"]',
+              'yt-button-renderer button',
+              'paper-button[aria-label*="Accept"]',
+              '#content button',
+              'ytd-consent-bump-v2-lightbox button'
+            ];
+            
+            for (const selector of selectors) {
+              try {
+                const buttons = await this.page.$$(selector);
+                for (const btn of buttons) {
+                  const text = await this.page.evaluate(e => e.textContent?.toLowerCase() || '', btn);
+                  const ariaLabel = await this.page.evaluate(e => e.getAttribute('aria-label')?.toLowerCase() || '', btn);
+                  
+                  if ((text.includes('accept') || text.includes('agree') || ariaLabel.includes('accept')) &&
+                      await this.page.evaluate(e => e.offsetWidth > 0 && e.offsetHeight > 0, btn)) {
+                    return btn;
+                  }
+                }
+              } catch (e) {
+                continue;
+              }
             }
+            return null;
+          },
+          
+          // Method 2: Evaluate all buttons for text match
+          async () => {
+            return await this.page.evaluateHandle(() => {
+              const buttons = Array.from(document.querySelectorAll('button, yt-button-renderer, paper-button, a[role="button"]'));
+              for (const btn of buttons) {
+                const text = (btn.textContent || btn.innerText || '').toLowerCase();
+                const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+                if ((text.includes('accept all') || text.includes('i agree') || text.includes('accept') ||
+                     ariaLabel.includes('accept')) && 
+                    btn.offsetWidth > 0 && btn.offsetHeight > 0) {
+                  return btn;
+                }
+              }
+              return null;
+            });
           }
-          return null;
-        });
+        ];
         
-        if (consentButton && consentButton.asElement()) {
-          console.log('[CookieGenerator] Found consent dialog, accepting...');
-          await consentButton.asElement().click();
-          await this.sleep(3000);
-          console.log('[CookieGenerator] ✓ Consent accepted');
+        let consentClicked = false;
+        for (const method of consentMethods) {
+          try {
+            const consentElement = await method();
+            if (consentElement) {
+              let element = consentElement;
+              // Handle JSHandle
+              if (consentElement.asElement) {
+                element = consentElement.asElement();
+              }
+              
+              if (element) {
+                console.log('[CookieGenerator] Found consent dialog, accepting...');
+                await element.click();
+                await this.sleep(4000); // Wait longer for cookie to be set
+                
+                // Verify CONSENT cookie was set
+                const cookiesAfter = await this.page.cookies();
+                const hasConsent = cookiesAfter.some(c => c.name === 'CONSENT' || c.name.includes('CONSENT'));
+                if (hasConsent) {
+                  console.log('[CookieGenerator] ✓ Consent accepted - CONSENT cookie verified');
+                } else {
+                  console.warn('[CookieGenerator] ⚠️  Consent clicked but CONSENT cookie not found yet');
+                }
+                
+                consentClicked = true;
+                break;
+              }
+            }
+          } catch (error) {
+            console.log(`[CookieGenerator] Consent method error:`, error.message);
+            continue;
+          }
+        }
+        
+        if (!consentClicked) {
+          console.log('[CookieGenerator] No consent dialog found (may have been accepted already)');
         }
       } catch (error) {
         console.log('[CookieGenerator] Error handling consent:', error.message);
@@ -892,17 +961,31 @@ class CookieGenerator {
             // Wait a moment for video player to initialize
             await this.sleep(this.randomBetween(2000, 3000));
             
-            // Watch video for specified duration (critical for cookie generation)
-            const watchTime = this.randomBetween(watchDuration[0], watchDuration[1]);
-            console.log(`[CookieGenerator] Watching video for ${Math.round(watchTime / 1000)}s to generate VISITOR_INFO1_LIVE cookie...`);
-            
-            // Scroll a bit while watching (human-like behavior)
-            await this.sleep(watchTime / 2);
-            await this.humanScroll();
-            await this.sleep(watchTime / 2);
-            
-            // Sometimes interact (scroll, move mouse) while watching
-            await this.randomMouseMovement();
+                    // Watch video for longer duration (critical for cookie generation)
+                    // Use longer watch time for better cookie generation (20-30s minimum)
+                    const watchTime = Math.max(
+                      this.randomBetween(20000, 30000), // Minimum 20-30 seconds
+                      this.randomBetween(watchDuration[0], watchDuration[1])
+                    );
+                    console.log(`[CookieGenerator] Watching video for ${Math.round(watchTime / 1000)}s to generate VISITOR_INFO1_LIVE and session cookies...`);
+                    
+                    // Interactive watching - scroll, move mouse, view comments (shows engagement)
+                    await this.sleep(watchTime / 4);
+                    await this.humanScroll(); // Scroll video page
+                    await this.sleep(watchTime / 4);
+                    await this.randomMouseMovement(); // Move mouse
+                    await this.sleep(watchTime / 4);
+                    
+                    // Sometimes scroll down to comments (more engagement = better cookies)
+                    if (Math.random() > 0.5) {
+                      await this.page.evaluate(() => {
+                        window.scrollBy(0, 500);
+                      });
+                      await this.sleep(2000);
+                    }
+                    
+                    await this.sleep(watchTime / 4);
+                    await this.randomMouseMovement();
             
             console.log('[CookieGenerator] ✓ Video watched, session cookies should be generated');
             
@@ -1137,17 +1220,30 @@ class CookieGenerator {
             const videoUrl = this.page.url();
             console.log(`[CookieGenerator] ✓ Video page loaded: ${videoUrl}`);
             
-            // Wait for video player to initialize
-            await this.sleep(this.randomBetween(2000, 3000));
+            // Wait for video player to initialize and start playing
+            await this.sleep(this.randomBetween(3000, 5000));
             
-            // Watch video for 8-12 seconds (critical for cookie generation)
-            const watchTime = this.randomBetween(8000, 12000);
-            console.log(`[CookieGenerator] Watching video for ${Math.round(watchTime / 1000)}s to generate VISITOR_INFO1_LIVE cookie...`);
+            // Watch video for 20-30 seconds (longer watch = more reliable cookie generation)
+            // YouTube generates VISITOR_INFO1_LIVE and other session cookies during video playback
+            const watchTime = this.randomBetween(20000, 30000);
+            console.log(`[CookieGenerator] Watching video for ${Math.round(watchTime / 1000)}s to generate VISITOR_INFO1_LIVE and session cookies...`);
             
-            // Scroll a bit while watching (human-like behavior)
-            await this.sleep(watchTime / 2);
-            await this.humanScroll();
-            await this.sleep(watchTime / 2);
+            // Interactive watching (scroll, mouse movement, comments view) - shows engagement
+            await this.sleep(watchTime / 4);
+            await this.humanScroll(); // Scroll video page
+            await this.sleep(watchTime / 4);
+            await this.randomMouseMovement(); // Move mouse
+            await this.sleep(watchTime / 4);
+            
+            // Sometimes scroll down to comments (more engagement)
+            if (Math.random() > 0.5) {
+              await this.page.evaluate(() => {
+                window.scrollBy(0, 500);
+              });
+              await this.sleep(2000);
+            }
+            
+            await this.sleep(watchTime / 4);
             
             // Sometimes interact (scroll, move mouse) while watching
             await this.randomMouseMovement();
@@ -1625,12 +1721,27 @@ class CookieGenerator {
       }
 
       // Filter for YouTube cookies (most important)
+      // Include both youtube.com and google.com cookies (YouTube uses Google auth)
       const youtubeCookies = cookies.filter(c => 
         c.domain.includes('youtube.com') || 
         c.domain.includes('.youtube.com') ||
         c.domain.includes('google.com') ||
-        c.domain.includes('.google.com')
+        c.domain.includes('.google.com') ||
+        c.domain === '.google.com' ||
+        c.domain === '.youtube.com'
       );
+      
+      // Log which critical cookies we have
+      const criticalCookies = ['VISITOR_INFO1_LIVE', 'YSC', 'CONSENT', 'PREF'];
+      const foundCritical = youtubeCookies.filter(c => criticalCookies.includes(c.name));
+      if (foundCritical.length > 0) {
+        console.log(`[CookieGenerator] Critical cookies found: ${foundCritical.map(c => c.name).join(', ')}`);
+      }
+      
+      const missingCritical = criticalCookies.filter(name => !youtubeCookies.some(c => c.name === name));
+      if (missingCritical.length > 0) {
+        console.warn(`[CookieGenerator] ⚠️  Missing critical cookies: ${missingCritical.join(', ')}`);
+      }
 
       console.log(`[CookieGenerator] Filtered to ${youtubeCookies.length} YouTube/Google cookies`);
       
