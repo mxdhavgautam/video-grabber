@@ -1040,16 +1040,21 @@ const server = createServer(async (req, res) => {
       console.log(`📥 Downloading format ${formatId} from: ${normalizedVideoUrl} (IP: ${clientIP})`)
 
       // Prepare cookie flags for yt-dlp
+      // CRITICAL: Use --cookies-from-browser directly instead of exported cookies.txt
+      // This reads directly from Chromium's cookie database which is more reliable
       let cookieFlags = []
-      const profileCookiesFile = process.env.CHROME_PROFILE_DIR ? `${process.env.CHROME_PROFILE_DIR}/cookies.txt` : null
+      const chromeProfileDir = process.env.CHROME_PROFILE_DIR
+      const profileCookiesFile = chromeProfileDir ? `${chromeProfileDir}/cookies.txt` : null
       const cookiesExist = profileCookiesFile ? existsSync(profileCookiesFile) : false
 
-      if (cookiesExist) {
+      if (useBrowserCookies && chromeProfileDir) {
+        // Prioritize --cookies-from-browser (reads directly from Chromium database)
+        cookieFlags = ['--cookies-from-browser', `chromium:${chromeProfileDir}`]
+        console.log(`🔐 Download Strategy: Using Chromium profile via --cookies-from-browser (${chromeProfileDir})`)
+      } else if (cookiesExist) {
+        // Fallback to exported cookies file
         cookieFlags = ['--cookies', profileCookiesFile]
         console.log(`🔐 Download Strategy: Using exported cookies file (${profileCookiesFile})`)
-      } else if (useBrowserCookies && process.env.CHROME_PROFILE_DIR) {
-        cookieFlags = ['--cookies-from-browser', `chromium:${process.env.CHROME_PROFILE_DIR}`]
-        console.log(`🔐 Download Strategy: Falling back to --cookies-from-browser chromium:${process.env.CHROME_PROFILE_DIR}`)
       } else {
         cookieFlags = ['--geo-bypass']
         console.log(`🌍 Download Strategy: No cookies available, using geo-bypass`)
