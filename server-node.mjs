@@ -666,17 +666,35 @@ async function getVideoInfoWithPuppeteer(videoUrl) {
         timeout: 60000 
       })
       
-      // Check for CAPTCHA or bot detection pages
-      const pageContent = await page.content()
-      const pageTitle = await page.title()
+      // Check for CAPTCHA or bot detection pages (very specific detection)
       const pageUrl = page.url()
+      const pageTitle = await page.title()
       
-      if (pageContent.includes('Sorry, we can\'t verify that you\'re not a robot') ||
-          pageContent.includes('captcha') ||
-          pageTitle.includes('Just a moment') ||
-          pageUrl.includes('challenge') ||
-          pageUrl.includes('consent')) {
-        console.error('🚫 CAPTCHA or bot detection challenge detected!')
+      // Check URL first (most reliable indicator)
+      if (pageUrl.includes('/challenge') || pageUrl.includes('/consent') || pageUrl.includes('google.com/sorry')) {
+        console.error('🚫 CAPTCHA challenge detected in URL!')
+        console.error(`   Page URL: ${pageUrl}`)
+        throw new Error('CAPTCHA challenge detected - page requires human verification')
+      }
+      
+      // Check for actual CAPTCHA elements on the page (more reliable than content search)
+      const hasCaptchaElement = await page.evaluate(() => {
+        // Check for reCAPTCHA iframe
+        const recaptchaIframe = document.querySelector('iframe[src*="recaptcha"]')
+        // Check for specific CAPTCHA messages
+        const captchaMessages = [
+          'Sorry, we can\'t verify that you\'re not a robot',
+          'Just a moment',
+          'Verify you\'re not a robot'
+        ]
+        const bodyText = document.body?.innerText?.toLowerCase() || ''
+        const hasMessage = captchaMessages.some(msg => bodyText.includes(msg.toLowerCase()))
+        
+        return !!recaptchaIframe || hasMessage
+      })
+      
+      if (hasCaptchaElement) {
+        console.error('🚫 CAPTCHA element detected on page!')
         console.error(`   Page URL: ${pageUrl}`)
         console.error(`   Page Title: ${pageTitle}`)
         throw new Error('CAPTCHA challenge detected - page requires human verification')

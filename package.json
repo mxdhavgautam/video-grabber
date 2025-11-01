@@ -29,7 +29,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.447.0",
-    "puppeteer-core": "^23.10.4",
+    "puppeteer-core": "^24.27.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "pyodide": "^0.29.0",
