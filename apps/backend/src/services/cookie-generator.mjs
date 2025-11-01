@@ -400,44 +400,100 @@ class CookieGenerator {
   }
 
   /**
+   * Check if we've been redirected to Google sign-in and navigate back
+   */
+  async handleGoogleSignInRedirect() {
+    try {
+      const currentUrl = this.page.url();
+      
+      // Check if we're on Google sign-in page
+      if (currentUrl.includes('accounts.google.com') || currentUrl.includes('/signin')) {
+        console.warn('[CookieGenerator] ⚠️  Redirected to Google sign-in page, navigating back to YouTube...');
+        
+        // Try to go back
+        await this.page.goBack({ waitUntil: 'domcontentloaded', timeout: 10000 }).catch(() => {
+          // If back doesn't work, navigate directly
+          console.log('[CookieGenerator] goBack failed, navigating directly to YouTube...');
+          return this.page.goto('https://www.youtube.com', { waitUntil: 'domcontentloaded', timeout: 15000 });
+        });
+        
+        await this.sleep(2000);
+        const newUrl = this.page.url();
+        console.log(`[CookieGenerator] After redirect recovery, URL: ${newUrl}`);
+        
+        return true; // Indicates we handled a redirect
+      }
+      
+      return false;
+    } catch (error) {
+      console.warn('[CookieGenerator] Error handling sign-in redirect:', error.message);
+      return false;
+    }
+  }
+
+  /**
    * Handle YouTube prompts (Sign in, consent dialogs, etc.)
    * These prompts block navigation and need to be dismissed
+   * CRITICAL: Look for dismiss buttons FIRST, avoid clicking sign-in buttons that navigate
    */
   async handleYouTubePrompts() {
     try {
       console.log('[CookieGenerator] Checking for YouTube prompts/dialogs...');
       
+      // First, check if we've been redirected to sign-in (recover from previous attempt)
+      const wasRedirected = await this.handleGoogleSignInRedirect();
+      if (wasRedirected) {
+        await this.sleep(3000); // Wait longer after recovery
+      }
+      
       // Wait a moment for any dialogs to appear
       await this.sleep(2000);
       
-      // Strategy 1: Dismiss "Sign in" prompts
+      // CRITICAL: Strategy 1 - Look for dismiss/skip buttons FIRST (before sign-in buttons)
+      // These buttons dismiss prompts without navigating
       try {
-        const signInSelectors = [
-          'button[aria-label*="Sign in"]',
-          'a[aria-label*="Sign in"]',
-          'yt-button-renderer a[href*="/accounts/"]',
-          '[aria-label="Sign in"]'
+        const dismissSelectors = [
+          'button:has-text("Not now")',
+          'button:has-text("Skip")',
+          'button:has-text("Maybe later")',
+          'button[aria-label*="Not now"]',
+          'button[aria-label*="Skip"]',
+          'yt-button-renderer button:has-text("Not now")',
+          'yt-button-renderer button[aria-label*="Not now"]',
+          'paper-button[aria-label*="Not now"]'
         ];
         
-        for (const selector of signInSelectors) {
+        for (const selector of dismissSelectors) {
           try {
-            const elements = await this.page.$$(selector);
-            for (const el of elements.slice(0, 3)) {
-              const isVisible = await this.page.evaluate((e) => {
-                const rect = e.getBoundingClientRect();
-                return rect.width > 0 && rect.height > 0 && 
-                       window.getComputedStyle(e).visibility !== 'hidden';
-              }, el);
-              
-              if (isVisible) {
-                const text = await this.page.evaluate(e => e.textContent?.toLowerCase() || '', el);
-                // Only dismiss "Sign in" buttons in dialogs, not the main nav button
-                if (text.includes('sign in') && !text.includes('subscribe')) {
-                  console.log('[CookieGenerator] Found "Sign in" prompt, clicking to dismiss...');
-                  await el.click();
-                  await this.sleep(1000);
-                  break;
+            const buttons = await this.page.$$(selector);
+            for (const button of buttons.slice(0, 5)) {
+              try {
+                const isVisible = await this.page.evaluate((e) => {
+                  const rect = e.getBoundingClientRect();
+                  return rect.width > 0 && rect.height > 0 && 
+                         window.getComputedStyle(e).visibility !== 'hidden';
+                }, button);
+                
+                if (isVisible) {
+                  const text = await this.page.evaluate(e => e.textContent?.toLowerCase() || '', button);
+                  if (text.includes('not now') || text.includes('skip') || text.includes('maybe later')) {
+                    console.log('[CookieGenerator] Found dismiss button, clicking...');
+                    await button.click();
+                    await this.sleep(2000);
+                    
+                    // Check if we're still on YouTube (not redirected)
+                    const urlAfter = this.page.url();
+                    if (!urlAfter.includes('accounts.google.com')) {
+                      console.log('[CookieGenerator] ✓ Prompt dismissed successfully');
+                      break;
+                    } else {
+                      console.warn('[CookieGenerator] Click caused redirect, going back...');
+                      await this.handleGoogleSignInRedirect();
+                    }
+                  }
                 }
+              } catch (e) {
+                continue;
               }
             }
           } catch (e) {
@@ -445,70 +501,46 @@ class CookieGenerator {
           }
         }
       } catch (error) {
-        console.log('[CookieGenerator] Error handling sign in prompts:', error.message);
+        console.log('[CookieGenerator] Error handling dismiss buttons:', error.message);
       }
       
-      // Strategy 2: Accept cookies/consent if dialog appears
+      // Strategy 2: Accept cookies/consent if dialog appears (do this early, before any navigation)
       try {
-        const consentSelectors = [
-          'button:has-text("Accept all")',
-          'button:has-text("I agree")',
-          'button[aria-label*="Accept"]',
-          'button[aria-label*="Agree"]',
-          '[id*="accept"]',
-          '[id*="agree"]',
-          'ytd-consent-bump-v2-lightbox button'
-        ];
-        
-        for (const selector of consentSelectors) {
-          try {
-            const button = await this.page.$(selector);
-            if (button) {
-              const isVisible = await this.page.evaluate((e) => {
-                const rect = e.getBoundingClientRect();
-                return rect.width > 0 && rect.height > 0;
-              }, button);
-              
-              if (isVisible) {
-                console.log('[CookieGenerator] Found consent dialog, accepting...');
-                await button.click();
-                await this.sleep(2000);
-                console.log('[CookieGenerator] ✓ Consent accepted');
-                break;
-              }
+        // Use evaluate to find buttons with specific text (more reliable)
+        const consentButton = await this.page.evaluateHandle(() => {
+          const buttons = Array.from(document.querySelectorAll('button, yt-button-renderer, paper-button'));
+          for (const btn of buttons) {
+            const text = btn.textContent?.toLowerCase() || btn.innerText?.toLowerCase() || '';
+            const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
+            if ((text.includes('accept all') || text.includes('i agree') || 
+                 ariaLabel.includes('accept')) && 
+                btn.offsetWidth > 0 && btn.offsetHeight > 0) {
+              return btn;
             }
-          } catch (e) {
-            continue;
           }
+          return null;
+        });
+        
+        if (consentButton && consentButton.asElement()) {
+          console.log('[CookieGenerator] Found consent dialog, accepting...');
+          await consentButton.asElement().click();
+          await this.sleep(3000);
+          console.log('[CookieGenerator] ✓ Consent accepted');
         }
       } catch (error) {
         console.log('[CookieGenerator] Error handling consent:', error.message);
       }
       
-      // Strategy 3: Try clicking "Not now" or "Skip" on sign-in prompts
-      try {
-        const skipSelectors = [
-          'button:has-text("Not now")',
-          'button:has-text("Skip")',
-          'button[aria-label*="Not now"]',
-          'yt-button-renderer button[aria-label*="Not now"]'
-        ];
-        
-        for (const selector of skipSelectors) {
-          try {
-            const button = await this.page.$(selector);
-            if (button) {
-              console.log('[CookieGenerator] Found skip/not now button, clicking...');
-              await button.click();
-              await this.sleep(1500);
-              break;
-            }
-          } catch (e) {
-            continue;
-          }
-        }
-      } catch (error) {
-        // Ignore errors
+      // Strategy 3: DO NOT click sign-in buttons (they navigate to login page)
+      // Instead, wait for feed to load naturally after dismissing prompts
+      console.log('[CookieGenerator] Waiting for feed to load after handling prompts...');
+      await this.sleep(3000);
+      
+      // Verify we're still on YouTube
+      const finalUrl = this.page.url();
+      if (finalUrl.includes('accounts.google.com')) {
+        console.warn('[CookieGenerator] ⚠️  Still on sign-in page, attempting recovery...');
+        await this.handleGoogleSignInRedirect();
       }
       
       // Strategy 4: If there's a modal/overlay, try to close it
@@ -517,13 +549,14 @@ class CookieGenerator {
           'button[aria-label="Close"]',
           'button[aria-label*="Close"]',
           '[aria-label="Close dialog"]',
-          'paper-dialog button[aria-label*="Close"]'
+          'paper-dialog button[aria-label*="Close"]',
+          'yt-icon-button[aria-label*="Close"]'
         ];
         
         for (const selector of closeSelectors) {
           try {
-            const button = await this.page.$(selector);
-            if (button) {
+            const buttons = await this.page.$$(selector);
+            for (const button of buttons.slice(0, 3)) {
               const isVisible = await this.page.evaluate((e) => {
                 const rect = e.getBoundingClientRect();
                 return rect.width > 0 && rect.height > 0;
@@ -533,6 +566,11 @@ class CookieGenerator {
                 console.log('[CookieGenerator] Found close button, clicking...');
                 await button.click();
                 await this.sleep(1000);
+                
+                // Check if we're still on YouTube
+                if (!this.page.url().includes('accounts.google.com')) {
+                  break;
+                }
               }
             }
           } catch (e) {
@@ -543,9 +581,9 @@ class CookieGenerator {
         // Ignore errors
       }
       
-      // Scroll a bit to show we're interacting
+      // Scroll a bit to show we're interacting (helps reveal feed)
       await this.humanScroll();
-      await this.sleep(1000);
+      await this.sleep(2000);
       
     } catch (error) {
       console.warn('[CookieGenerator] Error handling YouTube prompts:', error.message);
@@ -577,9 +615,23 @@ class CookieGenerator {
       // CRITICAL: Handle YouTube prompts before searching
       // YouTube shows "Sign in" and consent dialogs that block navigation
       await this.handleYouTubePrompts();
+      
+      // Verify we're still on YouTube (not redirected to sign-in)
+      currentUrl = this.page.url();
+      if (currentUrl.includes('accounts.google.com')) {
+        console.warn('[CookieGenerator] ⚠️  Redirected to sign-in after prompts, attempting recovery...');
+        await this.handleGoogleSignInRedirect();
+        await this.sleep(3000);
+        currentUrl = this.page.url();
+      }
+      
+      if (!currentUrl.includes('youtube.com')) {
+        console.warn('[CookieGenerator] ⚠️  Not on YouTube, cannot search');
+        return;
+      }
 
       // Wait a moment after handling prompts
-      await this.sleep(this.randomBetween(1000, 2000));
+      await this.sleep(this.randomBetween(2000, 3000));
 
       // Find and use search box
       console.log('[CookieGenerator] Looking for YouTube search box...');
@@ -980,12 +1032,27 @@ class CookieGenerator {
     try {
       console.log('[CookieGenerator] Attempting to watch videos from homepage feed...');
       
-      // Wait for feed to be populated
-      await this.sleep(this.randomBetween(2000, 4000));
+      // CRITICAL: Check if we got redirected to sign-in
+      await this.handleGoogleSignInRedirect();
       
-      // Scroll to see more videos
+      // Wait longer for feed to be populated (YouTube may be slow to load)
+      console.log('[CookieGenerator] Waiting for YouTube feed to populate...');
+      await this.sleep(this.randomBetween(3000, 5000));
+      
+      // Scroll to trigger lazy loading and reveal more videos
       await this.humanScroll();
-      await this.sleep(1000);
+      await this.sleep(2000);
+      
+      // Scroll again to ensure feed is loaded
+      await this.humanScroll();
+      await this.sleep(2000);
+      
+      // Check current URL - if we're on sign-in, we're stuck
+      const currentUrl = this.page.url();
+      if (currentUrl.includes('accounts.google.com')) {
+        console.warn('[CookieGenerator] ⚠️  Still on Google sign-in page, cannot access feed');
+        return false;
+      }
       
       // Look for video links in the feed - try multiple selectors
       const videoSelectors = [
