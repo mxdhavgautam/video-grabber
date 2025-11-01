@@ -350,38 +350,205 @@ class CookieGenerator {
 
       await this.sleep(this.randomBetween(2000, 4000));
 
-      // Step 2: Perform a search and watch a video (generates VISITOR_INFO1_LIVE)
-      const searchQueries = [
-        'technology',
-        'programming tutorials',
-        'latest tech news'
-      ];
+      // CRITICAL: Handle YouTube prompts before proceeding
+      await this.handleYouTubePrompts();
       
-      // Do 2-3 searches with video watching
-      for (let i = 0; i < Math.min(2, searchQueries.length); i++) {
-        const query = searchQueries[i];
-        console.log(`[CookieGenerator] YouTube search ${i + 1}: "${query}"`);
+      // Wait for feed to load and populate
+      await this.sleep(this.randomBetween(2000, 3000));
+      
+      // Step 2: Try multiple strategies to watch videos and generate cookies
+      // Strategy 1: Click videos directly from homepage feed (most reliable, no search needed)
+      const watchedFromFeed = await this.watchHomepageVideos();
+      
+      // Strategy 2: If homepage videos didn't work, try searching (fallback)
+      if (!watchedFromFeed) {
+        console.log('[CookieGenerator] Homepage videos strategy failed, trying search...');
+        const searchQueries = [
+          'technology',
+          'programming tutorials',
+          'latest tech news'
+        ];
         
-        await this.youtubeSearchAndWatch(query, {
-          watchDuration: [8000, 12000], // Watch for 8-12 seconds (enough for cookies)
-          scrollFeed: i === 0 // Scroll feed on first search
-        });
-        
-        // Export cookies after watching (capture session cookies)
-        if (i === 0 || Math.random() > 0.5) {
+        // Do 1-2 searches with video watching
+        for (let i = 0; i < Math.min(1, searchQueries.length); i++) {
+          const query = searchQueries[i];
+          console.log(`[CookieGenerator] YouTube search ${i + 1}: "${query}"`);
+          
+          await this.youtubeSearchAndWatch(query, {
+            watchDuration: [8000, 12000], // Watch for 8-12 seconds (enough for cookies)
+            scrollFeed: i === 0 // Scroll feed on first search
+          });
+          
+          // Export cookies after watching (capture session cookies)
           await this.exportCookies();
+          
+          // Wait between searches
+          if (i < searchQueries.length - 1) {
+            await this.sleep(this.randomBetween(3000, 5000));
+          }
         }
-        
-        // Wait between searches
-        if (i < searchQueries.length - 1) {
-          await this.sleep(this.randomBetween(3000, 5000));
-        }
+      } else {
+        // If we watched from feed, export cookies
+        await this.exportCookies();
       }
 
       console.log('[CookieGenerator] ✓ YouTube session warmup completed');
 
     } catch (error) {
       console.warn('[CookieGenerator] YouTube session warmup error:', error.message);
+    }
+  }
+
+  /**
+   * Handle YouTube prompts (Sign in, consent dialogs, etc.)
+   * These prompts block navigation and need to be dismissed
+   */
+  async handleYouTubePrompts() {
+    try {
+      console.log('[CookieGenerator] Checking for YouTube prompts/dialogs...');
+      
+      // Wait a moment for any dialogs to appear
+      await this.sleep(2000);
+      
+      // Strategy 1: Dismiss "Sign in" prompts
+      try {
+        const signInSelectors = [
+          'button[aria-label*="Sign in"]',
+          'a[aria-label*="Sign in"]',
+          'yt-button-renderer a[href*="/accounts/"]',
+          '[aria-label="Sign in"]'
+        ];
+        
+        for (const selector of signInSelectors) {
+          try {
+            const elements = await this.page.$$(selector);
+            for (const el of elements.slice(0, 3)) {
+              const isVisible = await this.page.evaluate((e) => {
+                const rect = e.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0 && 
+                       window.getComputedStyle(e).visibility !== 'hidden';
+              }, el);
+              
+              if (isVisible) {
+                const text = await this.page.evaluate(e => e.textContent?.toLowerCase() || '', el);
+                // Only dismiss "Sign in" buttons in dialogs, not the main nav button
+                if (text.includes('sign in') && !text.includes('subscribe')) {
+                  console.log('[CookieGenerator] Found "Sign in" prompt, clicking to dismiss...');
+                  await el.click();
+                  await this.sleep(1000);
+                  break;
+                }
+              }
+            }
+          } catch (e) {
+            continue;
+          }
+        }
+      } catch (error) {
+        console.log('[CookieGenerator] Error handling sign in prompts:', error.message);
+      }
+      
+      // Strategy 2: Accept cookies/consent if dialog appears
+      try {
+        const consentSelectors = [
+          'button:has-text("Accept all")',
+          'button:has-text("I agree")',
+          'button[aria-label*="Accept"]',
+          'button[aria-label*="Agree"]',
+          '[id*="accept"]',
+          '[id*="agree"]',
+          'ytd-consent-bump-v2-lightbox button'
+        ];
+        
+        for (const selector of consentSelectors) {
+          try {
+            const button = await this.page.$(selector);
+            if (button) {
+              const isVisible = await this.page.evaluate((e) => {
+                const rect = e.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+              }, button);
+              
+              if (isVisible) {
+                console.log('[CookieGenerator] Found consent dialog, accepting...');
+                await button.click();
+                await this.sleep(2000);
+                console.log('[CookieGenerator] ✓ Consent accepted');
+                break;
+              }
+            }
+          } catch (e) {
+            continue;
+          }
+        }
+      } catch (error) {
+        console.log('[CookieGenerator] Error handling consent:', error.message);
+      }
+      
+      // Strategy 3: Try clicking "Not now" or "Skip" on sign-in prompts
+      try {
+        const skipSelectors = [
+          'button:has-text("Not now")',
+          'button:has-text("Skip")',
+          'button[aria-label*="Not now"]',
+          'yt-button-renderer button[aria-label*="Not now"]'
+        ];
+        
+        for (const selector of skipSelectors) {
+          try {
+            const button = await this.page.$(selector);
+            if (button) {
+              console.log('[CookieGenerator] Found skip/not now button, clicking...');
+              await button.click();
+              await this.sleep(1500);
+              break;
+            }
+          } catch (e) {
+            continue;
+          }
+        }
+      } catch (error) {
+        // Ignore errors
+      }
+      
+      // Strategy 4: If there's a modal/overlay, try to close it
+      try {
+        const closeSelectors = [
+          'button[aria-label="Close"]',
+          'button[aria-label*="Close"]',
+          '[aria-label="Close dialog"]',
+          'paper-dialog button[aria-label*="Close"]'
+        ];
+        
+        for (const selector of closeSelectors) {
+          try {
+            const button = await this.page.$(selector);
+            if (button) {
+              const isVisible = await this.page.evaluate((e) => {
+                const rect = e.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+              }, button);
+              
+              if (isVisible) {
+                console.log('[CookieGenerator] Found close button, clicking...');
+                await button.click();
+                await this.sleep(1000);
+              }
+            }
+          } catch (e) {
+            continue;
+          }
+        }
+      } catch (error) {
+        // Ignore errors
+      }
+      
+      // Scroll a bit to show we're interacting
+      await this.humanScroll();
+      await this.sleep(1000);
+      
+    } catch (error) {
+      console.warn('[CookieGenerator] Error handling YouTube prompts:', error.message);
     }
   }
 
@@ -801,6 +968,153 @@ class CookieGenerator {
     } catch (error) {
       console.warn(`[CookieGenerator] YouTube search and watch failed:`, error.message);
       console.warn(`[CookieGenerator] Error stack:`, error.stack);
+    }
+  }
+
+  /**
+   * Watch videos directly from YouTube homepage feed
+   * This bypasses search navigation which is often blocked
+   * Returns true if successful, false otherwise
+   */
+  async watchHomepageVideos() {
+    try {
+      console.log('[CookieGenerator] Attempting to watch videos from homepage feed...');
+      
+      // Wait for feed to be populated
+      await this.sleep(this.randomBetween(2000, 4000));
+      
+      // Scroll to see more videos
+      await this.humanScroll();
+      await this.sleep(1000);
+      
+      // Look for video links in the feed - try multiple selectors
+      const videoSelectors = [
+        'a[href*="/watch?v="]',
+        'ytd-rich-item-renderer a[href*="/watch"]',
+        'ytd-video-renderer a[href*="/watch"]',
+        'ytd-grid-video-renderer a[href*="/watch"]',
+        '#dismissible a[href*="/watch"]',
+        '#contents a[href*="/watch"]'
+      ];
+      
+      let videoLink = null;
+      let videoCount = 0;
+      
+      for (const selector of videoSelectors) {
+        try {
+          console.log(`[CookieGenerator] Looking for videos with selector: ${selector}`);
+          const links = await this.page.$$(selector);
+          console.log(`[CookieGenerator] Found ${links.length} potential video links`);
+          
+          if (links.length > 0) {
+            // Filter to only visible, legitimate video links
+            const visibleLinks = [];
+            for (const link of links.slice(0, 20)) { // Check first 20
+              try {
+                const href = await this.page.evaluate(el => el.href, link);
+                // Must be a watch link, not a channel or other link
+                if (href && href.includes('/watch?v=') && !href.includes('channel') && !href.includes('user')) {
+                  const isVisible = await this.page.evaluate((el) => {
+                    const rect = el.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0 && 
+                           window.getComputedStyle(el).visibility !== 'hidden' &&
+                           window.getComputedStyle(el).display !== 'none';
+                  }, link);
+                  
+                  if (isVisible) {
+                    visibleLinks.push({ link, href });
+                  }
+                }
+              } catch (evalError) {
+                continue;
+              }
+            }
+            
+            console.log(`[CookieGenerator] Found ${visibleLinks.length} visible, valid video links`);
+            
+            if (visibleLinks.length > 0) {
+              // Pick a random video from top 10 (more likely to be relevant)
+              const index = Math.floor(Math.random() * Math.min(10, visibleLinks.length));
+              videoLink = visibleLinks[index].link;
+              videoCount = visibleLinks.length;
+              console.log(`[CookieGenerator] ✓ Selected video ${index + 1} of ${visibleLinks.length}: ${visibleLinks[index].href}`);
+              break;
+            }
+          }
+        } catch (e) {
+          console.warn(`[CookieGenerator] Error with selector ${selector}:`, e.message);
+          continue;
+        }
+      }
+      
+      if (videoLink) {
+        // Click and watch the video
+        try {
+          console.log('[CookieGenerator] Clicking video link from homepage...');
+          
+          // Scroll video into view first
+          await this.page.evaluate((el) => {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, videoLink);
+          await this.sleep(1000);
+          
+          await videoLink.click();
+          
+          // Wait for video page to load
+          try {
+            await Promise.race([
+              this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 }),
+              this.page.waitForFunction(() => window.location.href.includes('/watch'), { timeout: 15000 })
+            ]);
+            
+            const videoUrl = this.page.url();
+            console.log(`[CookieGenerator] ✓ Video page loaded: ${videoUrl}`);
+            
+            // Wait for video player to initialize
+            await this.sleep(this.randomBetween(2000, 3000));
+            
+            // Watch video for 8-12 seconds (critical for cookie generation)
+            const watchTime = this.randomBetween(8000, 12000);
+            console.log(`[CookieGenerator] Watching video for ${Math.round(watchTime / 1000)}s to generate VISITOR_INFO1_LIVE cookie...`);
+            
+            // Scroll a bit while watching (human-like behavior)
+            await this.sleep(watchTime / 2);
+            await this.humanScroll();
+            await this.sleep(watchTime / 2);
+            
+            // Sometimes interact (scroll, move mouse) while watching
+            await this.randomMouseMovement();
+            
+            console.log('[CookieGenerator] ✓ Video watched, session cookies should be generated');
+            
+            // Verify we're still on video page
+            const finalUrl = this.page.url();
+            if (finalUrl.includes('/watch')) {
+              console.log('[CookieGenerator] ✓ Confirmed on video watch page');
+            } else {
+              console.warn(`[CookieGenerator] ⚠️  Unexpected URL after watching: ${finalUrl}`);
+            }
+            
+            return true; // Success
+          } catch (videoNavError) {
+            console.warn('[CookieGenerator] Video navigation timeout:', videoNavError.message);
+            console.warn(`[CookieGenerator] Current URL: ${this.page.url()}`);
+            // Page might still have loaded, cookies might still be generated
+            return true; // Assume success if we got here
+          }
+        } catch (clickError) {
+          console.warn('[CookieGenerator] Error clicking video:', clickError.message);
+          return false;
+        }
+      } else {
+        console.warn('[CookieGenerator] ⚠️  Could not find any video links in homepage feed');
+        console.warn('[CookieGenerator] YouTube may be blocking the feed or showing only "Sign in" prompts');
+        return false;
+      }
+      
+    } catch (error) {
+      console.warn('[CookieGenerator] Error watching homepage videos:', error.message);
+      return false;
     }
   }
 
