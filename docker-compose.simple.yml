@@ -1,0 +1,35 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.simple
+    container_name: video-grabber-app
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - NODE_ENV=production
+      - ALLOWED_ORIGINS=https://mxdhavgautam.com,http://localhost:5173
+    volumes:
+      # Persist temp downloads
+      - temp-downloads:/app/temp-downloads
+    restart: unless-stopped
+    # Resource limits
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 2
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "2"
+
+volumes:
+  temp-downloads:
+    driver: local
+
+networks:
+  default:
+    name: video-grabber-network
+

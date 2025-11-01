@@ -1,128 +1,28 @@
-# Dependencies
+# Node modules
 node_modules/
-.pnp
-.pnp.js
-.pnp.*
-.bun
-
-# Build outputs
-dist/
-build/
-.vite/
-*.tsbuildinfo
-
-# Environment variables
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-.env*.local
-
-# Logs
-logs/
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-*.log.*
-
-# OS files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-desktop.ini
-*.swp
-*.swo
-*~
-.directory
-
-# Editor directories and files
-.vscode/
-.idea/
-*.sublime-project
-*.sublime-workspace
-*.code-workspace
-.fleet/
-*.suo
-*.user
-*.userosscache
-*.sln.docstates
-
-# Testing
-coverage/
-.nyc_output/
-*.lcov
-.jest/
-*.test.js.snap
-
-# Temporary files
-tmp/
-temp/
-*.tmp
-*.temp
-*.cache
-.cache/
-.tmp/
-
-# Server logs and temp files
-/tmp/
-*.pid
-*.seed
-*.pid.lock
-
-# Package manager locks (keep bun.lock if using Bun)
-package-lock.json
-yarn.lock
-pnpm-lock.yaml
 
 # Vercel
 .vercel/
 
-# Misc
-*.zip
-*.tar.gz
-*.rar
-*.7z
-*.bak
-*.backup
-*.old
-*.orig
+# OS files
+.DS_Store
+Thumbs.db
 
-# TypeScript
-*.tsbuildinfo
+# Editor files
+.vscode/
+.idea/
 
-# Optional: Keep bun.lock if using Bun as primary package manager
-# Uncomment if you want to ignore bun.lock
-# bun.lockb
-.vercel
+# Build output
+dist/
 
-# Portfolio folder (separate project, should not be tracked here)
-portfolio/
-.env.production
+# Logs
+*.log
 
-# VPS/Docker Deployment (PRIVATE - Keep local only, never commit to GitHub)
-# These files contain infrastructure details and should never be public
-Dockerfile
-docker-compose.yml
-docker-compose.*.yml
-render.yaml
-build.sh
-DEPLOYMENT_GUIDE.md
-VPS_SETUP.md
-.dockerignore
-
-# Docker artifacts
-.docker/
-docker-volumes/
-chrome-profiles/
+# Temporary files
 temp-downloads/
+chrome-profiles/
 
-# Deployment backup folder (SENSITIVE - LOCAL BACKUP ONLY)
-deployment-backup/
+# Backups
+*.backup
+*.bak
+deployment-backup.zip
