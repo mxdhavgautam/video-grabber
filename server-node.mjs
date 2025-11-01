@@ -543,6 +543,152 @@ function normalizeYouTubeUrl(url) {
 }
 
 /**
+ * Extract video info using Puppeteer - uses Chrome's actual network stack
+ * This bypasses bot detection because we're using real Chrome, not yt-dlp's HTTP requests
+ */
+async function getVideoInfoWithPuppeteer(videoUrl) {
+  try {
+    // Dynamic import to avoid errors if Puppeteer isn't installed yet
+    const puppeteer = await import('puppeteer-core').catch(() => import('puppeteer'))
+    
+    const chromeProfileDir = findChromeProfileDir(false)
+    const executablePath = process.env.CHROME_EXECUTABLE_PATH || '/usr/bin/google-chrome'
+    
+    console.log('🌐 Using Puppeteer with Chrome\'s actual network stack...')
+    console.log(`   Chrome profile: ${chromeProfileDir || 'default'}`)
+    console.log(`   Chrome executable: ${executablePath}`)
+    
+    // Launch Chrome with existing profile (uses same cookies as startup script)
+    // Use Chrome's actual network stack - this bypasses bot detection!
+    // headless: 'new' uses Chrome's real network stack even without GUI
+    const browser = await puppeteer.launch({
+      executablePath,
+      headless: 'new', // New headless mode - still uses Chrome's real network stack!
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-blink-features=AutomationControlled',
+        '--window-size=1920,1080',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process',
+        ...(chromeProfileDir ? [`--user-data-dir=${chromeProfileDir}`] : [])
+      ],
+      env: {
+        ...process.env,
+        DISPLAY: ':99' // Use Xvfb display
+      }
+    })
+    
+    try {
+      const page = await browser.newPage()
+      
+      // Set realistic viewport
+      await page.setViewport({ width: 1920, height: 1080 })
+      
+      // Navigate to YouTube video URL
+      console.log(`   Navigating to: ${videoUrl}`)
+      await page.goto(videoUrl, { 
+        waitUntil: 'networkidle2',
+        timeout: 60000 
+      })
+      
+      // Wait for YouTube's player data to be available
+      await page.waitForTimeout(5000) // Give YouTube time to load player data
+      
+      // Extract video data from page's JavaScript variables
+      const videoData = await page.evaluate(() => {
+        // YouTube stores player data in window.ytInitialPlayerResponse
+        if (window.ytInitialPlayerResponse) {
+          return window.ytInitialPlayerResponse
+        }
+        
+        // Fallback: try to find it in page source
+        const scripts = document.querySelectorAll('script')
+        for (const script of scripts) {
+          const text = script.textContent || ''
+          if (text.includes('var ytInitialPlayerResponse')) {
+            const match = text.match(/var ytInitialPlayerResponse\s*=\s*({.+?});/)
+            if (match) {
+              try {
+                return JSON.parse(match[1])
+              } catch (e) {
+                console.error('Failed to parse ytInitialPlayerResponse:', e)
+              }
+            }
+          }
+        }
+        
+        return null
+      })
+      
+      if (!videoData) {
+        throw new Error('Could not extract video data from page')
+      }
+      
+      // Convert YouTube's player response format to yt-dlp JSON format
+      const formats = [
+        // Extract formats from streamingData (combined video+audio)
+        ...(videoData.streamingData?.formats || []).map((fmt, idx) => ({
+          format_id: `puppeteer-${fmt.itag || idx}`,
+          url: fmt.url || '',
+          ext: fmt.mimeType?.split('/')[1]?.split(';')[0] || 'mp4',
+          width: fmt.width || 0,
+          height: fmt.height || 0,
+          fps: fmt.fps || 0,
+          vcodec: fmt.mimeType?.includes('video') ? (fmt.mimeType.includes('avc1') ? 'avc1' : 'vp9') : 'none',
+          acodec: fmt.mimeType?.includes('audio') ? 'mp4a' : 'none',
+          filesize: parseInt(fmt.contentLength || 0),
+          quality: fmt.qualityLabel || 'unknown',
+          format_note: fmt.qualityLabel || 'unknown'
+        })),
+        
+        // Extract adaptive formats (video-only and audio-only)
+        ...(videoData.streamingData?.adaptiveFormats || []).map((fmt, idx) => ({
+          format_id: `puppeteer-adaptive-${fmt.itag || idx}`,
+          url: fmt.url || '',
+          ext: fmt.mimeType?.split('/')[1]?.split(';')[0] || 'mp4',
+          width: fmt.width || 0,
+          height: fmt.height || 0,
+          fps: fmt.fps || 0,
+          vcodec: fmt.mimeType?.includes('video') ? (fmt.mimeType.includes('avc1') ? 'avc1' : 'vp9') : 'none',
+          acodec: fmt.mimeType?.includes('audio') ? 'mp4a' : 'none',
+          filesize: parseInt(fmt.contentLength || 0),
+          quality: fmt.qualityLabel || 'unknown',
+          format_note: fmt.qualityLabel || 'unknown'
+        }))
+      ]
+      
+      const videoInfo = {
+        id: videoData.videoDetails?.videoId || extractVideoId(videoUrl),
+        title: videoData.videoDetails?.title || 'Unknown',
+        duration: parseInt(videoData.videoDetails?.lengthSeconds || 0),
+        view_count: parseInt(videoData.videoDetails?.viewCount || 0),
+        uploader: videoData.videoDetails?.author || 'Unknown',
+        uploader_id: videoData.videoDetails?.channelId || '',
+        description: videoData.videoDetails?.shortDescription || '',
+        thumbnail: videoData.videoDetails?.thumbnail?.thumbnails?.[videoData.videoDetails?.thumbnail?.thumbnails.length - 1]?.url || '',
+        formats: formats
+      }
+      
+      await browser.close()
+      
+      console.log('✅ Successfully extracted video info using Puppeteer')
+      return videoInfo
+      
+    } catch (error) {
+      await browser.close()
+      throw error
+    }
+    
+  } catch (error) {
+    console.warn(`⚠️ Puppeteer extraction failed: ${error.message}`)
+    throw error
+  }
+}
+
+/**
  * Execute yt-dlp with robust retry logic for bot-protected videos
  * Uses multiple strategies: cookies, client switching, and PO Tokens
  */
@@ -1089,11 +1235,27 @@ const server = createServer(async (req, res) => {
       const normalizedVideoUrl = normalizeYouTubeUrl(videoUrl)
       console.log(`   Normalized URL: ${normalizedVideoUrl}`)
 
-      // Use yt-dlp to get video info
-      const ytdlpData = await getVideoInfo(normalizedVideoUrl)
+      // CRITICAL: Try Puppeteer first - uses Chrome's actual network stack (bypasses bot detection!)
+      // Only fallback to yt-dlp if Puppeteer fails
+      let ytdlpData = null
+      try {
+        console.log('🚀 Attempting extraction with Puppeteer (Chrome GUI)...')
+        const puppeteerData = await getVideoInfoWithPuppeteer(normalizedVideoUrl)
+        // Transform Puppeteer data to match yt-dlp format
+        ytdlpData = {
+          ...puppeteerData,
+          formats: puppeteerData.formats || []
+        }
+        console.log('✅ Puppeteer extraction successful!')
+      } catch (puppeteerError) {
+        console.warn(`⚠️ Puppeteer extraction failed: ${puppeteerError.message}`)
+        console.log('🔄 Falling back to yt-dlp...')
+        // Fallback to yt-dlp
+        ytdlpData = await getVideoInfo(normalizedVideoUrl)
+      }
 
       if (!ytdlpData) {
-        throw new Error('Failed to get video information from yt-dlp')
+        throw new Error('Failed to get video information from both Puppeteer and yt-dlp')
       }
 
       // Extract video ID for consistency
