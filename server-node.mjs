@@ -585,10 +585,21 @@ async function getVideoInfoWithPuppeteer(videoUrl) {
       
       // Wait for YouTube's player data to be available using modern Promise-based approach
       // (page.waitForTimeout was removed in newer Puppeteer versions)
-      await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 5000)))
+      await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 8000)))
       
       // Extract video data from page's JavaScript variables
       const videoData = await page.evaluate(() => {
+        // Log available data for debugging
+        const debug = {
+          hasYtInitialPlayerResponse: !!window.ytInitialPlayerResponse,
+          hasYtInitialData: !!window.ytInitialData,
+          hasPlayer: !!window.player,
+          scriptCount: document.querySelectorAll('script').length,
+          windowKeys: Object.keys(window).filter(k => k.includes('yt') || k.includes('player')).slice(0, 20)
+        }
+        
+        console.log('🔍 Puppeteer page data debug:', JSON.stringify(debug))
+        
         // YouTube stores player data in window.ytInitialPlayerResponse
         if (window.ytInitialPlayerResponse) {
           return window.ytInitialPlayerResponse
@@ -615,6 +626,15 @@ async function getVideoInfoWithPuppeteer(videoUrl) {
       
       if (!videoData) {
         throw new Error('Could not extract video data from page')
+      }
+      
+      // If we got empty data, try fallback extraction from page HTML
+      if (!videoData.streamingData || (!videoData.streamingData.formats && !videoData.streamingData.adaptiveFormats)) {
+        console.warn('⚠️ No streamingData found in ytInitialPlayerResponse - trying fallback extraction...')
+        // Try to extract basic video info at least
+        if (!videoData.videoDetails) {
+          throw new Error('Could not extract any video data - page may be blocked')
+        }
       }
       
       // Convert YouTube's player response format to yt-dlp JSON format
