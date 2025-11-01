@@ -65,15 +65,11 @@ class YouTubeExtractor {
       extractorArgs.push(`youtube:player_client=${selectedClient}`);
       console.log(`[yt-dlp] Using ${selectedClient.toUpperCase()} client`);
       
-      // Only configure PO Token Provider if using mweb client (which requires it with cookies)
-      // Mobile clients (IOS/ANDROID) and TV don't need PO tokens
-      if (fs.existsSync(this.cookiesPath)) {
-        const poProviderUrl = process.env.PO_TOKEN_PROVIDER_URL || 'http://po-token-provider:4416';
-        extractorArgs.push(`youtubepot-bgutilhttp:base_url=${poProviderUrl}`);
-        console.log(`[yt-dlp] Using PO Token Provider at: ${poProviderUrl}`);
-      } else {
-        console.log('[yt-dlp] No cookies - skipping PO token provider (mobile clients don\'t need it)');
-      }
+      // Configure PO Token Provider - try it for ALL clients including mobile
+      // Some users report PO tokens help even for mobile clients without cookies
+      const poProviderUrl = process.env.PO_TOKEN_PROVIDER_URL || 'http://po-token-provider:4416';
+      extractorArgs.push(`youtubepot-bgutilhttp:base_url=${poProviderUrl}`);
+      console.log(`[yt-dlp] Using PO Token Provider at: ${poProviderUrl} (even for mobile clients)`);
 
       if (extractorArgs.length > 0) {
         args.push('--extractor-args', extractorArgs.join(';'));
@@ -82,27 +78,64 @@ class YouTubeExtractor {
       // Use curl_cffi impersonation to mimic real browser TLS fingerprints
       // This is critical for bypassing YouTube's bot detection
       // curl_cffi must be explicitly enabled with --impersonate flag
+      // Match impersonation target to client type for better authenticity
       // Skip if previous attempt failed with impersonate error
       if (!skipImpersonate) {
-        args.push('--impersonate', 'chrome');
-        console.log('[yt-dlp] Using curl_cffi with Chrome impersonation for TLS fingerprint bypass');
+        // Match impersonation target to client type
+        let impersonateTarget;
+        if (selectedClient === 'ios') {
+          impersonateTarget = 'safari'; // Safari for iOS
+        } else if (selectedClient === 'android') {
+          impersonateTarget = 'chrome'; // Chrome for Android
+        } else {
+          impersonateTarget = 'edge'; // Edge for TV/Desktop (sometimes works better)
+        }
+        args.push('--impersonate', impersonateTarget);
+        console.log(`[yt-dlp] Using curl_cffi with ${impersonateTarget} impersonation for ${selectedClient.toUpperCase()} client`);
       } else {
         console.log('[yt-dlp] Skipping --impersonate (previous attempt failed)');
       }
 
-      // Add user agent (use latest Chrome version)
-      args.push('--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
+      // Match user agent to client type for better authenticity
+      let userAgent;
+      if (selectedClient === 'ios') {
+        userAgent = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+      } else if (selectedClient === 'android') {
+        userAgent = 'Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
+      } else {
+        userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+      }
+      args.push('--user-agent', userAgent);
 
       // Add referer header
       args.push('--add-header', 'Referer:https://www.youtube.com/');
       
       // Add additional headers to mimic real browser
-      args.push('--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8');
-      args.push('--add-header', 'Accept-Language:en-US,en;q=0.9');
-      args.push('--add-header', 'Accept-Encoding:gzip, deflate, br');
-      args.push('--add-header', 'DNT:1');
+      // Different headers for mobile vs desktop
+      if (selectedClient === 'ios' || selectedClient === 'android') {
+        // Mobile-specific headers
+        args.push('--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8');
+        args.push('--add-header', 'Accept-Language:en-US,en;q=0.9');
+        args.push('--add-header', 'Accept-Encoding:gzip, deflate, br');
+        args.push('--add-header', 'X-YouTube-Client-Name:2'); // Mobile client indicator
+        args.push('--add-header', 'X-YouTube-Client-Version:19.09.3'); // Recent mobile version
+      } else {
+        // Desktop headers
+        args.push('--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8');
+        args.push('--add-header', 'Accept-Language:en-US,en;q=0.9');
+        args.push('--add-header', 'Accept-Encoding:gzip, deflate, br');
+        args.push('--add-header', 'DNT:1');
+        args.push('--add-header', 'X-YouTube-Client-Name:1'); // Web client indicator
+      }
+      
       args.push('--add-header', 'Connection:keep-alive');
       args.push('--add-header', 'Upgrade-Insecure-Requests:1');
+      
+      // Add random delays to mimic human behavior and avoid rate limiting
+      // Random delay between 2-5 seconds before making request
+      args.push('--sleep-interval', '2');
+      args.push('--max-sleep-interval', '5');
+      console.log('[yt-dlp] Added random delays (2-5s) to mimic human behavior');
 
       // Add video URL
       args.push(`https://www.youtube.com/watch?v=${videoId}`);
