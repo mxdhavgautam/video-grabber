@@ -19,7 +19,7 @@ class YouTubeExtractor {
     this.initialized = true;
   }
 
-  async extractWithYtDlp(videoId, clientType = null) {
+  async extractWithYtDlp(videoId, clientType = null, skipImpersonate = false) {
     return new Promise(async (resolve, reject) => {
       const args = [
         '--dump-json',
@@ -82,8 +82,13 @@ class YouTubeExtractor {
       // Use curl_cffi impersonation to mimic real browser TLS fingerprints
       // This is critical for bypassing YouTube's bot detection
       // curl_cffi must be explicitly enabled with --impersonate flag
-      args.push('--impersonate', 'chrome');
-      console.log('[yt-dlp] Using curl_cffi with Chrome impersonation for TLS fingerprint bypass');
+      // Skip if previous attempt failed with impersonate error
+      if (!skipImpersonate) {
+        args.push('--impersonate', 'chrome');
+        console.log('[yt-dlp] Using curl_cffi with Chrome impersonation for TLS fingerprint bypass');
+      } else {
+        console.log('[yt-dlp] Skipping --impersonate (previous attempt failed)');
+      }
 
       // Add user agent (use latest Chrome version)
       args.push('--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
@@ -131,8 +136,20 @@ class YouTubeExtractor {
           }
         } else {
           console.error('[yt-dlp] Failed with code:', code);
-          console.error('[yt-dlp] Error output:', errorOutput.substring(0, 500));
-          reject(new Error(`yt-dlp failed: ${errorOutput.substring(0, 500)}`));
+          // Log full error for debugging (show more than 500 chars)
+          const fullError = errorOutput.length > 0 ? errorOutput : output;
+          const errorPreview = fullError.length > 2000 ? fullError.substring(0, 2000) : fullError;
+          console.error('[yt-dlp] Error output:', errorPreview);
+          
+          // Check if it's an impersonate-related error
+          if (fullError.includes('impersonate') || fullError.includes('curl_cffi') || fullError.includes('curl-cffi')) {
+            console.error('[yt-dlp] curl_cffi/impersonate error detected - curl_cffi may not be properly installed');
+            console.error('[yt-dlp] Attempting without --impersonate flag as fallback...');
+            // Try again without impersonate flag
+            return this.extractWithYtDlp(videoId, clientType, true).then(resolve).catch(reject);
+          }
+          
+          reject(new Error(`yt-dlp failed: ${fullError.substring(0, 500)}`));
         }
       });
 
