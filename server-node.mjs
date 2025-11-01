@@ -27,7 +27,44 @@ const COOKIES_FILE = process.env.COOKIES_FILE || join(__dirname, '.yt-dlp', 'coo
 const hasCookies = existsSync(COOKIES_FILE)
 
 // Chrome profile directory for cookies persistence
-const CHROME_PROFILE_DIR = process.env.CHROME_PROFILE_DIR || join(__dirname, 'chrome-profiles')
+// If CHROME_PROFILE_DIR points to base directory, find the most recent profile
+function findChromeProfileDir() {
+  const baseDir = process.env.CHROME_PROFILE_DIR || join(__dirname, 'chrome-profiles')
+  
+  // If it's already a full profile path (contains Default/Cookies), use it directly
+  if (existsSync(join(baseDir, 'Default/Cookies'))) {
+    return baseDir
+  }
+  
+  // Otherwise, look for the most recent profile subdirectory
+  try {
+    if (existsSync(baseDir)) {
+      const entries = readdirSync(baseDir, { withFileTypes: true })
+      const profiles = entries
+        .filter(entry => entry.isDirectory() && entry.name.startsWith('profile-'))
+        .map(entry => ({
+          name: entry.name,
+          path: join(baseDir, entry.name),
+          time: statSync(join(baseDir, entry.name)).mtime.getTime()
+        }))
+        .sort((a, b) => b.time - a.time)
+      
+      if (profiles.length > 0) {
+        const latestProfile = profiles[0]
+        // Verify it has cookies
+        if (existsSync(join(latestProfile.path, 'Default/Cookies'))) {
+          return latestProfile.path
+        }
+      }
+    }
+  } catch (error) {
+    console.warn(`⚠️ Error finding Chrome profile: ${error.message}`)
+  }
+  
+  return baseDir
+}
+
+const CHROME_PROFILE_DIR = findChromeProfileDir()
 
 // Chrome profile management
 const CHROME_PROFILES_BASE = CHROME_PROFILE_DIR
@@ -495,12 +532,20 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
       // Retries: use quiet mode to reduce noise
       command += ` --quiet --no-warnings`
     }
-    command += ` --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"`
+    // Use a more recent user-agent to avoid detection
+    // Get current Chrome version: Chrome 131+ (as of 2025)
+    command += ` --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"`
     command += ` --socket-timeout 30`
+    // Add delay between requests to avoid rate limiting (5-10 seconds per docs)
+    // Only add delay on retries to avoid slowing down initial requests unnecessarily
+    if (retryCount > 0) {
+      command += ` --sleep-interval 6 --max-sleep-interval 10`
+    }
 
-    const profileCookiesFile = process.env.CHROME_PROFILE_DIR ? `${process.env.CHROME_PROFILE_DIR}/cookies.txt` : null
+    // Use the found Chrome profile directory (which may be auto-detected)
+    const chromeProfileDir = CHROME_PROFILE_DIR
+    const profileCookiesFile = chromeProfileDir ? `${chromeProfileDir}/cookies.txt` : null
     const cookiesExist = profileCookiesFile ? existsSync(profileCookiesFile) : false
-    const chromeProfileDir = process.env.CHROME_PROFILE_DIR
 
     // CRITICAL: Use --cookies-from-browser directly instead of exported cookies.txt
     // The exported cookies.txt might not be in the correct format or might be missing cookies
@@ -537,7 +582,14 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     // - Format: --extractor-args "youtubepot-bgutilhttp:base_url=URL;disable_innertube=1"
     // - The plugin auto-registers, but we need to configure it with base_url if using non-default hostname/port
     // NOTE: Configuring base_url automatically enables the HTTP provider, no need for po-token-providers flag
-    let extractorArgs = ` --extractor-args "youtube:player-client=mweb"`
+    // Try different clients based on retry count:
+    // - retryCount 0-1: mweb (recommended with PO tokens)
+    // - retryCount 2+: android (fallback, less likely to trigger bot detection)
+    let clientType = 'mweb'
+    if (retryCount >= 2) {
+      clientType = 'android'
+    }
+    let extractorArgs = ` --extractor-args "youtube:player-client=${clientType}"`
     if (POT_PROVIDER_BASE_URL) {
       // Configure HTTP provider with base_url
       // Format: youtubepot-bgutilhttp:base_url=URL;disable_innertube=1
@@ -548,10 +600,12 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
       }
       extractorArgs += ` --extractor-args "${potArg}"`
       if (retryCount >= 2) {
-        console.log(`🔑 Using PO token provider at ${POT_PROVIDER_BASE_URL} with disable_innertube=1`)
+        console.log(`🔑 Using PO token provider at ${POT_PROVIDER_BASE_URL} with disable_innertube=1 (${clientType} client)`)
       } else {
-        console.log(`🔑 Using PO token provider at ${POT_PROVIDER_BASE_URL}`)
+        console.log(`🔑 Using PO token provider at ${POT_PROVIDER_BASE_URL} (${clientType} client)`)
       }
+    } else {
+      console.log(`🔑 Using ${clientType} client without PO token provider`)
     }
     command += extractorArgs
     
@@ -1056,7 +1110,7 @@ const server = createServer(async (req, res) => {
       // CRITICAL: Use --cookies-from-browser directly instead of exported cookies.txt
       // This reads directly from Chromium's cookie database which is more reliable
       let cookieFlags = []
-      const chromeProfileDir = process.env.CHROME_PROFILE_DIR
+      const chromeProfileDir = CHROME_PROFILE_DIR
       const profileCookiesFile = chromeProfileDir ? `${chromeProfileDir}/cookies.txt` : null
       const cookiesExist = profileCookiesFile ? existsSync(profileCookiesFile) : false
 
@@ -1083,6 +1137,7 @@ const server = createServer(async (req, res) => {
       // Build yt-dlp command to save to file instead of stdout
       // Per yt-dlp best practices: https://github.com/yt-dlp/yt-dlp/wiki/FAQ
       // Use the same format as getVideoInfo for consistency
+      // Use mweb client with PO token provider (better for avoiding bot detection)
       const extractorArgs = ['--extractor-args', 'youtube:player-client=mweb']
       if (POT_PROVIDER_BASE_URL) {
         extractorArgs.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${POT_PROVIDER_BASE_URL}`)
@@ -1092,7 +1147,7 @@ const server = createServer(async (req, res) => {
         '-f', formatId,
         '--no-warnings',
         '--socket-timeout', '30',
-        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         '-o', tempFilePath,
         ...cookieFlags,
         ...extractorArgs,
