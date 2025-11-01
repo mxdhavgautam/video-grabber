@@ -25,33 +25,23 @@ class YouTubeExtractor {
     console.log('[YouTubeExtractor] Initializing...');
     
     // Initialize BgUtils for PO token generation
-    // bgutils-js exports as a default class
+    // bgutils-js exports modules: PoToken, WebPoMinter, BotGuardClient, etc.
     try {
-      // bgutils-js is typically exported as a default class
-      let BgUtilsClass = BgUtils;
-      if (BgUtils && BgUtils.default) {
-        BgUtilsClass = BgUtils.default;
-      } else if (BgUtils && BgUtils.BgUtils) {
-        BgUtilsClass = BgUtils.BgUtils;
-      }
-      
-      if (typeof BgUtilsClass === 'function') {
-        this.bgUtils = new BgUtilsClass();
-        // BgUtils.init() might not exist, try calling it if available
-        if (typeof this.bgUtils.init === 'function') {
-          await this.bgUtils.init();
-        }
-        console.log('[YouTubeExtractor] BgUtils initialized successfully');
+      // bgutils-js v3+ exports modules, not a class
+      if (BgUtils && (BgUtils.PoToken || BgUtils.WebPoMinter)) {
+        // Store the modules for later use
+        this.bgUtils = BgUtils;
+        console.log('[YouTubeExtractor] BgUtils modules loaded successfully');
+        console.log('[YouTubeExtractor] Available modules:', Object.keys(BgUtils));
       } else {
-        console.warn('[YouTubeExtractor] BgUtils is not a constructor - PO token generation will be limited');
-        console.warn('[YouTubeExtractor] BgUtils type:', typeof BgUtilsClass, BgUtilsClass);
+        console.warn('[YouTubeExtractor] BgUtils modules not found - PO token generation will be limited');
       }
     } catch (error) {
       console.warn('[YouTubeExtractor] BgUtils initialization failed:', error.message);
       console.warn('[YouTubeExtractor] This is non-critical - yt-dlp can use bgutil-ytdlp-pot-provider plugin instead');
     }
 
-    // Launch puppeteer with stealth
+    // Launch puppeteer with advanced stealth configuration
     try {
       this.browser = await puppeteer.launch({
         headless: 'new',
@@ -60,15 +50,48 @@ class YouTubeExtractor {
           '--disable-setuid-sandbox',
           '--disable-blink-features=AutomationControlled',
           '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
           '--no-first-run',
           '--no-zygote',
           '--disable-gpu',
           '--disable-web-security',
+          // Enhanced stealth flags
+          '--disable-features=IsolateOrigins,site-per-process',
+          '--disable-site-isolation-trials',
+          '--disable-background-networking',
+          '--disable-background-timer-throttling',
+          '--disable-renderer-backgrounding',
+          '--disable-breakpad',
+          '--disable-client-side-phishing-detection',
+          '--disable-component-extensions-with-background-pages',
+          '--disable-default-apps',
+          '--disable-domain-reliability',
+          '--disable-extensions',
+          '--disable-features=AudioServiceOutOfProcess',
+          '--disable-hang-monitor',
+          '--disable-ipc-flooding-protection',
+          '--disable-notifications',
+          '--disable-popup-blocking',
+          '--disable-prompt-on-repost',
+          '--disable-sync',
+          '--disable-translate',
+          '--disable-windows10-custom-titlebar',
+          '--metrics-recording-only',
+          '--mute-audio',
+          '--no-default-browser-check',
+          '--no-pings',
+          '--password-store=basic',
+          '--use-mock-keychain',
+          '--enable-features=NetworkService,NetworkServiceLogging',
+          '--force-color-profile=srgb',
+          '--metrics-recording-only',
+          '--use-mock-keychain',
+          // Realistic user agent
           '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-        ]
+        ],
+        ignoreHTTPSErrors: true,
+        ignoreDefaultArgs: ['--enable-automation']
       });
-      console.log('[YouTubeExtractor] Puppeteer browser launched');
+      console.log('[YouTubeExtractor] Puppeteer browser launched with enhanced stealth');
     } catch (error) {
       console.error('[YouTubeExtractor] Failed to launch browser:', error.message);
     }
@@ -107,7 +130,8 @@ class YouTubeExtractor {
         });
 
         // Wait a bit for JavaScript to execute
-        await page.waitForTimeout(2000);
+        // Use setTimeout Promise wrapper (waitForTimeout deprecated in Puppeteer 21+)
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
         // Extract visitor data from multiple sources
         const visitorData = await page.evaluate(() => {
@@ -154,17 +178,31 @@ class YouTubeExtractor {
 
         console.log('[PO Token] Extracted visitor data:', visitorData.substring(0, 50) + '...');
 
-        // Generate PO token using BgUtils
-        if (this.bgUtils) {
+        // Generate PO token using BgUtils WebPoMinter
+        if (this.bgUtils && this.bgUtils.WebPoMinter) {
           try {
-            const poToken = await this.bgUtils.generatePoToken({
-              visitorData,
-              videoId
+            // Use WebPoMinter to generate PO token for web client
+            const minter = new this.bgUtils.WebPoMinter();
+            const poToken = await minter.mint({
+              visitorData: visitorData,
+              videoId: videoId
             });
-            console.log('[PO Token] Generated successfully');
+            console.log('[PO Token] Generated successfully using WebPoMinter');
             return poToken;
           } catch (error) {
-            console.warn('[PO Token] Generation failed:', error.message);
+            console.warn('[PO Token] WebPoMinter generation failed:', error.message);
+            // Fallback to PoToken.generate if WebPoMinter fails
+            try {
+              if (this.bgUtils.PoToken && this.bgUtils.PoToken.generate) {
+                const poToken = await this.bgUtils.PoToken.generate({
+                  visitorData: visitorData
+                });
+                console.log('[PO Token] Generated successfully using PoToken.generate');
+                return poToken;
+              }
+            } catch (fallbackError) {
+              console.warn('[PO Token] PoToken.generate fallback also failed:', fallbackError.message);
+            }
             return null;
           }
         }
@@ -292,135 +330,37 @@ class YouTubeExtractor {
       try {
         console.log(`[youtubei.js] Trying client type: ${clientType}`);
         
-        // Load cookies if available
-        let cookieString = null;
+        // Load cookies from file - youtubei.js accepts cookie string or cookies.txt path
+        let cookieValue = null;
         if (fs.existsSync(this.cookiesPath)) {
           try {
-            const cookieLines = fs.readFileSync(this.cookiesPath, 'utf-8').split('\n');
-            const validCookies = cookieLines
-              .filter(line => line && !line.startsWith('#') && line.trim())
-              .map(line => {
-                const parts = line.split('\t');
-                if (parts.length >= 7) {
-                  return `${parts[5]}=${parts[6]}`;
-                }
-                return null;
-              })
-              .filter(c => c !== null);
-            
-            if (validCookies.length > 0) {
-              cookieString = validCookies.join('; ');
-              console.log(`[youtubei.js] Loaded ${validCookies.length} cookies for ${clientType}`);
-            }
+            // youtubei.js can accept the cookies.txt file path directly
+            cookieValue = this.cookiesPath;
+            console.log(`[youtubei.js] Using cookies file for ${clientType}: ${this.cookiesPath}`);
           } catch (error) {
-            console.warn('[youtubei.js] Failed to parse cookies:', error.message);
+            console.warn('[youtubei.js] Failed to use cookies file:', error.message);
           }
         }
 
-        // Extract visitor data from cookies
+        // Extract visitor data from cookies for PO token if needed
         let visitorData = null;
         if (fs.existsSync(this.cookiesPath)) {
           try {
             visitorData = this.extractVisitorDataFromCookies();
             if (visitorData) {
-              console.log(`[youtubei.js] Using visitor data for ${clientType}`);
+              console.log(`[youtubei.js] Extracted visitor data for ${clientType}`);
             }
           } catch (error) {
             console.warn('[youtubei.js] Failed to extract visitor data:', error.message);
           }
         }
 
+        // Use youtubei.js default fetch - don't override it
+        // It handles URL construction internally
         const options = {
           client: clientType,
-          fetch: async (input, init = {}) => {
-            // Ensure input is a proper URL string
-            let url = input;
-            if (typeof input === 'string') {
-              url = input;
-            } else if (input && typeof input.url === 'string') {
-              url = input.url;
-            } else if (input && input.toString) {
-              url = input.toString();
-            } else {
-              url = String(input);
-            }
-
-            // Ensure URL is absolute
-            if (!url.startsWith('http://') && !url.startsWith('https://')) {
-              url = `https://www.youtube.com${url.startsWith('/') ? '' : '/'}${url}`;
-            }
-
-            // Use axios for better cookie/header handling
-            const axios = (await import('axios')).default;
-            try {
-              const config = {
-                url: url,
-                method: init.method || 'GET',
-                headers: {
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-                  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                  'Accept-Language': 'en-US,en;q=0.9',
-                  'Referer': 'https://www.youtube.com/',
-                  'Origin': 'https://www.youtube.com',
-                  ...(init.headers || {})
-                },
-                withCredentials: true,
-                timeout: 30000,
-                validateStatus: () => true // Accept all status codes
-              };
-
-              // Add cookies if available
-              if (cookieString) {
-                config.headers['Cookie'] = cookieString;
-              }
-
-              // Add body if present
-              if (init.body) {
-                config.data = init.body;
-              }
-
-              const response = await axios(config);
-              
-              // Create a simple headers-like object
-              const headers = {
-                get: (name) => {
-                  const key = Object.keys(response.headers).find(k => k.toLowerCase() === name.toLowerCase());
-                  return key ? response.headers[key] : null;
-                },
-                has: (name) => {
-                  const key = Object.keys(response.headers).find(k => k.toLowerCase() === name.toLowerCase());
-                  return !!key;
-                }
-              };
-
-              return {
-                ok: response.status >= 200 && response.status < 300,
-                status: response.status,
-                statusText: response.statusText || '',
-                headers: headers,
-                json: async () => {
-                  if (typeof response.data === 'object') {
-                    return response.data;
-                  }
-                  try {
-                    return JSON.parse(response.data);
-                  } catch {
-                    throw new Error('Invalid JSON response');
-                  }
-                },
-                text: async () => typeof response.data === 'string' ? response.data : JSON.stringify(response.data),
-                arrayBuffer: async () => {
-                  if (Buffer.isBuffer(response.data)) {
-                    return response.data.buffer;
-                  }
-                  return Buffer.from(typeof response.data === 'string' ? response.data : JSON.stringify(response.data));
-                }
-              };
-            } catch (error) {
-              console.error(`[youtubei.js] Fetch error for ${url}:`, error.message);
-              throw new Error(`Fetch failed: ${error.message}`);
-            }
-          }
+          cookie: cookieValue,  // Pass cookies file path - youtubei.js will parse it
+          generate_session_data: true
         };
         
         if (poToken) {
@@ -479,19 +419,104 @@ class YouTubeExtractor {
         }
       }
 
-      // Set viewport and user agent
-      await page.setViewport({ width: 1920, height: 1080 });
+      // Set realistic viewport and user agent
+      await page.setViewport({ 
+        width: 1920, 
+        height: 1080,
+        deviceScaleFactor: 1,
+        hasTouch: false,
+        isLandscape: true,
+        isMobile: false
+      });
+      
+      // Advanced stealth: Override navigator properties to appear like real browser
+      await page.evaluateOnNewDocument(() => {
+        // Remove webdriver flag completely
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => undefined,
+        });
+
+        // Override plugins to look real
+        Object.defineProperty(navigator, 'plugins', {
+          get: () => {
+            return [
+              { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+              { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+              { name: 'Native Client', filename: 'internal-nacl-plugin' }
+            ];
+          },
+        });
+
+        // Override languages
+        Object.defineProperty(navigator, 'languages', {
+          get: () => ['en-US', 'en'],
+        });
+
+        // Override platform to avoid detection
+        Object.defineProperty(navigator, 'platform', {
+          get: () => 'Win32',
+        });
+
+        // Override hardware concurrency (common fingerprint)
+        Object.defineProperty(navigator, 'hardwareConcurrency', {
+          get: () => 8,
+        });
+
+        // Override device memory
+        Object.defineProperty(navigator, 'deviceMemory', {
+          get: () => 8,
+        });
+
+        // Override permissions API
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+          parameters.name === 'notifications' ?
+            Promise.resolve({ state: Notification.permission }) :
+            originalQuery(parameters)
+        );
+
+        // Mock chrome runtime (YouTube checks for this)
+        window.chrome = {
+          runtime: {},
+          loadTimes: function() {},
+          csi: function() {},
+          app: {}
+        };
+
+        // Override connection type
+        Object.defineProperty(navigator, 'connection', {
+          get: () => ({
+            effectiveType: '4g',
+            rtt: 50,
+            downlink: 10,
+            saveData: false
+          }),
+        });
+
+        // Remove automation indicators
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+        delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+      });
+
       await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
 
-      // Set extra headers to appear more like a real browser
+      // Set comprehensive headers to appear exactly like a real browser
       await page.setExtraHTTPHeaders({
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
         'Accept-Language': 'en-US,en;q=0.9',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Encoding': 'gzip, deflate, br',
         'Referer': 'https://www.youtube.com/',
+        'Origin': 'https://www.youtube.com',
         'Sec-Fetch-Dest': 'document',
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Site': 'same-origin',
-        'Upgrade-Insecure-Requests': '1'
+        'Sec-Fetch-User': '?1',
+        'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"Windows"',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'max-age=0'
       });
 
       // Navigate to video page with retries
@@ -519,7 +544,8 @@ class YouTubeExtractor {
       });
 
       // Wait a bit more for JavaScript to execute and populate window objects
-      await page.waitForTimeout(3000);
+      // Use setTimeout Promise wrapper (waitForTimeout deprecated in Puppeteer 21+)
+      await new Promise(resolve => setTimeout(resolve, 3000));
 
       // Extract streaming data directly from page
       const streamingData = await page.evaluate(() => {
