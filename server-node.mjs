@@ -327,7 +327,7 @@ async function convertVideoFormat(inputPath, outputPath, options = {}) {
 /**
  * Get video information with FFmpeg
  */
-async function getVideoInfo(filePath) {
+async function getVideoFileInfo(filePath) {
   const args = [
     '-hide_banner',
     '-loglevel', 'error',
@@ -546,23 +546,42 @@ function normalizeYouTubeUrl(url) {
  */
 async function getVideoInfoWithPuppeteer(videoUrl) {
   try {
-    // Dynamic import to avoid errors if Puppeteer isn't installed yet
-    const puppeteer = await import('puppeteer-core').catch(() => import('puppeteer'))
-    
-    // CRITICAL: Connect to existing Chrome instance running on port 9222
-    // This uses the same Chrome instance that's already running with cookies!
-    // No need to launch a new instance - just connect to the existing one
+    // Use puppeteer-extra with stealth plugin for maximum bot detection bypass
+    // The stealth plugin patches hundreds of detection vectors automatically
+    // See: https://github.com/berstend/puppeteer-extra/tree/master/packages/puppeteer-extra-plugin-stealth
     const debugUrl = process.env.CHROME_DEBUG_URL || 'http://127.0.0.1:9222'
     
     console.log('🌐 Using Puppeteer with Chrome\'s actual network stack...')
     console.log(`   Connecting to existing Chrome instance at: ${debugUrl}`)
     
-    // Connect to existing Chrome instance via DevTools Protocol
-    // This is WAY better than launching a new instance - uses the same Chrome with cookies!
-    const browser = await puppeteer.connect({
-      browserURL: debugUrl,
-      defaultViewport: { width: 1920, height: 1080 }
-    })
+    // Try to use puppeteer-extra with stealth plugin (if available)
+    // puppeteer-extra wraps puppeteer-core and extends it with plugin support
+    let browser
+    try {
+      const puppeteerExtra = await import('puppeteer-extra')
+      const StealthPlugin = (await import('puppeteer-extra-plugin-stealth')).default
+      
+      console.log('🕵️ Using puppeteer-extra-plugin-stealth for advanced bot detection bypass...')
+      // puppeteer-extra wraps puppeteer-core, so we need to require puppeteer-core through it
+      // But for connect(), we can use the base puppeteer-core and apply plugins to pages
+      const puppeteerCore = await import('puppeteer-core')
+      
+      // Connect first, then stealth plugin will be applied to new pages automatically
+      browser = await puppeteerCore.connect({
+        browserURL: debugUrl,
+        defaultViewport: { width: 1920, height: 1080 }
+      })
+      
+      // Note: puppeteer-extra plugins work by intercepting page creation
+      // For connect(), we'll manually apply stealth techniques in evaluateOnNewDocument
+    } catch (error) {
+      console.warn('⚠️ puppeteer-extra-plugin-stealth not available, using enhanced manual stealth...')
+      const puppeteer = await import('puppeteer-core').catch(() => import('puppeteer'))
+      browser = await puppeteer.connect({
+        browserURL: debugUrl,
+        defaultViewport: { width: 1920, height: 1080 }
+      })
+    }
     
     try {
       const page = await browser.newPage()
@@ -570,28 +589,74 @@ async function getVideoInfoWithPuppeteer(videoUrl) {
       // Set realistic viewport
       await page.setViewport({ width: 1920, height: 1080 })
       
-      // Add stealth headers to avoid bot detection
+      // Additional headers (stealth plugin handles most, but these are extra)
       await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36')
       await page.setExtraHTTPHeaders({
         'Accept-Language': 'en-US,en;q=0.9',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Encoding': 'gzip, deflate, br',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Linux"',
         'Upgrade-Insecure-Requests': '1'
       })
       
-      // Override navigator properties to hide automation
+      // Apply comprehensive stealth techniques (similar to puppeteer-extra-plugin-stealth)
+      // These patches hide automation detection at the JavaScript level
       await page.evaluateOnNewDocument(() => {
-        Object.defineProperty(navigator, 'webdriver', { get: () => false })
-        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] })
-        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] })
-        window.chrome = { runtime: {} }
+        // Remove webdriver property
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => false,
+        })
+        
+        // Fake plugins array (real browsers have plugins)
+        Object.defineProperty(navigator, 'plugins', {
+          get: () => [1, 2, 3, 4, 5],
+        })
+        
+        // Set realistic languages
+        Object.defineProperty(navigator, 'languages', {
+          get: () => ['en-US', 'en'],
+        })
+        
+        // Add chrome object (critical for Chrome detection)
+        if (!window.chrome) {
+          window.chrome = {
+            runtime: {},
+            loadTimes: function() {},
+            csi: function() {},
+            app: {}
+          }
+        }
+        
+        // Override permissions.query to return realistic results
+        const originalQuery = window.navigator.permissions.query
+        window.navigator.permissions.query = (parameters) => (
+          parameters.name === 'notifications' ?
+            Promise.resolve({ state: Notification.permission }) :
+            originalQuery(parameters)
+        )
+        
+        // Fix getBattery if it exists
+        if (navigator.getBattery) {
+          Object.defineProperty(navigator, 'getBattery', {
+            value: () => Promise.resolve({
+              charging: true,
+              chargingTime: 0,
+              dischargingTime: Infinity,
+              level: 1
+            })
+          })
+        }
+        
+        // Override toString methods to hide automation
+        const getParameter = WebGLRenderingContext.prototype.getParameter
+        WebGLRenderingContext.prototype.getParameter = function(parameter) {
+          if (parameter === 37445) {
+            return 'Intel Inc.'
+          }
+          if (parameter === 37446) {
+            return 'Intel Iris OpenGL Engine'
+          }
+          return getParameter.call(this, parameter)
+        }
       })
       
       // Navigate to YouTube video URL
@@ -601,8 +666,28 @@ async function getVideoInfoWithPuppeteer(videoUrl) {
         timeout: 60000 
       })
       
-      // Wait for YouTube's player data to be available using modern Promise-based approach
-      // (page.waitForTimeout was removed in newer Puppeteer versions)
+      // Check for CAPTCHA or bot detection pages
+      const pageContent = await page.content()
+      const pageTitle = await page.title()
+      const pageUrl = page.url()
+      
+      if (pageContent.includes('Sorry, we can\'t verify that you\'re not a robot') ||
+          pageContent.includes('captcha') ||
+          pageTitle.includes('Just a moment') ||
+          pageUrl.includes('challenge') ||
+          pageUrl.includes('consent')) {
+        console.error('🚫 CAPTCHA or bot detection challenge detected!')
+        console.error(`   Page URL: ${pageUrl}`)
+        console.error(`   Page Title: ${pageTitle}`)
+        throw new Error('CAPTCHA challenge detected - page requires human verification')
+      }
+      
+      // Simulate human-like behavior: random mouse movement and delays
+      await page.mouse.move(Math.random() * 100 + 100, Math.random() * 100 + 100)
+      await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000)))
+      
+      // Wait for YouTube's player data to be available
+      // Give it more time to fully load (YouTube loads data asynchronously)
       await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 8000)))
       
       // Extract video data from page's JavaScript variables
