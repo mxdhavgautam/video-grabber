@@ -394,7 +394,7 @@ class CookieGenerator {
 
     try {
       // Navigate to YouTube if not already there
-      const currentUrl = this.page.url();
+      let currentUrl = this.page.url();
       console.log(`[CookieGenerator] Current URL: ${currentUrl}`);
       
       if (!currentUrl.includes('youtube.com')) {
