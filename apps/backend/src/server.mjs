@@ -42,23 +42,37 @@ const cookiesPath = process.env.COOKIES_FILE || path.join(ytdlpDir, 'cookies.txt
 const youtubeExtractor = new YouTubeExtractor();
 
 // Initialize Cookie Generator (runs Chrome browser for human-like browsing)
-const cookieGenerator = new CookieGenerator(cookiesPath, chromeProfilesDir);
+// Dynamic import to handle missing puppeteer-core gracefully
+let cookieGenerator = null;
 
-// Start cookie generator in background (non-blocking)
-// This will generate legitimate cookies through human-like browsing
-// The browsing happens asynchronously, so server startup is not delayed
-if (process.env.ENABLE_COOKIE_GENERATOR !== 'false') {
-  // Start in background - don't block server startup
-  setImmediate(() => {
-    cookieGenerator.start().catch(error => {
-      console.error('[Server] Failed to start cookie generator:', error.message);
-      console.error('[Server] Cookie generator will not run, but manual cookie upload still works');
-    });
-  });
-  console.log('[Server] Cookie generator enabled - will start browsing in background');
-} else {
-  console.log('[Server] Cookie generator disabled (ENABLE_COOKIE_GENERATOR=false)');
-}
+// Async initialization for cookie generator
+(async () => {
+  try {
+    const cookieGeneratorModule = await import('./services/cookie-generator.mjs');
+    const CookieGenerator = cookieGeneratorModule.default;
+    
+    cookieGenerator = new CookieGenerator(cookiesPath, chromeProfilesDir);
+
+    // Start cookie generator in background (non-blocking)
+    // This will generate legitimate cookies through human-like browsing
+    // The browsing happens asynchronously, so server startup is not delayed
+    if (process.env.ENABLE_COOKIE_GENERATOR !== 'false') {
+      // Start in background - don't block server startup
+      setImmediate(() => {
+        cookieGenerator.start().catch(error => {
+          console.error('[Server] Failed to start cookie generator:', error.message);
+          console.error('[Server] Cookie generator will not run, but manual cookie upload still works');
+        });
+      });
+      console.log('[Server] Cookie generator enabled - will start browsing in background');
+    } else {
+      console.log('[Server] Cookie generator disabled (ENABLE_COOKIE_GENERATOR=false)');
+    }
+  } catch (error) {
+    console.warn('[Server] CookieGenerator not available (puppeteer-core may not be installed):', error.message);
+    console.warn('[Server] Cookie generator will not run, but manual cookie upload still works');
+  }
+})();
 
 [runtimeDir, ytdlpDir, chromeProfilesDir].forEach(dir => {
   if (!fs.existsSync(dir)) {
@@ -203,14 +217,18 @@ function extractVideoId(url) {
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('[Server] SIGTERM received, shutting down gracefully...');
-  await cookieGenerator.stop();
+  if (cookieGenerator) {
+    await cookieGenerator.stop();
+  }
   await youtubeExtractor.cleanup();
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
   console.log('[Server] SIGINT received, shutting down gracefully...');
-  await cookieGenerator.stop();
+  if (cookieGenerator) {
+    await cookieGenerator.stop();
+  }
   await youtubeExtractor.cleanup();
   process.exit(0);
 });
