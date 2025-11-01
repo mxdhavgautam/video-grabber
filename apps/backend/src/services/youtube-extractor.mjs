@@ -21,7 +21,7 @@ class YouTubeExtractor {
     this.initialized = true;
   }
 
-  async extractWithYtDlp(videoId, clientType = null, skipImpersonate = false) {
+  async extractWithYtDlp(videoId, clientType = null, skipImpersonate = false, requestAllFormats = false) {
     return new Promise(async (resolve, reject) => {
       const args = [
         '--dump-json',
@@ -29,6 +29,10 @@ class YouTubeExtractor {
         '--no-check-certificates',
         '--prefer-insecure'
       ];
+
+      // Note: --dump-json returns ALL available formats regardless of client restrictions
+      // Mobile clients (android/ios) may still return limited formats due to YouTube's restrictions
+      // Desktop clients (mweb/web) with cookies typically return more formats (including high-res)
 
       // Add Deno runtime for EJS (required for latest yt-dlp with external n/sig solver)
       const denoAvailable = await this.checkDenoAvailable();
@@ -172,14 +176,21 @@ class YouTubeExtractor {
             // Parse and enhance format information for high-quality stream access
             try {
               const parsedVideoInfo = this.formatParser.parse(rawVideoInfo);
-              console.log(`[yt-dlp] Parsed ${parsedVideoInfo.metadata.format_count} formats`);
-              console.log(`[yt-dlp] Max resolution: ${parsedVideoInfo.metadata.max_resolution?.resolution || 'unknown'}`);
-              if (parsedVideoInfo.best_streams.best_combined) {
-                console.log(`[yt-dlp] Best combined format: ${parsedVideoInfo.best_streams.best_combined.format_id} (${parsedVideoInfo.best_streams.best_combined.resolution || 'unknown'})`);
-              }
-              if (parsedVideoInfo.best_streams.best_video_audio) {
-                console.log(`[yt-dlp] Best separate: video=${parsedVideoInfo.best_streams.best_video_audio.video.format_id} + audio=${parsedVideoInfo.best_streams.best_video_audio.audio.format_id}`);
-              }
+            console.log(`[yt-dlp] Parsed ${parsedVideoInfo.metadata.format_count} formats`);
+            console.log(`[yt-dlp] Max resolution: ${parsedVideoInfo.metadata.max_resolution?.resolution || 'unknown'}`);
+            
+            // Warn if we only got limited formats (common with mobile clients)
+            if (parsedVideoInfo.metadata.format_count < 10) {
+              console.warn(`[yt-dlp] WARNING: Only ${parsedVideoInfo.metadata.format_count} formats available - mobile clients may return limited formats`);
+              console.warn(`[yt-dlp] This may indicate format restrictions. Max resolution: ${parsedVideoInfo.metadata.max_resolution?.resolution || 'unknown'}`);
+            }
+            
+            if (parsedVideoInfo.best_streams.best_combined) {
+              console.log(`[yt-dlp] Best combined format: ${parsedVideoInfo.best_streams.best_combined.format_id} (${parsedVideoInfo.best_streams.best_combined.resolution || 'unknown'})`);
+            }
+            if (parsedVideoInfo.best_streams.best_video_audio) {
+              console.log(`[yt-dlp] Best separate: video=${parsedVideoInfo.best_streams.best_video_audio.video.format_id} (${parsedVideoInfo.best_streams.best_video_audio.video.resolution || 'unknown'}) + audio=${parsedVideoInfo.best_streams.best_video_audio.audio.format_id}`);
+            }
               
               resolve(parsedVideoInfo);
             } catch (parseError) {
@@ -229,40 +240,37 @@ class YouTubeExtractor {
       // Try multiple client strategies if first attempt fails (only when no cookies)
       // ANDROID client with Chrome impersonation has proven most successful
       // Success factors: Chrome TLS fingerprint + Android client + PO token + mobile headers + delays
+      // Note: Transient bot detection failures are common - retry logic handles this
       if (!fs.existsSync(this.cookiesPath)) {
-        // Strategy 1: ANDROID client (PROVEN SUCCESS - Chrome impersonation + PO token + mobile headers)
+        // Strategy 1: ANDROID client with retry (PROVEN SUCCESS - Chrome impersonation + PO token + mobile headers)
         // Why it works: Chrome TLS fingerprint is more trusted, Android client less restrictive,
         // PO token adds legitimacy, mobile headers match authentic Android Chrome behavior
-        try {
-          console.log('[Extract] [1/3] Trying ANDROID client (most successful configuration)...');
-          const videoInfo = await this.extractWithYtDlp(videoId, 'android');
+        // Retry logic handles transient bot detection failures
+        const androidResult = await this.extractWithRetry(videoId, 'android', 2);
+        if (androidResult) {
           console.log('[Extract] ✓ ANDROID client succeeded!');
-          return videoInfo;
-        } catch (androidError) {
-          console.warn('[Extract] ANDROID client failed, trying IOS client...');
-          console.warn('[Extract] ANDROID error:', androidError.message.substring(0, 200));
-          
-          // Strategy 2: IOS client (Safari impersonation - sometimes works but less reliable)
-          try {
-            console.log('[Extract] [2/3] Trying IOS client...');
-            const videoInfo = await this.extractWithYtDlp(videoId, 'ios');
-            return videoInfo;
-          } catch (iosError) {
-            console.warn('[Extract] IOS client failed, trying TV client...');
-            console.warn('[Extract] IOS error:', iosError.message.substring(0, 200));
-            
-            // Strategy 3: TV client (last resort - Edge impersonation)
-            try {
-              console.log('[Extract] [3/3] Trying TV client...');
-              const videoInfo = await this.extractWithYtDlp(videoId, 'tv');
-              return videoInfo;
-            } catch (tvError) {
-              console.error('[Extract] All client types failed');
-              console.error('[Extract] TV error:', tvError.message.substring(0, 200));
-              throw new Error(`All extraction attempts failed. Last error: ${tvError.message.substring(0, 200)}`);
-            }
-          }
+          return androidResult;
         }
+        
+        console.warn('[Extract] ANDROID client failed after retries, trying IOS client...');
+          
+        // Strategy 2: IOS client (Safari impersonation - sometimes works but less reliable)
+        const iosResult = await this.extractWithRetry(videoId, 'ios', 2);
+        if (iosResult) {
+          return iosResult;
+        }
+        
+        console.warn('[Extract] IOS client failed after retries, trying TV client...');
+        
+        // Strategy 3: TV client (last resort - Edge impersonation)
+        const tvResult = await this.extractWithRetry(videoId, 'tv', 2);
+        if (tvResult) {
+          return tvResult;
+        }
+        
+        console.error('[Extract] All client types failed after retries');
+        throw new Error('All extraction attempts failed. YouTube may be rate limiting this IP address. Try again in a few moments.');
+      }
       } else {
         // With cookies, just use mweb (which requires PO token provider)
         const videoInfo = await this.extractWithYtDlp(videoId, 'mweb');
@@ -326,6 +334,52 @@ class YouTubeExtractor {
       console.error('[parseCookiesTxt] Error parsing cookies:', error.message);
       return [];
     }
+  }
+
+  /**
+   * Extract with automatic retry for transient bot detection failures
+   * Handles the common case where first attempt fails but retry succeeds
+   * @param {string} videoId - Video ID to extract
+   * @param {string} clientType - Client type (android, ios, tv)
+   * @param {number} maxRetries - Maximum number of retries (default: 2)
+   * @param {number} baseDelay - Base delay between retries in milliseconds (default: 3000)
+   * @returns {Promise<Object|null>} Video info or null if all retries failed
+   */
+  async extractWithRetry(videoId, clientType, maxRetries = 2, baseDelay = 3000) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        if (attempt > 1) {
+          console.log(`[Extract] Retry attempt ${attempt}/${maxRetries} for ${clientType.toUpperCase()} client...`);
+          // Exponential backoff: 3s, 6s, 12s...
+          const delay = baseDelay * Math.pow(2, attempt - 2);
+          console.log(`[Extract] Waiting ${delay}ms before retry (exponential backoff)...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+        
+        const videoInfo = await this.extractWithYtDlp(videoId, clientType);
+        if (attempt > 1) {
+          console.log(`[Extract] ✓ ${clientType.toUpperCase()} client succeeded on retry ${attempt}!`);
+        }
+        return videoInfo;
+      } catch (error) {
+        const errorMsg = error.message || '';
+        const isBotDetection = errorMsg.includes('bot') || errorMsg.includes('Sign in');
+        
+        if (isBotDetection && attempt < maxRetries) {
+          console.warn(`[Extract] ${clientType.toUpperCase()} client attempt ${attempt} failed with bot detection, will retry...`);
+          console.warn(`[Extract] Error: ${errorMsg.substring(0, 200)}`);
+          continue;
+        }
+        
+        // If last attempt or non-bot error, throw
+        if (attempt === maxRetries) {
+          console.error(`[Extract] ${clientType.toUpperCase()} client failed after ${maxRetries} attempts`);
+          throw error;
+        }
+      }
+    }
+    
+    return null;
   }
 
   async checkDenoAvailable() {
