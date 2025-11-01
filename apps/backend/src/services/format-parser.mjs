@@ -60,7 +60,7 @@ class FormatParser {
         formatsArray.push(...ytdlpResponse.requested_formats);
       }
     }
-    const formats = this.parseFormats(formatsArray);
+    const formats = this.parseFormats(formatsArray, basicInfo.duration);
     
     // Identify best quality streams
     const bestStreams = this.identifyBestStreams(formats);
@@ -98,9 +98,10 @@ class FormatParser {
   /**
    * Parse and categorize formats
    * @param {Array} formats - Array of format objects from yt-dlp
+   * @param {number} videoDuration - Video duration in seconds (for bitrate estimation)
    * @returns {Object} Categorized formats
    */
-  parseFormats(formats) {
+  parseFormats(formats, videoDuration = null) {
     const all = [];
     const video_only = [];
     const audio_only = [];
@@ -111,7 +112,7 @@ class FormatParser {
       if (!format || typeof format !== 'object') continue;
       
       try {
-        const parsed = this.parseFormat(format);
+        const parsed = this.parseFormat(format, videoDuration);
         all.push(parsed);
 
         if (parsed.hasVideo && !parsed.hasAudio) {
@@ -160,13 +161,18 @@ class FormatParser {
    * @param {Object} format - Format object from yt-dlp
    * @returns {Object} Parsed format with standardized fields
    */
-  parseFormat(format) {
+  parseFormat(format, videoDuration = null) {
     if (!format || typeof format !== 'object') {
       throw new Error('Invalid format object');
     }
     
     const hasVideo = format.vcodec && format.vcodec !== 'none' && format.vcodec !== null;
     const hasAudio = format.acodec && format.acodec !== 'none' && format.acodec !== null;
+    
+    // Store video duration for bitrate estimation if needed
+    if (videoDuration && !format._duration && !format.duration) {
+      format._duration = videoDuration;
+    }
     
     // Extract resolution
     let width = format.width || 0;
@@ -293,9 +299,24 @@ class FormatParser {
       
       // For audio-only formats, ensure bitrate is in format_note
       if (!hasVideo && hasAudio && !hasBitrate) {
-        const bitrate = abr || tbr || 0;
+        let bitrate = abr || tbr || 0;
+        
+        // Try to estimate from filesize if bitrate is missing
+        if (bitrate === 0 && format.filesize && format.filesize > 0) {
+          const duration = format._duration || format.duration;
+          if (duration && duration > 0) {
+            const estimatedKbps = Math.round((format.filesize * 8) / (duration * 1000));
+            if (estimatedKbps > 0 && estimatedKbps < 500) {
+              bitrate = estimatedKbps;
+            }
+          }
+        }
+        
         if (bitrate > 0) {
           return `${existingNote} - ${bitrate}kbps`;
+        } else {
+          // Default estimate if all else fails
+          return `${existingNote} - 128kbps`;
         }
       }
       
@@ -305,12 +326,34 @@ class FormatParser {
     // No format_note, generate one
     // Audio-only format
     if (!hasVideo && hasAudio) {
-      const bitrate = abr || tbr || 0;
+      let bitrate = abr || tbr || 0;
+      
+      // If bitrate is still 0, try to estimate from filesize and duration
+      // This is common for old videos where yt-dlp doesn't provide bitrate
+      if (bitrate === 0 && format.filesize && format.filesize > 0) {
+        // Estimate bitrate from filesize (bytes) and duration (seconds) if available
+        // Bitrate (kbps) = (filesize_bytes * 8) / (duration_seconds * 1000)
+        // Try to get duration from parent video info if available
+        if (format._duration || format.duration) {
+          const duration = format._duration || format.duration;
+          if (duration > 0) {
+            const estimatedKbps = Math.round((format.filesize * 8) / (duration * 1000));
+            if (estimatedKbps > 0 && estimatedKbps < 500) { // Sanity check: audio bitrate should be < 500kbps
+              bitrate = estimatedKbps;
+              console.log(`[FormatParser] Estimated audio bitrate: ${bitrate}kbps from filesize ${format.filesize} and duration ${duration}s`);
+            }
+          }
+        }
+      }
+      
       if (bitrate > 0) {
         // Format for frontend parsing: must include "kbps"
         return `audio only - ${bitrate}kbps`;
       }
-      return 'audio only';
+      
+      // Last resort: use default or indicate unknown
+      console.warn(`[FormatParser] Audio format ${format.format_id} has no bitrate info - using default estimate`);
+      return 'audio only - 128kbps'; // Default estimate for old videos
     }
     
     // Video format (with or without audio)
