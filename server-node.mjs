@@ -546,32 +546,47 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     const chromeProfileDir = CHROME_PROFILE_DIR
     const profileCookiesFile = chromeProfileDir ? `${chromeProfileDir}/cookies.txt` : null
     const cookiesExist = profileCookiesFile ? existsSync(profileCookiesFile) : false
+    
+    // Also check for authenticated cookies (manually uploaded)
+    const authenticatedCookiesPath = chromeProfileDir ? `${chromeProfileDir}/authenticated-cookies.txt` : null
+    const hasAuthenticatedCookies = authenticatedCookiesPath ? existsSync(authenticatedCookiesPath) : false
 
-    // CRITICAL: Use --cookies-from-browser directly instead of exported cookies.txt
-    // The exported cookies.txt might not be in the correct format or might be missing cookies
-    // --cookies-from-browser reads directly from Chromium's cookie database which is more reliable
-    // Format: --cookies-from-browser "chromium:PROFILE_PATH" where PROFILE_PATH is the full path to the profile directory
-    if (retryCount < 2 && useBrowserCookies && chromeProfileDir) {
-      // Verify the profile directory exists and contains Default/Cookies
+    // CRITICAL: Prioritize authenticated cookies over guest cookies
+    // Authenticated cookies are required to bypass bot detection (per yt-dlp docs)
+    // Strategy priority:
+    // 1. Authenticated cookies (manually uploaded) - BEST for bot detection bypass
+    // 2. Chromium profile via --cookies-from-browser (reads directly from DB) - Good if logged in
+    // 3. Exported cookies.txt file - Fallback
+    // 4. PO token provider only - Last resort
+    
+    if (hasAuthenticatedCookies && retryCount < 3) {
+      // Use authenticated cookies first (best for bypassing bot detection)
+      command += ` --cookies "${authenticatedCookiesPath}"`
+      console.log(`🔐 Strategy 1.${retryCount === 0 ? 'A' : 'B'}: Using authenticated cookies file (${authenticatedCookiesPath})`)
+    } else if (retryCount < 2 && useBrowserCookies && chromeProfileDir) {
+      // Use Chromium profile directly (reads from cookie database)
+      // This is the recommended method per yt-dlp docs - no extensions needed!
       const cookiesDbPath = `${chromeProfileDir}/Default/Cookies`
       if (existsSync(cookiesDbPath)) {
         // Use the Chrome profile directory directly - yt-dlp will read cookies from the database
+        // Format: --cookies-from-browser "chromium:PROFILE_PATH"
         command += ` --cookies-from-browser "chromium:${chromeProfileDir}"`
-        console.log(`🔐 Strategy 1.${retryCount === 0 ? 'A' : 'B'}: Using Chromium profile via --cookies-from-browser (${chromeProfileDir})`)
+        console.log(`🔐 Strategy 1.${retryCount === 0 ? 'C' : 'D'}: Using Chromium profile via --cookies-from-browser (${chromeProfileDir})`)
       } else {
         console.warn(`⚠️ Cookies database not found at ${cookiesDbPath}, falling back to exported cookies`)
         if (cookiesExist) {
           command += ` --cookies "${profileCookiesFile}"`
-          console.log(`🔐 Strategy 1.${retryCount === 0 ? 'C' : 'D'}: Using exported cookies file (${profileCookiesFile})`)
+          console.log(`🔐 Strategy 1.${retryCount === 0 ? 'E' : 'F'}: Using exported cookies file (${profileCookiesFile})`)
         } else {
           console.log(`⚠️ Strategy 1 fallback: No usable cookies, relying on PO token provider`)
         }
       }
     } else if (retryCount === 0 && cookiesExist) {
-      // Fallback to exported cookies file if --cookies-from-browser doesn't work
+      // Fallback to exported cookies file
       command += ` --cookies "${profileCookiesFile}"`
-      console.log(`🔐 Strategy 1.C: Using exported cookies file (${profileCookiesFile})`)
+      console.log(`🔐 Strategy 1.G: Using exported cookies file (${profileCookiesFile})`)
     } else {
+      // Last resort: no cookies, rely on PO token provider
       console.log(`⚠️ Strategy 1 fallback: No usable cookies, relying on PO token provider`)
     }
 
@@ -582,12 +597,19 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     // - Format: --extractor-args "youtubepot-bgutilhttp:base_url=URL;disable_innertube=1"
     // - The plugin auto-registers, but we need to configure it with base_url if using non-default hostname/port
     // NOTE: Configuring base_url automatically enables the HTTP provider, no need for po-token-providers flag
-    // Try different clients based on retry count:
-    // - retryCount 0-1: mweb (recommended with PO tokens)
-    // - retryCount 2+: android (fallback, less likely to trigger bot detection)
+    // Try different clients based on retry count to avoid bot detection:
+    // - retryCount 0: mweb (recommended with PO tokens)
+    // - retryCount 1: mweb (retry with same client)
+    // - retryCount 2: android (mobile client, less bot detection)
+    // - retryCount 3: ios (iOS client, different user agent)
+    // - retryCount 4: android_embedded (embedded Android client)
     let clientType = 'mweb'
-    if (retryCount >= 2) {
+    if (retryCount === 2) {
       clientType = 'android'
+    } else if (retryCount === 3) {
+      clientType = 'ios'
+    } else if (retryCount >= 4) {
+      clientType = 'android_embedded'
     }
     let extractorArgs = ` --extractor-args "youtube:player-client=${clientType}"`
     if (POT_PROVIDER_BASE_URL) {
@@ -657,19 +679,24 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
         }
 
         const botDetectionTriggered = stderr && /Sign in to confirm you.?re not a bot/i.test(stderr)
+        const loginRequired = stderr && /LOGIN_REQUIRED/i.test(stderr) || stdout && /LOGIN_REQUIRED/i.test(stdout)
 
-        if (error && botDetectionTriggered) {
+        if (error && (botDetectionTriggered || loginRequired)) {
           console.warn(`⚠️ Bot detection triggered on attempt ${retryCount + 1}`)
+          if (loginRequired) {
+            console.warn(`⚠️ LOGIN_REQUIRED detected - guest cookies may not be sufficient`)
+          }
           if (stderr) {
             // Show more verbose output on first attempt to help debug
             const snapshotLength = retryCount === 0 ? 2000 : 500
             console.warn(`[yt-dlp stderr snapshot] ${stderr.substring(0, snapshotLength)}`)
           }
-          if (retryCount < 3) {
+          // Increase retry count to 5 to try more client types
+          if (retryCount < 4) {
             const nextDelay = Math.min(delayMs * Math.pow(2, retryCount + 1), 30000)
             return retryWith(nextDelay)
           }
-          return reject(new Error('Failed to get video information from yt-dlp - Bot detection could not be bypassed after 3 retries'))
+          return reject(new Error('Failed to get video information from yt-dlp - Bot detection could not be bypassed after 5 retries. Guest cookies may not be sufficient - consider using authenticated cookies from a logged-in YouTube session.'))
         }
 
         if (error) {
@@ -1000,6 +1027,10 @@ const server = createServer(async (req, res) => {
       if (error.message === 'BOT_PROTECTED') {
         console.warn('⚠️ Video is protected by YouTube bot detection')
         errorMessage = '🤖 YouTube is blocking this request. Try again in a few seconds, or try a different video.'
+        statusCode = 400
+      } else if (error.message.includes('Bot detection could not be bypassed')) {
+        console.warn('⚠️ Bot detection could not be bypassed after all retries')
+        errorMessage = '🤖 YouTube bot detection could not be bypassed. Guest cookies are not sufficient - please upload authenticated cookies from a logged-in YouTube session using the /api/upload-authenticated-cookies endpoint. See https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies for instructions.'
         statusCode = 400
       } else if (error.message === 'GEO_BLOCKED') {
         console.warn('⚠️ Video is geo-blocked')
@@ -1350,6 +1381,120 @@ const server = createServer(async (req, res) => {
       clearInterval(pollInterval)
       downloadProgress.delete(formatId)
       res.end()
+    })
+    return
+  }
+
+  // Upload authenticated cookies endpoint - for manually uploading cookies from logged-in YouTube session
+  // This is critical for bypassing bot detection - guest cookies are not sufficient
+  if (url.pathname === '/api/upload-authenticated-cookies' && req.method === 'POST') {
+    let body = ''
+    
+    req.on('data', chunk => {
+      body += chunk.toString()
+    })
+    
+    req.on('end', async () => {
+      try {
+        const data = JSON.parse(body)
+        const { cookies, cookiesFile } = data
+        
+        // Accept either cookies string or path to cookies file
+        let cookiesToSave = null
+        let targetPath = null
+        
+        if (cookies && typeof cookies === 'string') {
+          // Cookies provided as string
+          cookiesToSave = cookies
+          // Save to the Chrome profile directory if available, otherwise use default location
+          const chromeProfileDir = CHROME_PROFILE_DIR
+          if (chromeProfileDir && existsSync(chromeProfileDir)) {
+            targetPath = `${chromeProfileDir}/authenticated-cookies.txt`
+          } else {
+            targetPath = COOKIES_FILE
+          }
+        } else if (cookiesFile && typeof cookiesFile === 'string') {
+          // Path to cookies file provided
+          if (existsSync(cookiesFile)) {
+            cookiesToSave = readFileSync(cookiesFile, 'utf-8')
+            targetPath = cookiesFile
+          } else {
+            throw new Error(`Cookies file not found: ${cookiesFile}`)
+          }
+        } else {
+          res.writeHead(400, { 
+            ...corsHeaders,
+            'Content-Type': 'application/json' 
+          })
+          res.end(JSON.stringify({
+            error: 'Invalid request',
+            message: 'Either "cookies" (string) or "cookiesFile" (path) must be provided'
+          }))
+          return
+        }
+        
+        // Ensure directory exists
+        const cookieDir = dirname(targetPath)
+        if (!existsSync(cookieDir)) {
+          mkdirSync(cookieDir, { recursive: true })
+        }
+        
+        // Write cookies to file
+        writeFileSync(targetPath, cookiesToSave, 'utf-8')
+        
+        // Also update the CHROME_PROFILE_DIR cookies.txt if we're using a different path
+        const chromeProfileDir = CHROME_PROFILE_DIR
+        if (chromeProfileDir && targetPath !== `${chromeProfileDir}/cookies.txt` && existsSync(chromeProfileDir)) {
+          const profileCookiesPath = `${chromeProfileDir}/cookies.txt`
+          writeFileSync(profileCookiesPath, cookiesToSave, 'utf-8')
+          console.log(`✅ Also saved authenticated cookies to Chrome profile: ${profileCookiesPath}`)
+        }
+        
+        const cookieCount = cookiesToSave.split('\n').filter(l => l.trim() && !l.startsWith('#')).length
+        
+        console.log(`✅ Authenticated cookies saved successfully to: ${targetPath}`)
+        console.log(`📝 Cookie count: ${cookieCount}`)
+        
+        // Check for critical cookies
+        if (cookiesToSave.includes('VISITOR_INFO1_LIVE')) {
+          console.log(`✅ Critical cookie VISITOR_INFO1_LIVE found!`)
+        } else {
+          console.warn(`⚠️ WARNING: VISITOR_INFO1_LIVE cookie NOT found - cookies may be invalid`)
+        }
+        
+        if (cookiesToSave.includes('YSC')) {
+          console.log(`✅ Session cookie YSC found!`)
+        }
+        
+        // Check for authenticated cookies (login cookies)
+        if (cookiesToSave.includes('__Secure-') || cookiesToSave.includes('SAPISID') || cookiesToSave.includes('SID')) {
+          console.log(`✅ Authenticated cookies detected (logged-in session)!`)
+        } else {
+          console.warn(`⚠️ WARNING: No authenticated cookies detected - these may still be guest cookies`)
+        }
+        
+        res.writeHead(200, { 
+          ...corsHeaders,
+          'Content-Type': 'application/json' 
+        })
+        res.end(JSON.stringify({
+          status: 'success',
+          message: 'Authenticated cookies saved successfully. Restart the server or wait for next request to use them.',
+          path: targetPath,
+          cookieCount,
+          hasAuthenticatedCookies: cookiesToSave.includes('__Secure-') || cookiesToSave.includes('SAPISID') || cookiesToSave.includes('SID')
+        }))
+      } catch (error) {
+        console.error('❌ Error saving authenticated cookies:', error.message)
+        res.writeHead(500, { 
+          ...corsHeaders,
+          'Content-Type': 'application/json' 
+        })
+        res.end(JSON.stringify({
+          error: 'Failed to save authenticated cookies',
+          message: error instanceof Error ? error.message : 'Unknown error'
+        }))
+      }
     })
     return
   }
