@@ -303,6 +303,15 @@ class YouTubeExtractor {
     // Convert youtubei.js format to yt-dlp-like format
     const formats = [];
     
+    // Debug: Log available keys in info object
+    console.log('[convertYouTubeIJSFormat] Available keys in info:', Object.keys(info || {}));
+    console.log('[convertYouTubeIJSFormat] streaming_data exists:', !!info.streaming_data);
+    if (info.streaming_data) {
+      console.log('[convertYouTubeIJSFormat] streaming_data keys:', Object.keys(info.streaming_data || {}));
+      console.log('[convertYouTubeIJSFormat] formats count:', info.streaming_data?.formats?.length || 0);
+      console.log('[convertYouTubeIJSFormat] adaptive_formats count:', info.streaming_data?.adaptive_formats?.length || 0);
+    }
+    
     // Helper to determine if format has video/audio
     const hasVideo = (f) => f.has_video || (f.width && f.height) || f.mime_type?.includes('video');
     const hasAudio = (f) => f.has_audio || f.mime_type?.includes('audio');
