@@ -64,12 +64,21 @@ RUN DENO_VERSION=$(curl -s https://api.github.com/repos/denoland/deno/releases/l
     && rm -rf /tmp/deno.zip \
     && deno --version
 
+# Install curl_cffi first (required for impersonation)
+# curl_cffi uses curl-impersonate to mimic real browser TLS fingerprints
+# Install system dependencies for curl_cffi if needed
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+    curl-cffi
+
 # Install latest yt-dlp from GitHub (nightly/master branch) with EJS support
 # Using direct pip install from git to get bleeding-edge version
-# Include curl_cffi for advanced TLS fingerprinting (bypasses bot detection without cookies)
-# curl_cffi uses curl-impersonate to mimic real browser TLS fingerprints
+# Include curl_cffi extra to ensure compatibility
+# curl_cffi is installed separately above to avoid dependency conflicts
 RUN python3 -m pip install --no-cache-dir --break-system-packages \
     "git+https://github.com/yt-dlp/yt-dlp.git@master#egg=yt-dlp[default,curl_cffi]"
+
+# Verify curl_cffi installation
+RUN python3 -c "import curl_cffi; print('curl_cffi version:', curl_cffi.__version__)" || echo "curl_cffi verification failed"
 
 # Install bgutil-ytdlp-pot-provider plugin for automatic PO token handling
 # This is the recommended PO Token provider plugin according to yt-dlp wiki
