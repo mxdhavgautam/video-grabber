@@ -571,16 +571,18 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     // Format: --js-runtimes deno (or node/bun/quickjs)
     command += ` --js-runtimes deno`
     
-    // Rotate user-agents to avoid fingerprinting
-    const userAgents = [
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15'
-    ]
-    const userAgent = userAgents[retryCount % userAgents.length]
+    // CRITICAL: Use Linux Chrome user-agent to match our Docker environment
+    // Real Chrome works because user-agent matches the actual OS
+    // Using Windows/Mac user-agents on Linux is detectable!
+    // Chrome on Linux uses: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36
+    const userAgent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
     command += ` --user-agent "${userAgent}"`
+    
+    // CRITICAL: Add Referer header matching real Chrome behavior
+    // Real Chrome sends Referer: https://www.youtube.com when navigating
+    // This is crucial for YouTube to recognize legitimate browser traffic
+    command += ` --add-header "Referer:https://www.youtube.com"`
+    command += ` --add-header "Origin:https://www.youtube.com"`
     command += ` --socket-timeout 30`
     // Add delay between requests to avoid rate limiting (5-10 seconds per docs)
     // Only add delay on retries to avoid slowing down initial requests unnecessarily
@@ -602,7 +604,7 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     // Authenticated cookies are required to bypass bot detection (per yt-dlp docs)
     // Strategy priority:
     // 1. Authenticated cookies (manually uploaded) - BEST for bot detection bypass
-    // 2. Chromium profile via --cookies-from-browser (reads directly from DB) - Good if logged in
+    // 2. Google Chrome profile via --cookies-from-browser (reads directly from DB) - Good if logged in
     // 3. Exported cookies.txt file - Fallback
     // 4. PO token provider only - Last resort
     
@@ -611,14 +613,14 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
       command += ` --cookies "${authenticatedCookiesPath}"`
       console.log(`🔐 Strategy 1.${retryCount === 0 ? 'A' : 'B'}: Using authenticated cookies file (${authenticatedCookiesPath})`)
     } else if (retryCount < 2 && useBrowserCookies && chromeProfileDir) {
-      // Use Chromium profile directly (reads from cookie database)
+      // Use Google Chrome profile directly (reads from cookie database)
       // This is the recommended method per yt-dlp docs - no extensions needed!
       const cookiesDbPath = `${chromeProfileDir}/Default/Cookies`
       if (existsSync(cookiesDbPath)) {
         // Use the Chrome profile directory directly - yt-dlp will read cookies from the database
-        // Format: --cookies-from-browser "chromium:PROFILE_PATH"
-        command += ` --cookies-from-browser "chromium:${chromeProfileDir}"`
-        console.log(`🔐 Strategy 1.${retryCount === 0 ? 'C' : 'D'}: Using Chromium profile via --cookies-from-browser (${chromeProfileDir})`)
+        // Format: --cookies-from-browser "chrome:PROFILE_PATH" (yt-dlp uses "chrome" for Google Chrome)
+        command += ` --cookies-from-browser "chrome:${chromeProfileDir}"`
+        console.log(`🔐 Strategy 1.${retryCount === 0 ? 'C' : 'D'}: Using Google Chrome profile via --cookies-from-browser (${chromeProfileDir})`)
       } else {
         console.warn(`⚠️ Cookies database not found at ${cookiesDbPath}, falling back to exported cookies`)
         if (cookiesExist) {
@@ -1248,9 +1250,10 @@ const server = createServer(async (req, res) => {
       const cookiesExist = profileCookiesFile ? existsSync(profileCookiesFile) : false
 
       if (useBrowserCookies && chromeProfileDir) {
-        // Prioritize --cookies-from-browser (reads directly from Chromium database)
-        cookieFlags = ['--cookies-from-browser', `chromium:${chromeProfileDir}`]
-        console.log(`🔐 Download Strategy: Using rotated Chromium profile via --cookies-from-browser (${chromeProfileDir})`)
+        // Prioritize --cookies-from-browser (reads directly from Google Chrome database)
+        // Note: yt-dlp uses "chrome" not "chromium" for Google Chrome
+        cookieFlags = ['--cookies-from-browser', `chrome:${chromeProfileDir}`]
+        console.log(`🔐 Download Strategy: Using rotated Google Chrome profile via --cookies-from-browser (${chromeProfileDir})`)
       } else if (cookiesExist) {
         // Fallback to exported cookies file
         cookieFlags = ['--cookies', profileCookiesFile]
@@ -1287,7 +1290,9 @@ const server = createServer(async (req, res) => {
         '--no-warnings',
         '--js-runtimes', 'deno',  // Use Deno for external n/sig solving (PR #14157)
         '--socket-timeout', '30',
-        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        '--user-agent', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        '--add-header', 'Referer:https://www.youtube.com',
+        '--add-header', 'Origin:https://www.youtube.com',
         '-o', tempFilePath,
         ...cookieFlags,
         ...extractorArgs,
