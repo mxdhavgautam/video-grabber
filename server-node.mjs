@@ -618,7 +618,13 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     } else if (retryCount >= 4) {
       clientType = 'android_embedded'
     }
+    // Enable JS challenge tracing on first attempt to verify external JS runtime is working
+    // See: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/youtube/jsc/README.md
     let extractorArgs = ` --extractor-args "youtube:player-client=${clientType}"`
+    if (retryCount === 0) {
+      // Enable JS challenge tracing on first attempt to verify Deno is being used
+      extractorArgs += ` --extractor-args "youtube:jsc_trace=true"`
+    }
     if (POT_PROVIDER_BASE_URL) {
       // Configure HTTP provider with base_url
       // Format: youtubepot-bgutilhttp:base_url=URL;disable_innertube=1
@@ -676,6 +682,24 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
           const potRequestMatch = stderr.match(/\[debug\]\s+\[youtube\]\s+\[pot.*\].*bgutil/i)
           if (potRequestMatch) {
             console.log(`🔑 PO token request detected: ${potRequestMatch[0].substring(0, 200)}`)
+          }
+          
+          // Check for JS Challenge Provider activity (external JS runtime)
+          const jscProvidersMatch = stderr.match(/\[debug\]\s+\[youtube\]\s+\[jsc\]\s+JS Challenge Providers:.*/i)
+          if (jscProvidersMatch) {
+            console.log(`🔍 JS Challenge Providers detected: ${jscProvidersMatch[0].substring(0, 200)}`)
+            // Check if Deno is available
+            if (jscProvidersMatch[0].includes('deno')) {
+              console.log(`✅ Deno JS runtime is available for n/sig solving`)
+            } else {
+              console.warn(`⚠️ Deno JS runtime not found in available providers`)
+            }
+          }
+          
+          // Check if JS challenges are being triggered
+          const jscChallengeMatch = stderr.match(/\[debug\]\s+\[youtube\]\s+\[jsc.*\].*/i)
+          if (jscChallengeMatch) {
+            console.log(`🔍 JS Challenge activity detected: ${jscChallengeMatch[0].substring(0, 200)}`)
           }
           
           // Check for playability status
