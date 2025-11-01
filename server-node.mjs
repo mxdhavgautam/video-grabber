@@ -600,32 +600,62 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     const authenticatedCookiesPath = chromeProfileDir ? `${chromeProfileDir}/authenticated-cookies.txt` : null
     const hasAuthenticatedCookies = authenticatedCookiesPath ? existsSync(authenticatedCookiesPath) : false
 
+    // CRITICAL: When Chrome is running, the database is LOCKED and yt-dlp extracts 0 cookies!
+    // Real Chrome works because it uses cookies from memory/network stack, not database
+    // Solution: Check if Chrome is running, and if so, use exported cookies.txt file
+    // The cookies.txt file was exported while Chrome was running (fresh cookies)
+    const isChromeRunning = chromeProfileDir ? (() => {
+      try {
+        // Check if Chrome process is running by looking for the profile directory being locked
+        // Or check if cookies.txt exists and is recent (exported while Chrome was running)
+        const cookiesFile = `${chromeProfileDir}/cookies.txt`
+        if (existsSync(cookiesFile)) {
+          const stats = statSync(cookiesFile)
+          const ageMinutes = (Date.now() - stats.mtime.getTime()) / 1000 / 60
+          // If cookies.txt is less than 10 minutes old, Chrome likely just exported it (is running)
+          // If database exists but cookies.txt is fresh, Chrome is probably running
+          const dbPath = `${chromeProfileDir}/Default/Cookies`
+          if (existsSync(dbPath) && ageMinutes < 10) {
+            return true // Chrome likely running, use cookies.txt
+          }
+        }
+        return false
+      } catch {
+        return false
+      }
+    })() : false
+
     // CRITICAL: Prioritize authenticated cookies over guest cookies
     // Authenticated cookies are required to bypass bot detection (per yt-dlp docs)
     // Strategy priority:
     // 1. Authenticated cookies (manually uploaded) - BEST for bot detection bypass
-    // 2. Google Chrome profile via --cookies-from-browser (reads directly from DB) - Good if logged in
-    // 3. Exported cookies.txt file - Fallback
+    // 2. Exported cookies.txt file (when Chrome is running OR if database locked) - WORKS when Chrome running!
+    // 3. Google Chrome profile via --cookies-from-browser (only when Chrome NOT running) - Good if logged in
     // 4. PO token provider only - Last resort
     
     if (hasAuthenticatedCookies && retryCount < 3) {
       // Use authenticated cookies first (best for bypassing bot detection)
       command += ` --cookies "${authenticatedCookiesPath}"`
       console.log(`🔐 Strategy 1.${retryCount === 0 ? 'A' : 'B'}: Using authenticated cookies file (${authenticatedCookiesPath})`)
-    } else if (retryCount < 2 && useBrowserCookies && chromeProfileDir) {
+    } else if (isChromeRunning && cookiesExist) {
+      // CRITICAL FIX: Chrome is running → database is locked → use exported cookies.txt
+      // This matches real Chrome behavior - cookies are in memory/network stack
+      command += ` --cookies "${profileCookiesFile}"`
+      console.log(`🔐 Strategy 1.${retryCount === 0 ? 'C' : 'D'}: Using exported cookies.txt (Chrome running, database locked)`)
+    } else if (retryCount < 2 && useBrowserCookies && chromeProfileDir && !isChromeRunning) {
       // Use Google Chrome profile directly (reads from cookie database)
-      // This is the recommended method per yt-dlp docs - no extensions needed!
+      // ONLY when Chrome is NOT running (database not locked)
       const cookiesDbPath = `${chromeProfileDir}/Default/Cookies`
       if (existsSync(cookiesDbPath)) {
         // Use the Chrome profile directory directly - yt-dlp will read cookies from the database
         // Format: --cookies-from-browser "chrome:PROFILE_PATH" (yt-dlp uses "chrome" for Google Chrome)
         command += ` --cookies-from-browser "chrome:${chromeProfileDir}"`
-        console.log(`🔐 Strategy 1.${retryCount === 0 ? 'C' : 'D'}: Using Google Chrome profile via --cookies-from-browser (${chromeProfileDir})`)
+        console.log(`🔐 Strategy 1.${retryCount === 0 ? 'E' : 'F'}: Using Google Chrome profile via --cookies-from-browser (Chrome not running)`)
       } else {
         console.warn(`⚠️ Cookies database not found at ${cookiesDbPath}, falling back to exported cookies`)
         if (cookiesExist) {
           command += ` --cookies "${profileCookiesFile}"`
-          console.log(`🔐 Strategy 1.${retryCount === 0 ? 'E' : 'F'}: Using exported cookies file (${profileCookiesFile})`)
+          console.log(`🔐 Strategy 1.${retryCount === 0 ? 'G' : 'H'}: Using exported cookies file (${profileCookiesFile})`)
         } else {
           console.log(`⚠️ Strategy 1 fallback: No usable cookies, relying on PO token provider`)
         }
@@ -633,7 +663,7 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     } else if (retryCount === 0 && cookiesExist) {
       // Fallback to exported cookies file
       command += ` --cookies "${profileCookiesFile}"`
-      console.log(`🔐 Strategy 1.G: Using exported cookies file (${profileCookiesFile})`)
+      console.log(`🔐 Strategy 1.I: Using exported cookies file (${profileCookiesFile})`)
     } else {
       // Last resort: no cookies, rely on PO token provider
       console.log(`⚠️ Strategy 1 fallback: No usable cookies, relying on PO token provider`)
@@ -1249,11 +1279,37 @@ const server = createServer(async (req, res) => {
       const profileCookiesFile = chromeProfileDir ? `${chromeProfileDir}/cookies.txt` : null
       const cookiesExist = profileCookiesFile ? existsSync(profileCookiesFile) : false
 
-      if (useBrowserCookies && chromeProfileDir) {
+      // CRITICAL: Check if Chrome is running (database locked)
+      // When Chrome is running, we MUST use cookies.txt (database is locked)
+      const isChromeRunning = chromeProfileDir ? (() => {
+        try {
+          const cookiesFile = `${chromeProfileDir}/cookies.txt`
+          if (existsSync(cookiesFile)) {
+            const stats = statSync(cookiesFile)
+            const ageMinutes = (Date.now() - stats.mtime.getTime()) / 1000 / 60
+            const dbPath = `${chromeProfileDir}/Default/Cookies`
+            // If cookies.txt is fresh (< 10 min) and database exists, Chrome is likely running
+            if (existsSync(dbPath) && ageMinutes < 10) {
+              return true
+            }
+          }
+          return false
+        } catch {
+          return false
+        }
+      })() : false
+
+      if (isChromeRunning && cookiesExist) {
+        // CRITICAL FIX: Chrome is running → database is locked → use exported cookies.txt
+        // This matches real Chrome behavior - cookies are in memory/network stack
+        cookieFlags = ['--cookies', profileCookiesFile]
+        console.log(`🔐 Download Strategy: Using exported cookies.txt (Chrome running, database locked)`)
+      } else if (useBrowserCookies && chromeProfileDir && !isChromeRunning) {
         // Prioritize --cookies-from-browser (reads directly from Google Chrome database)
+        // ONLY when Chrome is NOT running (database not locked)
         // Note: yt-dlp uses "chrome" not "chromium" for Google Chrome
         cookieFlags = ['--cookies-from-browser', `chrome:${chromeProfileDir}`]
-        console.log(`🔐 Download Strategy: Using rotated Google Chrome profile via --cookies-from-browser (${chromeProfileDir})`)
+        console.log(`🔐 Download Strategy: Using rotated Google Chrome profile via --cookies-from-browser (Chrome not running)`)
       } else if (cookiesExist) {
         // Fallback to exported cookies file
         cookieFlags = ['--cookies', profileCookiesFile]
