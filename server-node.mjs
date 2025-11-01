@@ -666,6 +666,15 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
       extractorArgs += ` --extractor-args "youtube:jsc_trace=true"`
     }
     
+    // CRITICAL FALLBACK: Use player_js_version=actual workaround from issue #14680
+    // This uses actual player JS version instead of regex-based interpreter
+    // Works even if external JS runtime isn't functioning properly
+    // From issue #14680: --extractor-args "youtube:player_js_version=actual" works as temporary fix
+    if (retryCount >= 2) {
+      extractorArgs += ` --extractor-args "youtube:player_js_version=actual"`
+      console.log(`🔧 Using player_js_version=actual fallback (retry ${retryCount + 1})`)
+    }
+    
     // Experimental: Try to skip webpage requests on later retries (may help with bot detection)
     // This uses Innertube API directly without webpage scraping
     if (retryCount >= 3) {
@@ -744,6 +753,18 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
               console.log(`✅ Deno JS runtime is available for n/sig solving`)
             } else {
               console.warn(`⚠️ Deno JS runtime not found in available providers`)
+              console.warn(`⚠️ This may cause bot detection issues - verify Deno is installed and in PATH`)
+            }
+          }
+          
+          // Check for JS runtime detection
+          const jsRuntimesMatch = stderr.match(/\[debug\]\s+JS runtimes:.*/i)
+          if (jsRuntimesMatch) {
+            console.log(`🔍 JS Runtimes detected: ${jsRuntimesMatch[0].substring(0, 200)}`)
+            if (jsRuntimesMatch[0].includes('deno')) {
+              console.log(`✅ Deno runtime detected by yt-dlp`)
+            } else {
+              console.warn(`⚠️ Deno runtime NOT detected by yt-dlp - may not be in PATH`)
             }
           }
           
@@ -1251,6 +1272,12 @@ const server = createServer(async (req, res) => {
       // Use the same format as getVideoInfo for consistency
       // Use mweb client with PO token provider (better for avoiding bot detection)
       const extractorArgs = ['--extractor-args', 'youtube:player-client=mweb']
+      
+      // CRITICAL FALLBACK: Use player_js_version=actual workaround from issue #14680
+      // This uses actual player JS version instead of regex-based interpreter
+      // Works even if external JS runtime isn't functioning properly
+      extractorArgs.push('--extractor-args', 'youtube:player_js_version=actual')
+      
       if (POT_PROVIDER_BASE_URL) {
         extractorArgs.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${POT_PROVIDER_BASE_URL}`)
       }
