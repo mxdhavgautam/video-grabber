@@ -517,15 +517,12 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     // - Different extractors/plugins can use separate --extractor-args flags
     // - Format: --extractor-args "youtubepot-bgutilhttp:base_url=URL;disable_innertube=1"
     // - The plugin auto-registers, but we need to configure it with base_url if using non-default hostname/port
-    // CRITICAL: Explicitly enable ONLY the HTTP provider to avoid yt-dlp defaulting to script provider
+    // NOTE: Configuring base_url automatically enables the HTTP provider, no need for po-token-providers flag
     let extractorArgs = ` --extractor-args "youtube:player-client=mweb"`
     if (POT_PROVIDER_BASE_URL) {
-      // Explicitly enable HTTP provider and disable script provider
-      // This prevents yt-dlp from trying to use the unavailable script provider
-      extractorArgs += ` --extractor-args "youtube:po-token-providers=bgutil:http"`
-      
       // Configure HTTP provider with base_url
       // Format: youtubepot-bgutilhttp:base_url=URL;disable_innertube=1
+      // The base_url configuration automatically enables the HTTP provider
       let potArg = `youtubepot-bgutilhttp:base_url=${POT_PROVIDER_BASE_URL}`
       if (retryCount >= 2) {
         potArg += ';disable_innertube=1'
