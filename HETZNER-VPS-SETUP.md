@@ -1,23 +1,24 @@
 # Hetzner VPS Documentation
 
-**Date Created:** November 1, 2025  
+**Date Created:** November 1, 2025
 **Server Status:** Active
 
 ---
 
 ## Server Specifications
 
-| Specification | Details |
-|--------------|---------|
-| **Provider** | Hetzner Cloud |
-| **IP Address (IPv4)** | `46.224.45.186` |
-| **IP Address (IPv6)** | `2a01:4f8:c014:2805::1` |
-| **Operating System** | Ubuntu 24.04.3 LTS |
-| **Kernel** | 6.8.0-71-generic x86_64 |
-| **RAM** | 8GB |
-| **Disk Space** | 74.79GB |
-| **Location** | Falkenstein, Germany (fsn1) |
-| **Hostname** | ubuntu-8gb-fsn1 |
+
+| Specification         | Details                     |
+| ----------------------- | ----------------------------- |
+| **Provider**          | Hetzner Cloud               |
+| **IP Address (IPv4)** | `46.224.45.186`             |
+| **IP Address (IPv6)** | `2a01:4f8:c014:2805::/64`   |
+| **Operating System**  | Ubuntu 24.04.3 LTS          |
+| **Kernel**            | 6.8.0-71-generic x86_64     |
+| **RAM**               | 8GB                         |
+| **Disk Space**        | 74.79GB                     |
+| **Location**          | Falkenstein, Germany (fsn1) |
+| **Hostname**          | ubuntu-8gb-fsn1             |
 
 ---
 
@@ -25,9 +26,10 @@
 
 ### 1. Root User
 
-**Username:** `root`  
-**SSH Key Location:** `~/.ssh/hetzner_vps`  
+**Username:** `root`
+**SSH Key Location:** `~/.ssh/hetzner_vps`
 **Public Key:**
+
 ```
 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIElxbaTmH7oo05H8gQt07KwH896vuptavr/6o//2zw7 hetzner-vps-server
 ```
@@ -36,15 +38,16 @@ ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIElxbaTmH7oo05H8gQt07KwH896vuptavr/6o//2zw7
 
 ### 2. Madhav User
 
-**Username:** `madhav`  
-**Password:** `h6GN7UaqwLBCdnx`  
-**SSH Key Location:** `~/.ssh/hetzner_madhav`  
+**Username:** `madhav`
+**Password:** `h6GN7UaqwLBCdnx`
+**SSH Key Location:** `~/.ssh/hetzner_madhav`
 **Public Key:**
+
 ```
 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIHtl+pbrz2CF0Dvf+/aqjACN8IRi4nYxeycGQtHqQVn madhav@hetzner-vps
 ```
 
-**Key Fingerprint:** `SHA256:1FrhFeMZHA7b0pG8BhHKCqNLbHK8ZscfIXzAQNa7hTM`  
+**Key Fingerprint:** `SHA256:1FrhFeMZHA7b0pG8BhHKCqNLbHK8ZscfIXzAQNa7hTM`
 **Sudo Access:** Yes (member of sudo group)
 
 ---
@@ -70,11 +73,13 @@ Host hetzner-madhav
 ```
 
 **Connect as root:**
+
 ```bash
 ssh hetzner
 ```
 
 **Connect as madhav:**
+
 ```bash
 ssh hetzner-madhav
 ```
@@ -86,25 +91,26 @@ If you need to access the VPS from a different computer where the SSH keys are n
 #### Option 1: Transfer Existing Keys (Recommended)
 
 1. **Copy private keys from original device to new device:**
+
    ```bash
    # On original device, copy keys to USB or use scp
    cp ~/.ssh/hetzner_vps /path/to/usb/
    cp ~/.ssh/hetzner_madhav /path/to/usb/
-   
+
    # On new device, copy to SSH directory
    cp /path/from/usb/hetzner_vps ~/.ssh/
    cp /path/from/usb/hetzner_madhav ~/.ssh/
    chmod 600 ~/.ssh/hetzner_vps
    chmod 600 ~/.ssh/hetzner_madhav
    ```
-
 2. **Add SSH config to new device:**
+
    ```bash
    # Copy the SSH config from above to ~/.ssh/config
    chmod 600 ~/.ssh/config
    ```
-
 3. **Connect:**
+
    ```bash
    ssh hetzner
    # or
@@ -114,6 +120,7 @@ If you need to access the VPS from a different computer where the SSH keys are n
 #### Option 2: Password Authentication (Madhav user only)
 
 Since we have the madhav password, you can connect without keys:
+
 ```bash
 ssh madhav@46.224.45.186
 # Password: h6GN7UaqwLBCdnx
@@ -122,15 +129,16 @@ ssh madhav@46.224.45.186
 #### Option 3: Generate New Keys for New Device
 
 1. **Generate new SSH key on new device:**
+
    ```bash
    ssh-keygen -t ed25519 -f ~/.ssh/new_device_hetzner -C "new-device@hetzner"
    ```
-
 2. **Add new public key to server:**
+
    ```bash
    # Login with password or existing key
    ssh madhav@46.224.45.186
-   
+
    # Add new public key
    echo "YOUR_NEW_PUBLIC_KEY_HERE" >> ~/.ssh/authorized_keys
    ```
@@ -277,6 +285,7 @@ sudo apt install -y caddy
 ```
 
 **Example Caddyfile for multiple projects** (`/etc/caddy/Caddyfile`):
+
 ```
 # Video Grabber Project
 videograbber.yourdomain.com {
@@ -441,32 +450,33 @@ sudo systemctl restart docker
 ### Steps to Deploy
 
 1. **Clone the repository:**
+
    ```bash
    cd ~/projects
    git clone <your-repo-url> video-grabber
    cd video-grabber
    ```
-
 2. **Set up environment variables:**
+
    ```bash
    cp apps/frontend/.env.example apps/frontend/.env.production
    cp apps/backend/.env.example apps/backend/.env.production
    # Edit .env files with production values
    ```
-
 3. **Build and start containers:**
+
    ```bash
    docker compose up -d --build
    ```
-
 4. **Configure Caddy reverse proxy:**
+
    ```bash
    sudo nano /etc/caddy/Caddyfile
    # Add your domain configuration
    sudo systemctl reload caddy
    ```
-
 5. **Monitor logs:**
+
    ```bash
    docker compose logs -f
    ```
@@ -563,17 +573,18 @@ traceroute yourdomain.com
 To access your projects via domain names:
 
 1. **Point your domain to the VPS:**
+
    - Create an A record: `@` or `videograbber` → `46.224.45.186`
    - Create an AAAA record (IPv6): `@` or `videograbber` → `2a01:4f8:c014:2805::1`
-
 2. **Configure Caddy with your domain:**
+
    ```
    yourdomain.com {
        reverse_proxy localhost:3000
    }
    ```
-
 3. **Reload Caddy:**
+
    ```bash
    sudo systemctl reload caddy
    ```
@@ -595,18 +606,18 @@ Caddy will automatically obtain and renew SSL certificates from Let's Encrypt.
 
 ## Quick Reference
 
-| Purpose | Command |
-|---------|---------|
-| Connect as root | `ssh hetzner` |
-| Connect as madhav | `ssh hetzner-madhav` |
-| View containers | `docker ps` |
-| View logs | `docker compose logs -f` |
-| Restart containers | `docker compose restart` |
-| System resources | `htop` |
-| Firewall status | `sudo ufw status` |
-| Reload Caddy | `sudo systemctl reload caddy` |
+
+| Purpose            | Command                       |
+| -------------------- | ------------------------------- |
+| Connect as root    | `ssh hetzner`                 |
+| Connect as madhav  | `ssh hetzner-madhav`          |
+| View containers    | `docker ps`                   |
+| View logs          | `docker compose logs -f`      |
+| Restart containers | `docker compose restart`      |
+| System resources   | `htop`                        |
+| Firewall status    | `sudo ufw status`             |
+| Reload Caddy       | `sudo systemctl reload caddy` |
 
 ---
 
 **Last Updated:** November 1, 2025
-
