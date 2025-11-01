@@ -378,7 +378,18 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
     const qualityMap = new Map<number, VideoFormat>()
     
     audioFormats.forEach(format => {
-      const bitrate = parseInt(format.format_note?.match(/(\d+)kbps/)?.[1] || '0') || 0
+      // Try to extract bitrate from format_note (e.g., "audio only - 128kbps")
+      let bitrate = parseInt(format.format_note?.match(/(\d+)kbps/)?.[1] || '0') || 0
+      
+      // Fallback: Use tbr or abr from format object if format_note parsing failed
+      if (bitrate === 0) {
+        // tbr (total bitrate) or abr (audio bitrate) might be available
+        const formatBitrate = format.tbr || format.abr || 0
+        if (formatBitrate > 0) {
+          bitrate = Math.round(formatBitrate) // Convert to kbps (format is usually in kbps already)
+        }
+      }
+      
       const filesize = format.filesize || 0
       
       if (!qualityMap.has(bitrate)) {
