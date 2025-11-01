@@ -55,13 +55,24 @@ RUN apt-get update \
         xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Deno for EJS runtime
-RUN curl -fsSL https://deno.land/install.sh | sh \
-    && mv /root/.deno/bin/deno /usr/local/bin/deno \
+# Install Deno for EJS runtime (latest version from GitHub releases)
+RUN DENO_VERSION=$(curl -s https://api.github.com/repos/denoland/deno/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/') \
+    && curl -fsSL "https://github.com/denoland/deno/releases/download/${DENO_VERSION}/deno-x86_64-unknown-linux-gnu.zip" -o /tmp/deno.zip \
+    && unzip -q /tmp/deno.zip -d /tmp \
+    && mv /tmp/deno /usr/local/bin/deno \
+    && chmod +x /usr/local/bin/deno \
+    && rm -rf /tmp/deno.zip \
     && deno --version
 
-# Install yt-dlp with EJS support (--break-system-packages needed for Debian Bookworm)
-RUN python3 -m pip install --no-cache-dir --break-system-packages "yt-dlp[default]"
+# Install latest yt-dlp from GitHub (nightly/master branch) with EJS support
+# Using direct pip install from git to get bleeding-edge version
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+    "git+https://github.com/yt-dlp/yt-dlp.git@master#egg=yt-dlp[default]"
+
+# Install bgutil-ytdlp-pot-provider plugin for automatic PO token handling
+# This is the recommended PO Token provider plugin according to yt-dlp wiki
+RUN python3 -m pip install --no-cache-dir --break-system-packages \
+    "git+https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git"
 
 # Copy npm manifests for workspace installation
 COPY package.json package-lock.json ./
