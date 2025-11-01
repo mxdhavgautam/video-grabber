@@ -500,13 +500,19 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
 
     const profileCookiesFile = process.env.CHROME_PROFILE_DIR ? `${process.env.CHROME_PROFILE_DIR}/cookies.txt` : null
     const cookiesExist = profileCookiesFile ? existsSync(profileCookiesFile) : false
+    const chromeProfileDir = process.env.CHROME_PROFILE_DIR
 
-    if (retryCount === 0 && cookiesExist) {
+    // CRITICAL: Use --cookies-from-browser directly instead of exported cookies.txt
+    // The exported cookies.txt might not be in the correct format or might be missing cookies
+    // --cookies-from-browser reads directly from Chromium's cookie database which is more reliable
+    if (retryCount < 2 && useBrowserCookies && chromeProfileDir) {
+      // Use the Chrome profile directory directly - yt-dlp will read cookies from the database
+      command += ` --cookies-from-browser "chromium:${chromeProfileDir}"`
+      console.log(`🔐 Strategy 1.${retryCount === 0 ? 'A' : 'B'}: Using Chromium profile via --cookies-from-browser (${chromeProfileDir})`)
+    } else if (retryCount === 0 && cookiesExist) {
+      // Fallback to exported cookies file if --cookies-from-browser doesn't work
       command += ` --cookies "${profileCookiesFile}"`
-      console.log(`🔐 Strategy 1.A: Using exported cookies file (${profileCookiesFile})`)
-    } else if (retryCount < 2 && useBrowserCookies && process.env.CHROME_PROFILE_DIR) {
-      command += ` --cookies-from-browser "chromium:${process.env.CHROME_PROFILE_DIR}"`
-      console.log(`🔐 Strategy 1.${retryCount === 0 ? 'B' : 'C'}: Using Chromium profile via --cookies-from-browser`)
+      console.log(`🔐 Strategy 1.C: Using exported cookies file (${profileCookiesFile})`)
     } else {
       console.log(`⚠️ Strategy 1 fallback: No usable cookies, relying on PO token provider`)
     }
