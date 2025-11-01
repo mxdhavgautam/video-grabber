@@ -215,20 +215,23 @@ class YouTubeExtractor {
       // According to PO Token Guide, mweb requires GVS PO token when using cookies
       extractorArgs.push('youtube:player_client=mweb');
       
-      // Add PO token if available
+      // Configure PO Token Provider HTTP server
+      // The bgutil-ytdlp-pot-provider plugin will automatically fetch PO tokens from the server
+      const poProviderUrl = process.env.PO_TOKEN_PROVIDER_URL || 'http://po-token-provider:4416';
+      extractorArgs.push(`youtubepot-bgutilhttp:base_url=${poProviderUrl}`);
+      console.log(`[yt-dlp] Using PO Token Provider at: ${poProviderUrl}`);
+      
+      // Add manually generated PO token as fallback (if available)
       // Format: po_token=client.type+TOKEN_VALUE
       // For mweb with GVS: po_token=mweb.gvs+TOKEN_VALUE
       if (poToken) {
         extractorArgs.push(`youtube:po_token=mweb.gvs+${poToken}`);
-        console.log('[yt-dlp] Using PO token for mweb GVS requests');
+        console.log('[yt-dlp] Also providing manual PO token as fallback');
       }
 
       if (extractorArgs.length > 0) {
         args.push('--extractor-args', extractorArgs.join(';'));
       }
-      
-      // Note: The bgutil-ytdlp-pot-provider plugin will automatically provide PO tokens
-      // if configured, but we're also passing manually generated tokens as fallback
 
       // Add user agent (use latest Chrome version)
       args.push('--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
