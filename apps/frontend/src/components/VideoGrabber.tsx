@@ -9,23 +9,9 @@ import { Progress } from '@/components/ui/progress'
 import { useToast } from '@/components/ui/use-toast'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Loader2, Download, Video, Music, Link2, Clipboard } from 'lucide-react'
-import { extractVideoInfo, detectPlatform } from '@/lib/video-extractor'
+import { extractVideoInfo, detectPlatform, getApiBaseUrl } from '@/lib/video-extractor'
 import { extractAudioFromVideo } from '@/lib/ffmpeg'
 import { downloadBlob, formatFileSize, formatDuration, formatViewCount, sanitizeFilename, type VideoInfo, type VideoFormat } from '@/lib/types'
-
-// Detect API base URL based on current path
-function getApiBaseUrl(): string {
-  const envUrl = (import.meta as any).env?.VITE_API_URL
-  if (envUrl) return envUrl
-  
-  if (typeof window !== 'undefined') {
-    const pathname = window.location.pathname
-    if (pathname.startsWith('/grabber')) {
-      return '/grabber/api'
-    }
-  }
-  return '/api'
-}
 
 // Helper function to fetch through proxy (bypasses CORS)
 async function downloadFormatWithoutProgress(url: string): Promise<Blob> {

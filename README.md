@@ -1,121 +1,87 @@
-# Video Grabber - Simplified Architecture
+# Video Grabber
 
-A YouTube video grabber using YouTubeI.js for bot-detection resistance.
+Modernised monorepo for the Video Grabber project with dedicated frontend and backend services deployable via a single `docker compose up -d --build` command.
 
-## Architecture
+## Repository Layout
 
-- **Frontend**: React + Vite (built into `dist/`)
-- **Backend**: Node.js with YouTubeI.js
-- **Deployment**: Single Docker container serving both
+- `apps/frontend` – React + Vite SPA packaged into an Nginx container
+- `apps/backend` – Node.js API with yt-dlp, Puppeteer, and cookie tooling
+- `infra/caddy` – TLS-enabled reverse proxy for domain routing
+- `docker-compose.yml` – Orchestrates frontend, backend, and proxy services
 
 ## Local Development
 
 ```bash
-# Install dependencies
+# Install workspace dependencies
 npm install
 
-# Run development server (backend + frontend)
+# Start both services (frontend: 5173, backend: 3001)
 npm run dev
 
-# Build frontend
+# Run individual services
+npm run dev:frontend
+npm run dev:backend
+
+# Production-style commands
 npm run build
-
-# Run production server
-npm start
+npm run start
 ```
 
-## Docker Deployment
+- Frontend dev server: `http://localhost:5173`
+- Backend API: `http://localhost:3001`
 
-```bash
-# Build and run
-docker compose -f docker-compose.simple.yml up --build -d
+## Environment Configuration
 
-# View logs
-docker compose -f docker-compose.simple.yml logs -f
+Each workspace provides ready-to-edit env files:
 
-# Stop
-docker compose -f docker-compose.simple.yml down
-```
+- `apps/frontend/.env.local` → `VITE_API_URL=http://localhost:3001`
+- `apps/frontend/.env.production` → `VITE_API_URL=https://video-grabber-api.mxdhavgautam.com`
+- `apps/backend/.env.local` → Development ports, CORS, and local storage paths
+- `apps/backend/.env.production` → Production domains and persistent storage paths
 
-## Endpoints
+Backend defaults:
 
-- **Frontend**: `http://localhost:3001/grabber`
-- **API Health**: `http://localhost:3001/api/health`
-- **API Extract**: `http://localhost:3001/api/extract?url=VIDEO_URL`
+- Cookies stored at `COOKIES_FILE` (local: `./runtime/yt-dlp/cookies.txt`, container: `/var/lib/video-grabber/yt-dlp/cookies.txt`)
+- Chromium profiles stored at `CHROME_PROFILE_DIR`
 
 ## Production Deployment
 
-### Subdomain Setup
+Requirements: Ubuntu 24.04 LTS VPS with Docker + Docker Compose and DNS A records pointing to the server:
 
-1. **Frontend**: `mxdhavgautam.com/grabber`
-2. **Backend API**: `grabberapi.mxdhavgautam.com`
+- `video-grabber.mxdhavgautam.com`
+- `video-grabber-api.mxdhavgautam.com`
 
-### Nginx Configuration
+```bash
+# Build images and start all services
+docker compose up -d --build
 
-```nginx
-# API subdomain
-server {
-    listen 80;
-    server_name grabberapi.mxdhavgautam.com;
-    
-    location / {
-        proxy_pass http://localhost:3001;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_cache_bypass $http_upgrade;
-    }
-}
+# Stream logs
+docker compose logs -f
 
-# Frontend on main domain
-server {
-    listen 80;
-    server_name mxdhavgautam.com;
-    
-    # Your Flutter portfolio at /
-    location / {
-        # Your existing Vercel setup
-    }
-    
-    # Video grabber at /grabber
-    location /grabber {
-        proxy_pass http://localhost:3001/grabber;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
-    }
-}
+# Stop the stack
+docker compose down
 ```
 
-### Environment Variables
+Caddy automatically provisions TLS certificates. Set `ACME_EMAIL` in your shell or override it in `docker-compose.yml` to receive certificate notifications.
 
-Create `.env` file:
+### Services
 
-```env
-PORT=3001
-NODE_ENV=production
-ALLOWED_ORIGINS=https://mxdhavgautam.com,https://grabberapi.mxdhavgautam.com
-```
+- **frontend** – Nginx serving the compiled SPA
+- **backend** – Node.js API (internal port 3001)
+- **caddy** – TLS reverse proxy publishing the two domains
 
-## Why YouTubeI.js?
+### Persistent Volumes
 
-- Uses YouTube's official InnerTube API
-- More resistant to bot detection than yt-dlp
-- No need for Chrome/Puppeteer/cookies
-- Works without authentication
+- `backend_data` → `/var/lib/video-grabber` (yt-dlp cookies, Chromium profiles)
+- `caddy_data`, `caddy_config` → TLS assets and Caddy state
 
-## Previous Approach Issues
+### Health Checks
 
-The previous approach using yt-dlp + Chrome + Puppeteer + cookies failed because:
+- Frontend: `https://video-grabber.mxdhavgautam.com/health`
+- Backend: `https://video-grabber-api.mxdhavgautam.com/health`
 
-1. **YouTube's aggressive bot detection** - Even with stealth techniques, YouTube blocks automated access
-2. **Cookie generation failed** - Chrome in Docker couldn't get cookies from YouTube
-3. **LOGIN_REQUIRED errors** - YouTube requires authenticated session, which is impossible to automate safely
-4. **Complexity** - Too many moving parts (Chrome, Xvfb, Puppeteer, cookie exporters)
+## Maintenance Notes
 
-YouTubeI.js solves these issues by using YouTube's internal API directly, which is more stable and bot-resistant.
+- Rebuild the backend when yt-dlp or Chromium tooling needs updates: `docker compose build backend`.
+- Authenticated sessions can upload cookies via `POST /upload-authenticated-cookies`; the files persist in the backend data volume.
+- The previous simplified server is archived at `apps/backend/legacy/server-simple.mjs` for reference only.
