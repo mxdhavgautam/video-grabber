@@ -554,7 +554,7 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
             .catch(reject)
         }
 
-        // On first attempt, check verbose output for plugin detection
+        // On first attempt, check verbose output for plugin detection and usage
         if (retryCount === 0 && stderr) {
           const potProvidersMatch = stderr.match(/\[debug\]\s+\[youtube\]\s+\[pot\]\s+PO Token Providers:.*/i)
           if (potProvidersMatch) {
@@ -566,6 +566,18 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
           // Check if PO token provider is being used
           if (stderr.includes('bgutil') || stderr.includes('PO Token')) {
             console.log(`🔍 PO token provider activity detected in verbose output`)
+          }
+          
+          // Check for PO token requests/generation
+          const potRequestMatch = stderr.match(/\[debug\]\s+\[youtube\]\s+\[pot.*\].*bgutil/i)
+          if (potRequestMatch) {
+            console.log(`🔑 PO token request detected: ${potRequestMatch[0].substring(0, 200)}`)
+          }
+          
+          // Check for playability status
+          const playabilityMatch = stderr.match(/\[debug\]\s+\[youtube\].*playability status:\s*(\w+)/i)
+          if (playabilityMatch) {
+            console.log(`📊 YouTube playability status: ${playabilityMatch[1]}`)
           }
         }
 
