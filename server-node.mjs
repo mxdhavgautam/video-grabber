@@ -505,10 +505,23 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     // CRITICAL: Use --cookies-from-browser directly instead of exported cookies.txt
     // The exported cookies.txt might not be in the correct format or might be missing cookies
     // --cookies-from-browser reads directly from Chromium's cookie database which is more reliable
+    // Format: --cookies-from-browser "chromium:PROFILE_PATH" where PROFILE_PATH is the full path to the profile directory
     if (retryCount < 2 && useBrowserCookies && chromeProfileDir) {
-      // Use the Chrome profile directory directly - yt-dlp will read cookies from the database
-      command += ` --cookies-from-browser "chromium:${chromeProfileDir}"`
-      console.log(`🔐 Strategy 1.${retryCount === 0 ? 'A' : 'B'}: Using Chromium profile via --cookies-from-browser (${chromeProfileDir})`)
+      // Verify the profile directory exists and contains Default/Cookies
+      const cookiesDbPath = `${chromeProfileDir}/Default/Cookies`
+      if (existsSync(cookiesDbPath)) {
+        // Use the Chrome profile directory directly - yt-dlp will read cookies from the database
+        command += ` --cookies-from-browser "chromium:${chromeProfileDir}"`
+        console.log(`🔐 Strategy 1.${retryCount === 0 ? 'A' : 'B'}: Using Chromium profile via --cookies-from-browser (${chromeProfileDir})`)
+      } else {
+        console.warn(`⚠️ Cookies database not found at ${cookiesDbPath}, falling back to exported cookies`)
+        if (cookiesExist) {
+          command += ` --cookies "${profileCookiesFile}"`
+          console.log(`🔐 Strategy 1.${retryCount === 0 ? 'C' : 'D'}: Using exported cookies file (${profileCookiesFile})`)
+        } else {
+          console.log(`⚠️ Strategy 1 fallback: No usable cookies, relying on PO token provider`)
+        }
+      }
     } else if (retryCount === 0 && cookiesExist) {
       // Fallback to exported cookies file if --cookies-from-browser doesn't work
       command += ` --cookies "${profileCookiesFile}"`
