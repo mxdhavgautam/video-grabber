@@ -1247,10 +1247,6 @@ const server = createServer(async (req, res) => {
       // This uses actual player JS version instead of regex-based interpreter
       // Works even if external JS runtime isn't functioning properly
       extractorArgs.push('--extractor-args', 'youtube:player_js_version=actual')
-      
-      if (POT_PROVIDER_BASE_URL) {
-        extractorArgs.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${POT_PROVIDER_BASE_URL}`)
-      }
 
       const ytdlpArgs = [
         '-f', formatId,
@@ -1761,35 +1757,6 @@ server.listen(PORT, async () => {
       console.log(`✅ PO token provider plugin detected: ${stdout.trim()}`)
     }
   })
-
-  // Check PO token provider service connectivity
-  if (POT_PROVIDER_BASE_URL) {
-    try {
-      // Use AbortController for timeout (Bun has built-in fetch)
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 5000)
-      
-      // Use /ping endpoint as per bgutil-ytdlp-pot-provider server code
-      const response = await fetch(`${POT_PROVIDER_BASE_URL}/ping`, { 
-        signal: controller.signal 
-      })
-      clearTimeout(timeoutId)
-      
-      if (response.ok) {
-        const data = await response.json()
-        console.log(`✅ PO token provider service accessible at ${POT_PROVIDER_BASE_URL} (version: ${data.version || 'unknown'})`)
-      } else {
-        console.warn(`⚠️ PO token provider service at ${POT_PROVIDER_BASE_URL} returned status ${response.status}`)
-      }
-    } catch (err) {
-      if (err.name === 'AbortError') {
-        console.warn(`⚠️ PO token provider service at ${POT_PROVIDER_BASE_URL} timed out`)
-      } else {
-        console.warn(`⚠️ PO token provider service at ${POT_PROVIDER_BASE_URL} is not accessible: ${err.message}`)
-      }
-      console.warn('   Ensure the pot-provider container is running and accessible')
-    }
-  }
   
   console.log('Ready to accept requests!')
 })
