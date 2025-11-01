@@ -29,8 +29,13 @@
  */
 
 import puppeteer from 'puppeteer-core';
+import puppeteerExtra from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import fs from 'fs';
 import path from 'path';
+
+// Configure puppeteer-extra with stealth plugin to reduce bot detection
+puppeteerExtra.use(StealthPlugin());
 
 class CookieGenerator {
   constructor(cookiesPath, profileDir) {
@@ -49,6 +54,25 @@ class CookieGenerator {
     this.lastFailureTime = null;
     this.restartCooldown = 30 * 60 * 1000; // Don't restart more than once every 30 minutes
     this.lastRestartTime = null;
+    this.captchaSolver = null; // CAPTCHA solver service (optional)
+    
+    // Initialize CAPTCHA solver asynchronously (optional dependency)
+    this.initCaptchaSolver();
+  }
+
+  /**
+   * Initialize CAPTCHA solver (async, non-blocking)
+   */
+  async initCaptchaSolver() {
+    try {
+      const captchaSolverModule = await import('./captcha-solver.mjs');
+      const CaptchaSolver = captchaSolverModule.default;
+      this.captchaSolver = new CaptchaSolver();
+      console.log('[CookieGenerator] CAPTCHA solver initialized');
+    } catch (error) {
+      console.log('[CookieGenerator] CAPTCHA solver not available (optional):', error.message);
+      this.captchaSolver = null;
+    }
   }
 
   /**
@@ -123,8 +147,9 @@ class CookieGenerator {
         chromeArgs.push('--display=' + useDisplay);
       }
 
-      // Launch Chrome with persistent profile
-      this.browser = await puppeteer.launch({
+      // Launch Chrome with persistent profile using puppeteer-extra (with stealth plugin)
+      // puppeteerExtra.launch uses the same API as puppeteer.launch but includes stealth plugins
+      this.browser = await puppeteerExtra.launch({
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
         headless: isHeadless,
         args: chromeArgs,
@@ -304,6 +329,24 @@ class CookieGenerator {
         scroll: true, // Scroll through feed
         randomDelay: true
       });
+
+      // Check for CAPTCHA/challenge after homepage load
+      if (this.captchaSolver) {
+        try {
+          const captchaInfo = await this.captchaSolver.detectCaptcha(this.page);
+          if (captchaInfo && captchaInfo.found) {
+            console.log(`[CookieGenerator] CAPTCHA detected on homepage: ${captchaInfo.type}`);
+            if (captchaInfo.type === 'youtube-challenge') {
+              await this.captchaSolver.handleYouTubeChallenge(this.page);
+            } else if (captchaInfo.type.includes('recaptcha')) {
+              await this.captchaSolver.solveRecaptchaV2(this.page);
+            }
+            await this.sleep(3000); // Wait after CAPTCHA solving
+          }
+        } catch (captchaError) {
+          console.warn('[CookieGenerator] CAPTCHA check error:', captchaError.message);
+        }
+      }
 
       await this.sleep(this.randomBetween(2000, 4000));
 
@@ -646,6 +689,60 @@ class CookieGenerator {
               };
             });
             console.log('[CookieGenerator] Blocking indicators:', JSON.stringify(blockingMessages, null, 2));
+            
+            // If blocking detected, try to solve CAPTCHA
+            if (blockingMessages.hasBotMessage && this.captchaSolver) {
+              console.log('[CookieGenerator] Bot detection message found, attempting CAPTCHA solving...');
+              try {
+                const captchaInfo = await this.captchaSolver.detectCaptcha(this.page);
+                if (captchaInfo && captchaInfo.found) {
+                  console.log(`[CookieGenerator] Detected ${captchaInfo.type}, attempting to solve...`);
+                  
+                  if (captchaInfo.type === 'youtube-challenge') {
+                    await this.captchaSolver.handleYouTubeChallenge(this.page);
+                    // Wait and check if challenge resolved
+                    await this.sleep(5000);
+                    const newUrl = this.page.url();
+                    const newHasResults = await this.page.$('#contents').catch(() => null);
+                    if (newUrl.includes('/results') || newHasResults) {
+                      console.log('[CookieGenerator] ✓ YouTube challenge appears resolved');
+                    }
+                  } else if (captchaInfo.type === 'simple-image-captcha') {
+                    // Try self-hosted solver first (free)
+                    const solution = await this.captchaSolver.solveSimpleCaptcha(this.page);
+                    if (solution) {
+                      console.log('[CookieGenerator] ✓ Simple CAPTCHA solved with self-hosted OCR');
+                      await this.sleep(2000);
+                      // Try to submit form
+                      try {
+                        const submitButton = await this.page.$('button[type="submit"], input[type="submit"], button:contains("Submit")');
+                        if (submitButton) {
+                          await submitButton.click();
+                          await this.sleep(2000);
+                        }
+                      } catch (e) {
+                        // Submit may not be needed or button not found
+                      }
+                    } else {
+                      console.log('[CookieGenerator] Self-hosted solver failed, CAPTCHA may be too complex');
+                    }
+                  } else if (captchaInfo.type.includes('recaptcha')) {
+                    // reCAPTCHA cannot be fully solved with self-hosted OCR
+                    // Will attempt basic interaction but likely won't solve image challenges
+                    const solution = await this.captchaSolver.solveRecaptchaV2(this.page);
+                    if (solution) {
+                      console.log('[CookieGenerator] reCAPTCHA interaction attempted (may not fully solve)');
+                      await this.sleep(3000);
+                    } else {
+                      console.warn('[CookieGenerator] reCAPTCHA cannot be solved with self-hosted solver');
+                      console.warn('[CookieGenerator] Image selection challenges require human interaction');
+                    }
+                  }
+                }
+              } catch (captchaError) {
+                console.warn('[CookieGenerator] CAPTCHA solving error:', captchaError.message);
+              }
+            }
             
           } catch (debugError) {
             console.warn('[CookieGenerator] Debug logging failed:', debugError.message);

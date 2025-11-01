@@ -89,6 +89,22 @@ RUN python3 -c "import curl_cffi; print('curl_cffi version:', curl_cffi.__versio
 RUN python3 -m pip install --no-cache-dir --break-system-packages \
     bgutil-ytdlp-pot-provider
 
+# Install open-source CAPTCHA solving libraries (optional, self-hosted)
+# ddddocr: Popular open-source CAPTCHA solver (works well for many types)
+# pytesseract: Tesseract OCR wrapper for text recognition
+# Pillow: Image processing library
+# Note: Tesseract OCR engine needs to be installed separately via apt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        tesseract-ocr \
+        libtesseract-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m pip install --no-cache-dir --break-system-packages \
+        ddddocr \
+        pytesseract \
+        pillow \
+    || echo "CAPTCHA solver libraries optional - installation may have failed"
+
 # Copy npm manifests for workspace installation
 COPY package.json package-lock.json ./
 COPY apps/backend/package.json apps/backend/package.json
