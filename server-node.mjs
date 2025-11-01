@@ -484,7 +484,17 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
       await new Promise(r => setTimeout(r, delayMs))
     }
 
-    let command = `yt-dlp -j --dump-single-json --quiet --no-warnings`
+    // Build base command
+    // Use verbose mode only on first attempt to see plugin detection
+    // Note: --quiet and -v are mutually exclusive, so we use --no-warnings instead
+    let command = `yt-dlp -j --dump-single-json`
+    if (retryCount === 0) {
+      // First attempt: use verbose to see plugin detection
+      command += ` -v`
+    } else {
+      // Retries: use quiet mode to reduce noise
+      command += ` --quiet --no-warnings`
+    }
     command += ` --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"`
     command += ` --socket-timeout 30`
 
@@ -524,9 +534,8 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     }
     command += extractorArgs
     
-    // Add verbose flag to see if plugin is detected (for debugging)
     if (retryCount === 0) {
-      console.log(`🔍 Full yt-dlp command: ${command.replace(/\s+/g, ' ')}`)
+      console.log(`🔍 Full yt-dlp command (verbose): ${command.replace(/\s+/g, ' ')}`)
     }
 
     command += ` "${videoUrl}"`
@@ -545,12 +554,29 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
             .catch(reject)
         }
 
+        // On first attempt, check verbose output for plugin detection
+        if (retryCount === 0 && stderr) {
+          const potProvidersMatch = stderr.match(/\[debug\]\s+\[youtube\]\s+\[pot\]\s+PO Token Providers:.*/i)
+          if (potProvidersMatch) {
+            console.log(`✅ Plugin detection: ${potProvidersMatch[0].substring(0, 200)}`)
+          } else {
+            console.warn(`⚠️ PO token providers not found in verbose output - plugin may not be loaded`)
+          }
+          
+          // Check if PO token provider is being used
+          if (stderr.includes('bgutil') || stderr.includes('PO Token')) {
+            console.log(`🔍 PO token provider activity detected in verbose output`)
+          }
+        }
+
         const botDetectionTriggered = stderr && /Sign in to confirm you.?re not a bot/i.test(stderr)
 
         if (error && botDetectionTriggered) {
           console.warn(`⚠️ Bot detection triggered on attempt ${retryCount + 1}`)
           if (stderr) {
-            console.warn(`[yt-dlp stderr snapshot] ${stderr.substring(0, 500)}`)
+            // Show more verbose output on first attempt to help debug
+            const snapshotLength = retryCount === 0 ? 2000 : 500
+            console.warn(`[yt-dlp stderr snapshot] ${stderr.substring(0, snapshotLength)}`)
           }
           if (retryCount < 3) {
             const nextDelay = Math.min(delayMs * Math.pow(2, retryCount + 1), 30000)
@@ -1402,15 +1428,47 @@ server.listen(PORT, async () => {
   }
 
   // Check PO token provider plugin installation
-  exec('yt-dlp --list-extractors | grep -i bgutil', (error, stdout) => {
+  // According to bgutil-ytdlp-pot-provider README:
+  // "To check if the plugin was installed correctly, you should see the `bgutil` providers
+  //  in yt-dlp's verbose output: `yt-dlp -v YOUTUBE_URL`"
+  // Expected output: "[debug] [youtube] [pot] PO Token Providers: bgutil:http-1.2.2 (external), bgutil:script-1.2.2 (external)"
+  exec('yt-dlp -v --skip-download "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 2>&1 | grep -i "po token providers" | head -1', { timeout: 10000 }, (error, stdout, stderr) => {
     if (error || !stdout.trim()) {
-      console.warn('⚠️ PO token provider plugin (bgutil-ytdlp-pot-provider) not detected')
+      console.warn('⚠️ PO token provider plugin (bgutil-ytdlp-pot-provider) not detected in verbose output')
       console.warn('   Bot detection bypass may not work optimally')
-      console.warn('   Install with: pip3 install --break-system-packages bgutil-ytdlp-pot-provider')
+      console.warn('   Plugin should be installed via: pip3 install --break-system-packages bgutil-ytdlp-pot-provider')
+      console.warn('   If installed, check that yt-dlp can find it in plugin directories')
     } else {
       console.log(`✅ PO token provider plugin detected: ${stdout.trim()}`)
     }
   })
+
+  // Check PO token provider service connectivity
+  if (POT_PROVIDER_BASE_URL) {
+    try {
+      // Use AbortController for timeout (Bun has built-in fetch)
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
+      
+      const response = await fetch(`${POT_PROVIDER_BASE_URL}/health`, { 
+        signal: controller.signal 
+      })
+      clearTimeout(timeoutId)
+      
+      if (response.ok) {
+        console.log(`✅ PO token provider service accessible at ${POT_PROVIDER_BASE_URL}`)
+      } else {
+        console.warn(`⚠️ PO token provider service at ${POT_PROVIDER_BASE_URL} returned status ${response.status}`)
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        console.warn(`⚠️ PO token provider service at ${POT_PROVIDER_BASE_URL} timed out`)
+      } else {
+        console.warn(`⚠️ PO token provider service at ${POT_PROVIDER_BASE_URL} is not accessible: ${err.message}`)
+      }
+      console.warn('   Ensure the pot-provider container is running and accessible')
+    }
+  }
   
   console.log('Ready to accept requests!')
 })
