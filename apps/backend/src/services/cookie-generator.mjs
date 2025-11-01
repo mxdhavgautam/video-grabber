@@ -407,6 +407,13 @@ class CookieGenerator {
         console.log(`[CookieGenerator] After navigation, URL: ${this.page.url()}`);
       }
 
+      // CRITICAL: Handle YouTube prompts before searching
+      // YouTube shows "Sign in" and consent dialogs that block navigation
+      await this.handleYouTubePrompts();
+
+      // Wait a moment after handling prompts
+      await this.sleep(this.randomBetween(1000, 2000));
+
       // Find and use search box
       console.log('[CookieGenerator] Looking for YouTube search box...');
       let searchBox = null;
@@ -520,32 +527,70 @@ class CookieGenerator {
       }
 
       console.log('[CookieGenerator] Waiting for YouTube search results page to load...');
-      // Wait for search results with multiple strategies
-      try {
-        // Strategy 1: Wait for navigation
-        // Strategy 2: Wait for results container
-        // Strategy 3: Wait for URL to change
-        await Promise.race([
-          this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }),
-          this.page.waitForSelector('#contents', { timeout: 20000 }).catch(() => null),
-          this.page.waitForSelector('ytd-video-renderer', { timeout: 20000 }).catch(() => null),
-          this.page.waitForFunction(() => window.location.href.includes('/results'), { timeout: 20000 })
-        ]);
-        console.log(`[CookieGenerator] ✓ Search results loaded, URL: ${this.page.url()}`);
-      } catch (navError) {
-        console.warn('[CookieGenerator] Search navigation timeout, but continuing...');
-        console.warn(`[CookieGenerator] Current URL after timeout: ${this.page.url()}`);
-        // Check if we're actually on a search results page
-        const currentUrl = this.page.url();
-        const hasResults = await this.page.$('#contents').catch(() => null);
-        if (currentUrl.includes('/results') || hasResults) {
-          console.log(`[CookieGenerator] Actually on search results page, navigation may have completed`);
-        } else {
-          console.warn('[CookieGenerator] ⚠️  Not on search results page - navigation may have failed');
-          // Debug: Check if page is blocked
-          const pageContent = await this.page.content().catch(() => '');
-          if (pageContent.includes('Sign in') || pageContent.includes('confirm you')) {
-            console.warn('[CookieGenerator] ⚠️  Page shows bot detection message - YouTube is blocking requests');
+      
+      // Wait a moment for navigation to start
+      await this.sleep(1000);
+      
+      // Check if we're already on results page
+      let currentUrl = this.page.url();
+      if (currentUrl.includes('/results')) {
+        console.log(`[CookieGenerator] ✓ Already on search results page: ${currentUrl}`);
+      } else {
+        // Wait for navigation with multiple strategies
+        try {
+          // Strategy 1: Wait for URL to change to /results
+          // Strategy 2: Wait for results container
+          // Strategy 3: Wait for video renderers
+          await Promise.race([
+            this.page.waitForFunction(() => window.location.href.includes('/results'), { timeout: 15000 }),
+            this.page.waitForSelector('#contents', { timeout: 15000 }).catch(() => null),
+            this.page.waitForSelector('ytd-video-renderer', { timeout: 15000 }).catch(() => null),
+            this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 })
+          ]);
+          
+          currentUrl = this.page.url();
+          console.log(`[CookieGenerator] ✓ Search results loaded, URL: ${currentUrl}`);
+        } catch (navError) {
+          console.warn('[CookieGenerator] Search navigation timeout, checking current state...');
+          currentUrl = this.page.url();
+          console.warn(`[CookieGenerator] Current URL: ${currentUrl}`);
+          
+          // Check if we're actually on a search results page
+          const hasResults = await this.page.$('#contents').catch(() => null);
+          const hasVideos = await this.page.$('ytd-video-renderer').catch(() => null);
+          
+          if (currentUrl.includes('/results') || hasResults || hasVideos) {
+            console.log(`[CookieGenerator] Actually on search results page, navigation completed`);
+          } else {
+            console.warn('[CookieGenerator] ⚠️  Not on search results page - navigation may have failed');
+            
+            // Check if YouTube is blocking with prompts
+            const pageContent = await this.page.content().catch(() => '');
+            const bodyText = await this.page.evaluate(() => document.body?.innerText?.toLowerCase() || '').catch(() => '');
+            
+            if (pageContent.includes('Sign in') || bodyText.includes('sign in')) {
+              console.warn('[CookieGenerator] ⚠️  Page shows "Sign in" prompt - attempting to dismiss...');
+              await this.handleYouTubePrompts();
+              await this.sleep(2000);
+              
+              // Try to re-submit search
+              console.log('[CookieGenerator] Retrying search after handling prompts...');
+              try {
+                const searchBoxAgain = await this.page.$('input[name="search_query"]');
+                if (searchBoxAgain) {
+                  await searchBoxAgain.click();
+                  await this.sleep(500);
+                  await this.page.keyboard.press('Enter');
+                  await this.sleep(3000);
+                  currentUrl = this.page.url();
+                  if (currentUrl.includes('/results')) {
+                    console.log('[CookieGenerator] ✓ Search succeeded after handling prompts');
+                  }
+                }
+              } catch (retryError) {
+                console.warn('[CookieGenerator] Retry failed:', retryError.message);
+              }
+            }
           }
         }
       }
