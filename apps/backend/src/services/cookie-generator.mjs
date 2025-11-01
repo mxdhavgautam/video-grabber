@@ -283,38 +283,89 @@ class CookieGenerator {
     try {
       // Navigate to YouTube if not already there
       const currentUrl = this.page.url();
+      console.log(`[CookieGenerator] Current URL: ${currentUrl}`);
+      
       if (!currentUrl.includes('youtube.com')) {
+        console.log('[CookieGenerator] Not on YouTube, navigating to homepage...');
         await this.humanVisit('https://www.youtube.com', {
           waitTime: [2000, 3000],
           scroll: scrollFeed,
           randomDelay: false
         });
+        console.log(`[CookieGenerator] After navigation, URL: ${this.page.url()}`);
       }
 
       // Find and use search box
+      console.log('[CookieGenerator] Looking for YouTube search box...');
       let searchBox = null;
       const selectors = [
         'input[name="search_query"]',
         'input[id="search"]',
         'input[placeholder*="Search"]',
-        'input[aria-label*="Search"]'
+        'input[aria-label*="Search"]',
+        '#search-input input',
+        'input[type="text"]'
       ];
 
       for (const selector of selectors) {
         try {
+          console.log(`[CookieGenerator] Trying search selector: ${selector}`);
           searchBox = await this.page.$(selector);
-          if (searchBox) break;
+          if (searchBox) {
+            const isVisible = await this.page.evaluate((el) => {
+              const rect = el.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).visibility !== 'hidden';
+            }, searchBox);
+            if (isVisible) {
+              console.log(`[CookieGenerator] ✓ Found visible search box with selector: ${selector}`);
+              break;
+            } else {
+              console.log(`[CookieGenerator] Found search box but it's not visible`);
+              searchBox = null;
+            }
+          } else {
+            console.log(`[CookieGenerator] No element found for selector: ${selector}`);
+          }
         } catch (e) {
+          console.log(`[CookieGenerator] Error trying selector ${selector}:`, e.message);
           continue;
         }
       }
 
       if (!searchBox) {
         console.warn('[CookieGenerator] Could not find YouTube search box');
+        // Debug: Log page structure
+        try {
+          const pageTitle = await this.page.title();
+          const pageUrl = this.page.url();
+          console.log(`[CookieGenerator] Page debug - Title: "${pageTitle}", URL: ${pageUrl}`);
+          
+          // Check if YouTube loaded properly
+          const hasYouTubeContent = await this.page.evaluate(() => {
+            return document.body && document.body.innerText.includes('YouTube');
+          });
+          console.log(`[CookieGenerator] Page has YouTube content: ${hasYouTubeContent}`);
+          
+          // List all input elements
+          const inputElements = await this.page.evaluate(() => {
+            const inputs = Array.from(document.querySelectorAll('input'));
+            return inputs.map(input => ({
+              name: input.name,
+              id: input.id,
+              type: input.type,
+              placeholder: input.placeholder,
+              visible: input.offsetWidth > 0 && input.offsetHeight > 0
+            })).slice(0, 10);
+          });
+          console.log(`[CookieGenerator] Available input elements:`, JSON.stringify(inputElements, null, 2));
+        } catch (debugError) {
+          console.warn('[CookieGenerator] Debug logging failed:', debugError.message);
+        }
         return;
       }
 
-      // Perform search
+      // Perform search with human-like typing
+      console.log(`[CookieGenerator] Performing search for: "${query}"`);
       await searchBox.click({ delay: this.randomBetween(50, 100) });
       await this.sleep(this.randomBetween(200, 500));
       
@@ -324,54 +375,115 @@ class CookieGenerator {
       await this.page.keyboard.up('Control');
       await this.sleep(this.randomBetween(100, 200));
       
-      await searchBox.type(query, { delay: this.randomBetween(50, 150) });
+      // Type with human-like behavior (24 WPM, typos, corrections)
+      console.log(`[CookieGenerator] Typing search query character by character (human speed: ~24 WPM)...`);
+      await this.humanType(searchBox, query, {
+        typoRate: 0.05, // 5% typo chance
+        backspaceRate: 0.03, // 3% correction chance after typo
+        minCharDelay: 100, // ~24 WPM = ~250ms per char average
+        maxCharDelay: 250
+      });
+      
+      // Wait a moment before pressing Enter (human hesitation)
       await this.sleep(this.randomBetween(500, 1000));
       await searchBox.press('Enter');
 
+      console.log('[CookieGenerator] Waiting for search results page to load...');
       // Wait for search results
       try {
         await this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
+        console.log(`[CookieGenerator] ✓ Search results loaded, URL: ${this.page.url()}`);
       } catch (navError) {
-        console.warn('[CookieGenerator] Search navigation timeout, continuing...');
+        console.warn('[CookieGenerator] Search navigation timeout, but continuing...');
+        console.warn(`[CookieGenerator] Current URL after timeout: ${this.page.url()}`);
+        // Check if we're actually on a search results page
+        const currentUrl = this.page.url();
+        if (!currentUrl.includes('/results')) {
+          console.warn('[CookieGenerator] ⚠️  Not on search results page - navigation may have failed');
+        }
       }
 
       await this.sleep(this.randomBetween(2000, 3000));
       await this.humanScroll(); // Scroll search results
 
       // CRITICAL: Click on a video and watch it (generates session cookies)
+      console.log('[CookieGenerator] Looking for video links in search results...');
       try {
         const videoSelectors = [
           'a#video-title',
           'a#video-title-link',
-          'ytd-video-renderer a',
+          'ytd-video-renderer a#video-title',
+          'ytd-video-renderer a#video-title-link',
+          'ytd-video-renderer a[href*="/watch"]',
           'a[href*="/watch"]'
         ];
 
         let videoLink = null;
+        let foundSelector = null;
+        let videoCount = 0;
+        
         for (const selector of videoSelectors) {
           try {
+            console.log(`[CookieGenerator] Trying video selector: ${selector}`);
             const links = await this.page.$$(selector);
+            console.log(`[CookieGenerator] Found ${links.length} elements with selector: ${selector}`);
+            
             if (links.length > 0) {
-              // Pick a video from top 5 results (most relevant)
-              const index = Math.min(Math.floor(Math.random() * 5), links.length - 1);
-              videoLink = links[index];
-              break;
+              // Filter to only visible links
+              const visibleLinks = [];
+              for (const link of links.slice(0, 10)) {
+                try {
+                  const isVisible = await this.page.evaluate((el) => {
+                    const rect = el.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0 && 
+                           window.getComputedStyle(el).visibility !== 'hidden' &&
+                           window.getComputedStyle(el).display !== 'none';
+                  }, link);
+                  if (isVisible) {
+                    visibleLinks.push(link);
+                  }
+                } catch (evalError) {
+                  console.warn(`[CookieGenerator] Error checking visibility:`, evalError.message);
+                }
+              }
+              
+              console.log(`[CookieGenerator] ${visibleLinks.length} visible video links found`);
+              
+              if (visibleLinks.length > 0) {
+                // Pick a video from top 5 results (most relevant)
+                const index = Math.min(Math.floor(Math.random() * Math.min(5, visibleLinks.length)), visibleLinks.length - 1);
+                videoLink = visibleLinks[index];
+                foundSelector = selector;
+                videoCount = visibleLinks.length;
+                console.log(`[CookieGenerator] ✓ Selected video ${index + 1} of ${visibleLinks.length} visible videos`);
+                break;
+              }
             }
           } catch (e) {
+            console.warn(`[CookieGenerator] Error with selector ${selector}:`, e.message);
             continue;
           }
         }
 
         if (videoLink) {
-          console.log('[CookieGenerator] Watching video to generate session cookies...');
+          // Get video URL for logging
+          const videoHref = await this.page.evaluate((el) => el.href, videoLink);
+          console.log(`[CookieGenerator] Watching video: ${videoHref}`);
+          console.log('[CookieGenerator] Clicking video link...');
+          
           await videoLink.click();
           
           try {
+            console.log('[CookieGenerator] Waiting for video page to load...');
             await this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
+            console.log(`[CookieGenerator] ✓ Video page loaded, URL: ${this.page.url()}`);
+            
+            // Wait a moment for video player to initialize
+            await this.sleep(this.randomBetween(2000, 3000));
             
             // Watch video for specified duration (critical for cookie generation)
             const watchTime = this.randomBetween(watchDuration[0], watchDuration[1]);
-            console.log(`[CookieGenerator] Watching video for ${Math.round(watchTime / 1000)}s...`);
+            console.log(`[CookieGenerator] Watching video for ${Math.round(watchTime / 1000)}s to generate VISITOR_INFO1_LIVE cookie...`);
             
             // Scroll a bit while watching (human-like behavior)
             await this.sleep(watchTime / 2);
@@ -381,19 +493,68 @@ class CookieGenerator {
             // Sometimes interact (scroll, move mouse) while watching
             await this.randomMouseMovement();
             
-            console.log('[CookieGenerator] ✓ Video watched, session cookies generated');
+            console.log('[CookieGenerator] ✓ Video watched, session cookies should be generated');
+            
+            // Verify we're still on video page
+            const finalUrl = this.page.url();
+            if (finalUrl.includes('/watch')) {
+              console.log('[CookieGenerator] ✓ Confirmed on video watch page');
+            } else {
+              console.warn(`[CookieGenerator] ⚠️  Unexpected URL after watching: ${finalUrl}`);
+            }
           } catch (videoNavError) {
-            console.warn('[CookieGenerator] Video navigation timeout, but may still have cookies');
+            console.warn('[CookieGenerator] Video navigation timeout:', videoNavError.message);
+            console.warn(`[CookieGenerator] Current URL: ${this.page.url()}`);
+            // Page might still have loaded, cookies might still be generated
           }
         } else {
-          console.warn('[CookieGenerator] Could not find video link in search results');
+          console.warn('[CookieGenerator] ⚠️  Could not find any video links in search results');
+          
+          // Debug: Log page structure
+          try {
+            const pageTitle = await this.page.title();
+            const pageUrl = this.page.url();
+            console.log(`[CookieGenerator] Page debug - Title: "${pageTitle}", URL: ${pageUrl}`);
+            
+            // Check for common YouTube elements
+            const pageStructure = await this.page.evaluate(() => {
+              return {
+                hasVideoRenderer: !!document.querySelector('ytd-video-renderer'),
+                hasResults: !!document.querySelector('#contents'),
+                hasSecondary: !!document.querySelector('#secondary'),
+                bodyText: document.body ? document.body.innerText.substring(0, 200) : 'No body',
+                allLinks: Array.from(document.querySelectorAll('a[href*="/watch"]')).slice(0, 5).map(a => ({
+                  href: a.href,
+                  text: a.innerText.substring(0, 50),
+                  visible: a.offsetWidth > 0 && a.offsetHeight > 0
+                }))
+              };
+            });
+            console.log('[CookieGenerator] Page structure:', JSON.stringify(pageStructure, null, 2));
+            
+            // Check if YouTube is showing an error or blocking message
+            const blockingMessages = await this.page.evaluate(() => {
+              const text = document.body ? document.body.innerText.toLowerCase() : '';
+              return {
+                hasBotMessage: text.includes('confirm you') || text.includes('not a bot'),
+                hasError: text.includes('error') || text.includes('something went wrong'),
+                hasLoginPrompt: text.includes('sign in') || text.includes('login')
+              };
+            });
+            console.log('[CookieGenerator] Blocking indicators:', JSON.stringify(blockingMessages, null, 2));
+            
+          } catch (debugError) {
+            console.warn('[CookieGenerator] Debug logging failed:', debugError.message);
+          }
         }
       } catch (watchError) {
         console.warn('[CookieGenerator] Error watching video:', watchError.message);
+        console.warn('[CookieGenerator] Error stack:', watchError.stack);
       }
 
     } catch (error) {
       console.warn(`[CookieGenerator] YouTube search and watch failed:`, error.message);
+      console.warn(`[CookieGenerator] Error stack:`, error.stack);
     }
   }
 
@@ -504,21 +665,26 @@ class CookieGenerator {
     const { waitTime = [2000, 4000], scroll = false } = options;
 
     try {
-      console.log(`[CookieGenerator] Searching Google for: ${query}...`);
+      console.log(`[CookieGenerator] Searching Google for: "${query}"...`);
       
       // Visit Google with lenient timeout
+      console.log('[CookieGenerator] Navigating to Google homepage...');
       try {
         await this.page.goto('https://www.google.com', {
           waitUntil: 'domcontentloaded',
           timeout: 20000
         });
+        console.log(`[CookieGenerator] ✓ Google homepage loaded, URL: ${this.page.url()}`);
       } catch (error) {
-        console.warn(`[CookieGenerator] Google homepage load slow, continuing...`);
+        console.warn(`[CookieGenerator] Google homepage load slow:`, error.message);
+        console.warn(`[CookieGenerator] Current URL: ${this.page.url()}`);
       }
 
+      console.log('[CookieGenerator] Waiting before interacting with page...');
       await this.sleep(this.randomBetween(1000, 2000));
 
       // Try multiple selectors for search box
+      console.log('[CookieGenerator] Looking for Google search box...');
       let searchBox = null;
       const selectors = [
         'input[name="q"]',
@@ -530,34 +696,83 @@ class CookieGenerator {
 
       for (const selector of selectors) {
         try {
+          console.log(`[CookieGenerator] Trying Google search selector: ${selector}`);
           searchBox = await this.page.$(selector);
-          if (searchBox) break;
+          if (searchBox) {
+            // Check visibility
+            const isVisible = await this.page.evaluate((el) => {
+              const rect = el.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).visibility !== 'hidden';
+            }, searchBox);
+            if (isVisible) {
+              console.log(`[CookieGenerator] ✓ Found visible Google search box: ${selector}`);
+              break;
+            } else {
+              console.log(`[CookieGenerator] Found search box but not visible`);
+              searchBox = null;
+            }
+          } else {
+            console.log(`[CookieGenerator] No element found for selector: ${selector}`);
+          }
         } catch (e) {
+          console.log(`[CookieGenerator] Error with selector ${selector}:`, e.message);
           continue;
         }
       }
 
       if (searchBox) {
         try {
+          console.log(`[CookieGenerator] Clicking Google search box...`);
           await searchBox.click({ delay: this.randomBetween(50, 100) });
           await this.sleep(this.randomBetween(200, 500));
-          await searchBox.type(query, { delay: this.randomBetween(50, 150) });
+          
+          // Type with human-like behavior (24 WPM, typos, corrections)
+          console.log(`[CookieGenerator] Typing Google search "${query}" character by character (~24 WPM)...`);
+          await this.humanType(searchBox, query, {
+            typoRate: 0.05,
+            backspaceRate: 0.03,
+            minCharDelay: 100,
+            maxCharDelay: 250
+          });
+          
+          console.log(`[CookieGenerator] Search query typed, waiting before Enter...`);
           await this.sleep(this.randomBetween(500, 1000));
           
           // Press Enter
+          console.log(`[CookieGenerator] Pressing Enter to submit search...`);
           await searchBox.press('Enter');
           
           // Wait for navigation with lenient timeout
+          console.log(`[CookieGenerator] Waiting for Google search results...`);
           try {
             await this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
+            console.log(`[CookieGenerator] ✓ Google search results loaded, URL: ${this.page.url()}`);
           } catch (navError) {
-            console.warn(`[CookieGenerator] Google search navigation timeout, but continuing...`);
+            console.warn(`[CookieGenerator] Google search navigation timeout after 15s`);
+            console.warn(`[CookieGenerator] Current URL: ${this.page.url()}`);
+            // Check if we're on results page
+            const currentUrl = this.page.url();
+            if (currentUrl.includes('/search')) {
+              console.log(`[CookieGenerator] Actually on search results page, navigation may have completed`);
+            } else {
+              console.warn(`[CookieGenerator] ⚠️  Not on search results page - navigation likely failed`);
+            }
           }
         } catch (typeError) {
           console.warn(`[CookieGenerator] Failed to type in Google search box:`, typeError.message);
+          console.warn(`[CookieGenerator] Error stack:`, typeError.stack);
         }
       } else {
-        console.warn(`[CookieGenerator] Could not find Google search box, skipping search`);
+        console.warn(`[CookieGenerator] ⚠️  Could not find Google search box, skipping search`);
+        // Debug: Log page structure
+        try {
+          const pageTitle = await this.page.title();
+          console.log(`[CookieGenerator] Page title: "${pageTitle}"`);
+          const inputs = await this.page.$$('input');
+          console.log(`[CookieGenerator] Found ${inputs.length} input elements on page`);
+        } catch (debugError) {
+          console.warn(`[CookieGenerator] Debug logging failed:`, debugError.message);
+        }
         return;
       }
 
@@ -640,7 +855,16 @@ class CookieGenerator {
             try {
               await searchBox.click({ delay: this.randomBetween(50, 100) });
               await this.sleep(this.randomBetween(200, 500));
-              await searchBox.type(query, { delay: this.randomBetween(50, 150) });
+              
+              // Type with human-like behavior (24 WPM, typos, corrections)
+              console.log(`[CookieGenerator] Typing YouTube search character by character...`);
+              await this.humanType(searchBox, query, {
+                typoRate: 0.05,
+                backspaceRate: 0.03,
+                minCharDelay: 100,
+                maxCharDelay: 250
+              });
+              
               await this.sleep(this.randomBetween(500, 1000));
               await searchBox.press('Enter');
               
@@ -743,7 +967,9 @@ class CookieGenerator {
         return;
       }
 
+      console.log('[CookieGenerator] Collecting cookies from browser...');
       const cookies = await this.page.cookies();
+      console.log(`[CookieGenerator] Found ${cookies.length} total cookies in browser`);
       
       if (cookies.length === 0) {
         console.warn('[CookieGenerator] No cookies to export');
@@ -758,8 +984,31 @@ class CookieGenerator {
         c.domain.includes('.google.com')
       );
 
+      console.log(`[CookieGenerator] Filtered to ${youtubeCookies.length} YouTube/Google cookies`);
+      
+      // Log cookie details for debugging
+      if (youtubeCookies.length > 0) {
+        const cookieNames = youtubeCookies.map(c => c.name).join(', ');
+        console.log(`[CookieGenerator] Cookie names: ${cookieNames}`);
+        
+        // Check for critical cookies
+        const criticalCookies = ['VISITOR_INFO1_LIVE', 'YSC', 'CONSENT', 'PREF'];
+        const presentCookies = youtubeCookies.filter(c => criticalCookies.includes(c.name));
+        const missingCookies = criticalCookies.filter(name => !youtubeCookies.find(c => c.name === name));
+        
+        if (presentCookies.length > 0) {
+          console.log(`[CookieGenerator] ✓ Critical cookies present: ${presentCookies.map(c => c.name).join(', ')}`);
+        }
+        if (missingCookies.length > 0) {
+          console.log(`[CookieGenerator] ⚠️  Missing critical cookies: ${missingCookies.join(', ')}`);
+        }
+      }
+
       if (youtubeCookies.length === 0) {
         console.log('[CookieGenerator] No YouTube/Google cookies found yet (will keep trying)');
+        // Log all domains we have cookies for
+        const allDomains = [...new Set(cookies.map(c => c.domain))];
+        console.log(`[CookieGenerator] Cookies from other domains: ${allDomains.slice(0, 5).join(', ')}`);
         return;
       }
 
@@ -780,6 +1029,7 @@ class CookieGenerator {
 
     } catch (error) {
       console.error('[CookieGenerator] Failed to export cookies:', error.message);
+      console.error('[CookieGenerator] Error stack:', error.stack);
     }
   }
 
@@ -794,16 +1044,38 @@ class CookieGenerator {
       ''
     ];
 
+    let skippedCount = 0;
     for (const cookie of cookies) {
       const domain = cookie.domain.startsWith('.') ? cookie.domain : `.${cookie.domain}`;
       const flag = 'TRUE';
       const path = cookie.path || '/';
       const secure = cookie.secure ? 'TRUE' : 'FALSE';
-      const expiration = cookie.expires ? Math.floor(cookie.expires) : 0;
+      
+      // Handle expiration: yt-dlp doesn't like -1, use 0 for session cookies or valid timestamp
+      let expiration;
+      if (cookie.expires && cookie.expires > 0) {
+        // Valid expiration timestamp (seconds since epoch)
+        expiration = Math.floor(cookie.expires);
+      } else {
+        // Session cookie or invalid expiration - use 0 (never expires in Netscape format)
+        expiration = 0;
+      }
+      
       const name = cookie.name;
       const value = cookie.value;
 
+      // Skip if expiration would be invalid (negative but not -1)
+      if (expiration < 0 && expiration !== -1) {
+        console.warn(`[CookieGenerator] Skipping cookie ${name} with invalid expiration: ${cookie.expires}`);
+        skippedCount++;
+        continue;
+      }
+
       lines.push(`${domain}\t${flag}\t${path}\t${secure}\t${expiration}\t${name}\t${value}`);
+    }
+
+    if (skippedCount > 0) {
+      console.warn(`[CookieGenerator] Skipped ${skippedCount} cookies with invalid expiration values`);
     }
 
     return lines.join('\n');
@@ -952,6 +1224,96 @@ class CookieGenerator {
     await this.exportCookies();
 
     console.log('[CookieGenerator] Stopped');
+  }
+
+  /**
+   * Human-like typing simulation
+   * Types character by character at ~24 words per minute with typos and corrections
+   * @param {ElementHandle} element - Element to type into
+   * @param {string} text - Text to type
+   * @param {Object} options - Typing options
+   */
+  async humanType(element, text, options = {}) {
+    const {
+      typoRate = 0.05, // 5% chance of typo per character
+      backspaceRate = 0.03, // 3% chance of backspace after typo
+      minCharDelay = 100, // Minimum delay between characters (ms)
+      maxCharDelay = 250, // Maximum delay between characters (ms)
+      // 24 WPM = 24 words * 5 chars/word / 60 seconds = 2 chars/second = 500ms per char average
+      // But we want variation, so use 100-250ms range
+    } = options;
+
+    try {
+      for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        let charToType = char;
+
+        // Occasionally make a typo (replace with nearby key)
+        if (Math.random() < typoRate && i > 0) {
+          const typoChar = this.getTypoChar(char);
+          if (typoChar) {
+            charToType = typoChar;
+            console.log(`[CookieGenerator] Typo: "${char}" → "${typoChar}" (will correct)`);
+          }
+        }
+
+        // Type the character (or typo)
+        await element.type(charToType, { delay: 0 }); // Use 0 delay, we'll add our own
+        await this.sleep(this.randomBetween(minCharDelay, maxCharDelay));
+
+        // If we made a typo, occasionally backspace and correct
+        if (charToType !== char && Math.random() < backspaceRate) {
+          // Wait a moment (human realizes mistake)
+          await this.sleep(this.randomBetween(200, 500));
+          
+          // Backspace the typo
+          await this.page.keyboard.press('Backspace');
+          await this.sleep(this.randomBetween(100, 200));
+          
+          // Type correct character
+          await element.type(char, { delay: 0 });
+          await this.sleep(this.randomBetween(minCharDelay, maxCharDelay));
+          console.log(`[CookieGenerator] Corrected typo: "${charToType}" → "${char}"`);
+        }
+
+        // Occasional pause mid-word (especially for longer words)
+        if (char === ' ' && Math.random() < 0.1) {
+          await this.sleep(this.randomBetween(300, 600));
+        }
+      }
+    } catch (error) {
+      console.warn('[CookieGenerator] Human typing error:', error.message);
+      // Fallback: type normally
+      await element.type(text, { delay: this.randomBetween(minCharDelay, maxCharDelay) });
+    }
+  }
+
+  /**
+   * Get a typo character (adjacent key on keyboard)
+   * Simulates human typing errors
+   */
+  getTypoChar(char) {
+    const keyboard = {
+      'q': ['w', 'a'], 'w': ['q', 'e', 's'], 'e': ['w', 'r', 'd'], 'r': ['e', 't', 'f'],
+      't': ['r', 'y', 'g'], 'y': ['t', 'u', 'h'], 'u': ['y', 'i', 'j'], 'i': ['u', 'o', 'k'],
+      'o': ['i', 'p', 'l'], 'p': ['o', '['],
+      'a': ['q', 's', 'z'], 's': ['a', 'd', 'w', 'x'], 'd': ['s', 'f', 'e', 'c'],
+      'f': ['d', 'g', 'r', 'v'], 'g': ['f', 'h', 't', 'b'], 'h': ['g', 'j', 'y', 'n'],
+      'j': ['h', 'k', 'u', 'm'], 'k': ['j', 'l', 'i'], 'l': ['k', 'o'],
+      'z': ['a', 'x'], 'x': ['z', 'c', 's'], 'c': ['x', 'v', 'd'], 'v': ['c', 'b', 'f'],
+      'b': ['v', 'n', 'g'], 'n': ['b', 'm', 'h'], 'm': ['n', 'j'],
+    };
+
+    const lowerChar = char.toLowerCase();
+    if (keyboard[lowerChar]) {
+      const possible = keyboard[lowerChar];
+      const typo = possible[Math.floor(Math.random() * possible.length)];
+      // Preserve case
+      return char === lowerChar ? typo : typo.toUpperCase();
+    }
+    
+    // For other characters, return null (no typo)
+    return null;
   }
 
   /**
