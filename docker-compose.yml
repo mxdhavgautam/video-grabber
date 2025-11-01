@@ -1,4 +1,20 @@
 services:
+  po-token-provider:
+    platform: linux/amd64
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    restart: unless-stopped
+    ports:
+      - "4416:4416"
+    networks:
+      - video-grabber
+    # Healthcheck using curl (should be available in the container)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:4416/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   backend:
     platform: linux/amd64
     build:
@@ -8,6 +24,8 @@ services:
         - linux/amd64
     env_file:
       - apps/backend/.env.production
+    environment:
+      - PO_TOKEN_PROVIDER_URL=http://po-token-provider:4416
     ports:
       - "3001:3001"
     volumes:
@@ -15,6 +33,9 @@ services:
     restart: unless-stopped
     networks:
       - video-grabber
+    depends_on:
+      po-token-provider:
+        condition: service_started
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/health"]
       interval: 30s

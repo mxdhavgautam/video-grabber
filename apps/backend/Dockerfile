@@ -71,8 +71,9 @@ RUN python3 -m pip install --no-cache-dir --break-system-packages \
 
 # Install bgutil-ytdlp-pot-provider plugin for automatic PO token handling
 # This is the recommended PO Token provider plugin according to yt-dlp wiki
+# Installing from PyPI (stable version) - use latest version
 RUN python3 -m pip install --no-cache-dir --break-system-packages \
-    "git+https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git"
+    bgutil-ytdlp-pot-provider
 
 # Copy npm manifests for workspace installation
 COPY package.json package-lock.json ./
