@@ -502,8 +502,15 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     }
 
     // Always include mweb client and PO token provider when available
+    // According to bgutil-ytdlp-pot-provider README:
+    // - Multiple extractor args for the SAME provider/extractor must be in ONE flag, separated by semicolons
+    // - Different extractors/plugins can use separate --extractor-args flags
+    // - Format: --extractor-args "youtubepot-bgutilhttp:base_url=URL;disable_innertube=1"
+    // - The plugin auto-registers, but we need to configure it with base_url if using non-default hostname/port
     let extractorArgs = ` --extractor-args "youtube:player-client=mweb"`
     if (POT_PROVIDER_BASE_URL) {
+      // Enable PO token provider and configure it
+      // Format: youtubepot-bgutilhttp:base_url=URL;disable_innertube=1
       let potArg = `youtubepot-bgutilhttp:base_url=${POT_PROVIDER_BASE_URL}`
       if (retryCount >= 2) {
         potArg += ';disable_innertube=1'
@@ -516,6 +523,11 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
       }
     }
     command += extractorArgs
+    
+    // Add verbose flag to see if plugin is detected (for debugging)
+    if (retryCount === 0) {
+      console.log(`🔍 Full yt-dlp command: ${command.replace(/\s+/g, ' ')}`)
+    }
 
     command += ` "${videoUrl}"`
 
@@ -1006,6 +1018,7 @@ const server = createServer(async (req, res) => {
 
       // Build yt-dlp command to save to file instead of stdout
       // Per yt-dlp best practices: https://github.com/yt-dlp/yt-dlp/wiki/FAQ
+      // Use the same format as getVideoInfo for consistency
       const extractorArgs = ['--extractor-args', 'youtube:player-client=mweb']
       if (POT_PROVIDER_BASE_URL) {
         extractorArgs.push('--extractor-args', `youtubepot-bgutilhttp:base_url=${POT_PROVIDER_BASE_URL}`)
@@ -1387,6 +1400,17 @@ server.listen(PORT, async () => {
     console.error('   Render deployment: Check build command in render.yaml')
     console.error('   Local deployment: Run: brew install ffprobe')
   }
+
+  // Check PO token provider plugin installation
+  exec('yt-dlp --list-extractors | grep -i bgutil', (error, stdout) => {
+    if (error || !stdout.trim()) {
+      console.warn('⚠️ PO token provider plugin (bgutil-ytdlp-pot-provider) not detected')
+      console.warn('   Bot detection bypass may not work optimally')
+      console.warn('   Install with: pip3 install --break-system-packages bgutil-ytdlp-pot-provider')
+    } else {
+      console.log(`✅ PO token provider plugin detected: ${stdout.trim()}`)
+    }
+  })
   
   console.log('Ready to accept requests!')
 })
