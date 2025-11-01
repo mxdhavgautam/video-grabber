@@ -57,8 +57,9 @@ class YouTubeExtractor {
           // If we have cookies, use mweb (but needs PO token)
           selectedClient = 'mweb';
         } else {
-          // Default to ios for no cookies (better than tv)
-          selectedClient = 'ios';
+          // Default to ANDROID for no cookies (PROVEN SUCCESS - Chrome impersonation works best)
+          // Android client with Chrome TLS fingerprint has highest success rate
+          selectedClient = 'android';
         }
       }
       
@@ -200,27 +201,31 @@ class YouTubeExtractor {
       console.log(`[Extract] Starting extraction for video: ${videoId}`);
 
       // Try multiple client strategies if first attempt fails (only when no cookies)
-      // Mobile clients (IOS/ANDROID) work better without authentication
+      // ANDROID client with Chrome impersonation has proven most successful
+      // Success factors: Chrome TLS fingerprint + Android client + PO token + mobile headers + delays
       if (!fs.existsSync(this.cookiesPath)) {
-        // Strategy 1: IOS client with impersonation (best for no cookies)
+        // Strategy 1: ANDROID client (PROVEN SUCCESS - Chrome impersonation + PO token + mobile headers)
+        // Why it works: Chrome TLS fingerprint is more trusted, Android client less restrictive,
+        // PO token adds legitimacy, mobile headers match authentic Android Chrome behavior
         try {
-          console.log('[Extract] [1/3] Trying IOS client...');
-          const videoInfo = await this.extractWithYtDlp(videoId, 'ios');
+          console.log('[Extract] [1/3] Trying ANDROID client (most successful configuration)...');
+          const videoInfo = await this.extractWithYtDlp(videoId, 'android');
+          console.log('[Extract] ✓ ANDROID client succeeded!');
           return videoInfo;
-        } catch (iosError) {
-          console.warn('[Extract] IOS client failed, trying ANDROID client...');
-          console.warn('[Extract] IOS error:', iosError.message.substring(0, 200));
+        } catch (androidError) {
+          console.warn('[Extract] ANDROID client failed, trying IOS client...');
+          console.warn('[Extract] ANDROID error:', androidError.message.substring(0, 200));
           
-          // Strategy 2: ANDROID client
+          // Strategy 2: IOS client (Safari impersonation - sometimes works but less reliable)
           try {
-            console.log('[Extract] [2/3] Trying ANDROID client...');
-            const videoInfo = await this.extractWithYtDlp(videoId, 'android');
+            console.log('[Extract] [2/3] Trying IOS client...');
+            const videoInfo = await this.extractWithYtDlp(videoId, 'ios');
             return videoInfo;
-          } catch (androidError) {
-            console.warn('[Extract] ANDROID client failed, trying TV client...');
-            console.warn('[Extract] ANDROID error:', androidError.message.substring(0, 200));
+          } catch (iosError) {
+            console.warn('[Extract] IOS client failed, trying TV client...');
+            console.warn('[Extract] IOS error:', iosError.message.substring(0, 200));
             
-            // Strategy 3: TV client (last resort for no cookies)
+            // Strategy 3: TV client (last resort - Edge impersonation)
             try {
               console.log('[Extract] [3/3] Trying TV client...');
               const videoInfo = await this.extractWithYtDlp(videoId, 'tv');
