@@ -133,6 +133,9 @@ class YouTubeExtractor {
         // Use setTimeout Promise wrapper (waitForTimeout deprecated in Puppeteer 21+)
         await new Promise(resolve => setTimeout(resolve, 2000));
 
+        // Wait a bit more for page to fully initialize
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
         // Extract visitor data from multiple sources
         const visitorData = await page.evaluate(() => {
           try {
@@ -142,9 +145,19 @@ class YouTubeExtractor {
             }
             
             // Method 2: From ytcfg
-            if (window.ytcfg && typeof window.ytcfg.get === 'function') {
-              const visitorData = window.ytcfg.get('VISITOR_DATA');
-              if (visitorData) return visitorData;
+            if (window.ytcfg) {
+              if (typeof window.ytcfg.get === 'function') {
+                const visitorData = window.ytcfg.get('VISITOR_DATA');
+                if (visitorData) return visitorData;
+              }
+              // Also try direct access
+              if (window.ytcfg.VISITOR_DATA) {
+                return window.ytcfg.VISITOR_DATA;
+              }
+              // Try in data_ object
+              if (window.ytcfg.data_ && window.ytcfg.data_.VISITOR_DATA) {
+                return window.ytcfg.data_.VISITOR_DATA;
+              }
             }
             
             // Method 3: From ytInitialPlayerResponse
@@ -156,8 +169,16 @@ class YouTubeExtractor {
             const cookies = document.cookie.split(';');
             for (const cookie of cookies) {
               const [name, value] = cookie.trim().split('=');
-              if (name === 'VISITOR_INFO1_LIVE') {
-                return value;
+              if (name === 'VISITOR_INFO1_LIVE' || name === 'VISITOR_DATA') {
+                return decodeURIComponent(value);
+              }
+            }
+            
+            // Method 5: Try to find in any window property
+            if (window.__ytInitialData) {
+              const data = window.__ytInitialData;
+              if (data?.responseContext?.visitorData) {
+                return data.responseContext.visitorData;
               }
             }
             
@@ -244,38 +265,66 @@ class YouTubeExtractor {
         console.log('[yt-dlp] Using cookies from:', this.cookiesPath);
       } else {
         console.warn('[yt-dlp] No cookies file found - extraction may fail due to bot detection');
+        console.warn('[yt-dlp] To fix: Upload cookies via the UI or place cookies.txt at:', this.cookiesPath);
+        console.warn('[yt-dlp] Cookies are essential for bypassing YouTube bot detection');
       }
 
       // Build extractor args for YouTube client and PO token
       const extractorArgs = [];
       
-      // Use mweb client (more reliable for authenticated sessions with cookies)
-      // According to PO Token Guide, mweb requires GVS PO token when using cookies
-      extractorArgs.push('youtube:player_client=mweb');
+      // Strategy: Try clients that DON'T require PO tokens first
+      // TV client doesn't require PO tokens and works without cookies
+      // ANDROID client also has better success rate without auth
+      // Only use mweb if we have cookies (mweb needs PO token with cookies)
+      if (fs.existsSync(this.cookiesPath)) {
+        // If we have cookies, use mweb (but needs PO token)
+        extractorArgs.push('youtube:player_client=mweb');
+      } else {
+        // No cookies: Use TV or ANDROID clients (no PO token required)
+        // TV client has best success rate for unauthenticated access
+        extractorArgs.push('youtube:player_client=tv');
+        console.log('[yt-dlp] Using TV client - no PO token or cookies required');
+      }
       
-      // Configure PO Token Provider HTTP server
-      // The bgutil-ytdlp-pot-provider plugin will automatically fetch PO tokens from the server
-      const poProviderUrl = process.env.PO_TOKEN_PROVIDER_URL || 'http://po-token-provider:4416';
-      extractorArgs.push(`youtubepot-bgutilhttp:base_url=${poProviderUrl}`);
-      console.log(`[yt-dlp] Using PO Token Provider at: ${poProviderUrl}`);
-      
-      // Add manually generated PO token as fallback (if available)
-      // Format: po_token=client.type+TOKEN_VALUE
-      // For mweb with GVS: po_token=mweb.gvs+TOKEN_VALUE
-      if (poToken) {
-        extractorArgs.push(`youtube:po_token=mweb.gvs+${poToken}`);
-        console.log('[yt-dlp] Also providing manual PO token as fallback');
+      // Only configure PO Token Provider if using mweb client (which requires it with cookies)
+      // TV and ANDROID clients don't need PO tokens - they work without authentication
+      if (fs.existsSync(this.cookiesPath)) {
+        const poProviderUrl = process.env.PO_TOKEN_PROVIDER_URL || 'http://po-token-provider:4416';
+        extractorArgs.push(`youtubepot-bgutilhttp:base_url=${poProviderUrl}`);
+        console.log(`[yt-dlp] Using PO Token Provider at: ${poProviderUrl}`);
+        
+        // Add manually generated PO token as fallback (if available)
+        if (poToken) {
+          extractorArgs.push(`youtube:po_token=mweb.gvs+${poToken}`);
+          console.log('[yt-dlp] Also providing manual PO token as fallback');
+        }
+      } else {
+        console.log('[yt-dlp] No cookies - skipping PO token provider (TV/ANDROID clients don\'t need it)');
       }
 
       if (extractorArgs.length > 0) {
         args.push('--extractor-args', extractorArgs.join(';'));
       }
 
+      // Use curl_cffi request handler for advanced TLS fingerprinting
+      // This mimics real browser TLS fingerprints, bypassing bot detection
+      // curl_cffi is more effective than default urllib/requests
+      args.push('--request-handler', 'curl_cffi');
+      console.log('[yt-dlp] Using curl_cffi for TLS fingerprint impersonation');
+
       // Add user agent (use latest Chrome version)
       args.push('--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
 
       // Add referer header
       args.push('--add-header', 'Referer:https://www.youtube.com/');
+      
+      // Add additional headers to mimic real browser
+      args.push('--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8');
+      args.push('--add-header', 'Accept-Language:en-US,en;q=0.9');
+      args.push('--add-header', 'Accept-Encoding:gzip, deflate, br');
+      args.push('--add-header', 'DNT:1');
+      args.push('--add-header', 'Connection:keep-alive');
+      args.push('--add-header', 'Upgrade-Insecure-Requests:1');
 
       // Add video URL
       args.push(`https://www.youtube.com/watch?v=${videoId}`);
@@ -323,8 +372,13 @@ class YouTubeExtractor {
   async extractWithYouTubeIJS(videoId, poToken) {
     const { Innertube } = await import('youtubei.js');
     
-    // Try multiple client types for better success rate (prioritize MWEB and ANDROID)
-    const clientTypes = ['MWEB', 'ANDROID', 'WEB', 'IOS', 'TV_EMBEDDED'];
+    // Try multiple client types - prioritize clients that work WITHOUT cookies
+    // TV_EMBEDDED and ANDROID work best without authentication
+    // Only use MWEB/WEB if we have cookies
+    const hasCookies = fs.existsSync(this.cookiesPath);
+    const clientTypes = hasCookies 
+      ? ['MWEB', 'ANDROID', 'WEB', 'IOS', 'TV_EMBEDDED']  // With cookies, try all
+      : ['TV_EMBEDDED', 'ANDROID', 'IOS', 'WEB', 'MWEB']; // Without cookies, prioritize TV/Android
     
     for (const clientType of clientTypes) {
       try {
@@ -539,64 +593,136 @@ class YouTubeExtractor {
       }
 
       // Wait for player to load with longer timeout
-      await page.waitForSelector('#movie_player', { timeout: 15000 }).catch(() => {
+      await page.waitForSelector('#movie_player', { timeout: 20000 }).catch(() => {
         console.warn('[Puppeteer] #movie_player not found, proceeding anyway...');
       });
 
-      // Wait a bit more for JavaScript to execute and populate window objects
-      // Use setTimeout Promise wrapper (waitForTimeout deprecated in Puppeteer 21+)
+      // Wait longer for JavaScript to fully execute and populate all window objects
+      // YouTube loads data asynchronously, need to wait for it
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      
+      // Wait a bit more for any delayed network requests
+      // Note: waitForLoadState is Playwright API, not Puppeteer, so we just wait
       await new Promise(resolve => setTimeout(resolve, 3000));
 
-      // Extract streaming data directly from page
-      const streamingData = await page.evaluate(() => {
-        try {
-          // Method 1: Try ytInitialPlayerResponse (most reliable)
-          if (window.ytInitialPlayerResponse) {
-            const data = window.ytInitialPlayerResponse;
-            if (data.streamingData && (data.streamingData.formats || data.streamingData.adaptiveFormats)) {
-              return {
-                source: 'ytInitialPlayerResponse',
-                streamingData: data.streamingData,
-                videoDetails: data.videoDetails,
-                playerConfig: data.playerConfig
-              };
-            }
-          }
-
-          // Method 2: Try ytInitialData combined with ytInitialPlayerResponse
-          if (window.ytInitialData) {
-            const playerResponse = window.ytInitialPlayerResponse;
-            if (playerResponse?.streamingData) {
-              return {
-                source: 'ytInitialData + ytInitialPlayerResponse',
-                streamingData: playerResponse.streamingData,
-                videoDetails: playerResponse.videoDetails || window.ytInitialData?.contents?.twoColumnWatchNextResults?.results?.results?.contents?.[0]?.videoPrimaryInfoRenderer
-              };
-            }
-          }
-
-          // Method 3: Try extracting from player element data
-          const playerElement = document.getElementById('movie_player');
-          if (playerElement && typeof playerElement.getVideoData === 'function') {
-            try {
-              const videoData = playerElement.getVideoData();
-              if (videoData) {
+      // Extract streaming data directly from page with retries
+      let streamingData = null;
+      let attempts = 3;
+      
+      while (!streamingData && attempts > 0) {
+        streamingData = await page.evaluate(() => {
+          try {
+            // Method 1: Try ytInitialPlayerResponse (most reliable)
+            if (window.ytInitialPlayerResponse) {
+              const data = window.ytInitialPlayerResponse;
+              if (data.streamingData && (data.streamingData.formats || data.streamingData.adaptiveFormats)) {
                 return {
-                  source: 'playerElement.getVideoData',
-                  videoData: videoData
+                  source: 'ytInitialPlayerResponse',
+                  streamingData: data.streamingData,
+                  videoDetails: data.videoDetails,
+                  playerConfig: data.playerConfig
                 };
               }
-            } catch (e) {
-              console.warn('getVideoData error:', e);
+              // Even if no formats yet, return what we have (might load later)
+              if (data.streamingData || data.videoDetails) {
+                return {
+                  source: 'ytInitialPlayerResponse (partial)',
+                  streamingData: data.streamingData || {},
+                  videoDetails: data.videoDetails,
+                  playerConfig: data.playerConfig
+                };
+              }
             }
-          }
 
-          return null;
-        } catch (error) {
-          console.error('Puppeteer extraction error:', error);
-          return { error: error.message };
+            // Method 2: Try ytInitialData combined with ytInitialPlayerResponse
+            if (window.ytInitialData) {
+              const playerResponse = window.ytInitialPlayerResponse;
+              if (playerResponse?.streamingData && (playerResponse.streamingData.formats || playerResponse.streamingData.adaptiveFormats)) {
+                return {
+                  source: 'ytInitialData + ytInitialPlayerResponse',
+                  streamingData: playerResponse.streamingData,
+                  videoDetails: playerResponse.videoDetails || window.ytInitialData?.contents?.twoColumnWatchNextResults?.results?.results?.contents?.[0]?.videoPrimaryInfoRenderer
+                };
+              }
+            }
+
+            // Method 3: Try to access player data through various methods
+            const playerElement = document.getElementById('movie_player');
+            if (playerElement) {
+              // Try getVideoData (metadata only, but confirms player loaded)
+              if (typeof playerElement.getVideoData === 'function') {
+                try {
+                  const videoData = playerElement.getVideoData();
+                  // Check if we can access streaming data from player
+                  if (videoData && window.ytInitialPlayerResponse?.streamingData) {
+                    return {
+                      source: 'playerElement + ytInitialPlayerResponse',
+                      streamingData: window.ytInitialPlayerResponse.streamingData,
+                      videoDetails: window.ytInitialPlayerResponse.videoDetails || videoData
+                    };
+                  }
+                } catch (e) {
+                  // Ignore errors
+                }
+              }
+              
+              // Try accessing internal player data
+              if (playerElement.getVideoData && typeof playerElement.getVideoData === 'function') {
+                try {
+                  const data = playerElement.getVideoData();
+                  // If we have video ID, we can construct URLs (last resort)
+                  if (data && data.video_id) {
+                    return {
+                      source: 'playerElement.getVideoData (metadata only)',
+                      videoData: data,
+                      hasStreamingData: false
+                    };
+                  }
+                } catch (e) {
+                  // Ignore
+                }
+              }
+            }
+
+            // Method 4: Try to find streaming data in any accessible object
+            // Check for player API responses
+            if (window.ytplayer) {
+              const config = window.ytplayer.config;
+              if (config?.args?.player_response) {
+                try {
+                  const playerResponse = typeof config.args.player_response === 'string' 
+                    ? JSON.parse(config.args.player_response)
+                    : config.args.player_response;
+                  if (playerResponse?.streamingData) {
+                    return {
+                      source: 'ytplayer.config',
+                      streamingData: playerResponse.streamingData,
+                      videoDetails: playerResponse.videoDetails
+                    };
+                  }
+                } catch (e) {
+                  // Ignore parse errors
+                }
+              }
+            }
+
+            return null;
+          } catch (error) {
+            console.error('Puppeteer extraction error:', error);
+            return { error: error.message };
+          }
+        });
+        
+        if (!streamingData || streamingData.error || (streamingData.hasStreamingData === false)) {
+          attempts--;
+          if (attempts > 0) {
+            console.log(`[Puppeteer] No streaming data found, retrying... (${attempts} attempts left)`);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        } else {
+          break; // Found valid data
         }
-      });
+      }
 
       // Close page BEFORE checking results to prevent "No target" errors
       if (!pageClosed) {
@@ -612,10 +738,23 @@ class YouTubeExtractor {
 
       // Convert streaming data to our format
       if (streamingData.streamingData) {
-        return await this.convertPuppeteerStreamingData(streamingData, videoId);
+        const streaming = streamingData.streamingData;
+        // Check if we actually have formats
+        if ((streaming.formats && streaming.formats.length > 0) || 
+            (streaming.adaptiveFormats && streaming.adaptiveFormats.length > 0)) {
+          return await this.convertPuppeteerStreamingData(streamingData, videoId);
+        } else {
+          console.warn('[Puppeteer] streamingData exists but has no formats');
+        }
       }
 
-      throw new Error('No streaming data found in page');
+      // If we have videoData but no streamingData, log what we found
+      if (streamingData.videoData) {
+        console.log('[Puppeteer] Found videoData but no streaming URLs - this is metadata only');
+        console.log('[Puppeteer] VideoData keys:', Object.keys(streamingData.videoData));
+      }
+
+      throw new Error('No streaming data found in page - YouTube may be blocking or page not fully loaded');
     } catch (error) {
       // Ensure page is closed even on error
       if (!pageClosed) {

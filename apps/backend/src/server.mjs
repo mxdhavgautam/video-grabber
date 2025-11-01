@@ -32,13 +32,14 @@ app.use((req, res, next) => {
   next();
 });
 
-// Initialize YouTube extractor
-const youtubeExtractor = new YouTubeExtractor();
-
 // Ensure runtime directories exist
 const runtimeDir = path.join(process.cwd(), 'runtime');
 const ytdlpDir = path.join(runtimeDir, 'yt-dlp');
 const chromeProfilesDir = path.join(runtimeDir, 'chrome-profiles');
+const cookiesPath = process.env.COOKIES_FILE || path.join(ytdlpDir, 'cookies.txt');
+
+// Initialize YouTube extractor
+const youtubeExtractor = new YouTubeExtractor();
 
 [runtimeDir, ytdlpDir, chromeProfilesDir].forEach(dir => {
   if (!fs.existsSync(dir)) {
@@ -74,7 +75,6 @@ app.post('/api/upload-authenticated-cookies', (req, res) => {
     }
 
     // Save cookies to file
-    const cookiesPath = process.env.COOKIES_FILE || path.join(ytdlpDir, 'cookies.txt');
     fs.writeFileSync(cookiesPath, cookiesContent, 'utf-8');
     
     console.log(`[Cookies] Saved ${validLines.length} cookie lines to ${cookiesPath}`);
@@ -93,8 +93,6 @@ app.post('/api/upload-authenticated-cookies', (req, res) => {
 // Get cookies status endpoint
 app.get('/api/cookies-status', (req, res) => {
   try {
-    const cookiesPath = process.env.COOKIES_FILE || path.join(ytdlpDir, 'cookies.txt');
-    
     if (!fs.existsSync(cookiesPath)) {
       return res.json({ 
         hasCookies: false,
@@ -121,8 +119,6 @@ app.get('/api/cookies-status', (req, res) => {
 // Delete cookies endpoint
 app.delete('/api/cookies', (req, res) => {
   try {
-    const cookiesPath = process.env.COOKIES_FILE || path.join(ytdlpDir, 'cookies.txt');
-    
     if (fs.existsSync(cookiesPath)) {
       fs.unlinkSync(cookiesPath);
       console.log('[Cookies] Deleted cookies file');
