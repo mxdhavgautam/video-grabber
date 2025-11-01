@@ -7,7 +7,7 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 
-# Install system dependencies for yt-dlp, ffmpeg, Chromium, and Deno
+# Install system dependencies for yt-dlp, ffmpeg, Chromium, Deno, and Xvfb/VNC
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -53,6 +53,9 @@ RUN apt-get update \
         unzip \
         wget \
         xdg-utils \
+        xvfb \
+        x11vnc \
+        fluxbox \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Deno for EJS runtime (latest version from GitHub releases)
