@@ -537,6 +537,9 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
 
         if (error && botDetectionTriggered) {
           console.warn(`⚠️ Bot detection triggered on attempt ${retryCount + 1}`)
+          if (stderr) {
+            console.warn(`[yt-dlp stderr snapshot] ${stderr.substring(0, 500)}`)
+          }
           if (retryCount < 3) {
             const nextDelay = Math.min(delayMs * Math.pow(2, retryCount + 1), 30000)
             return retryWith(nextDelay)
