@@ -532,6 +532,13 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
       // Retries: use quiet mode to reduce noise
       command += ` --quiet --no-warnings`
     }
+    
+    // CRITICAL: Use external JS runtime (Deno) for n/sig solving (PR #14157)
+    // This bypasses YouTube's bot detection by using proper JS runtime instead of regex-based interpreter
+    // Deno is automatically detected if in PATH, but we can explicitly specify it
+    // Format: --js-runtimes deno (or node/bun/quickjs)
+    command += ` --js-runtimes deno`
+    
     // Use a more recent user-agent to avoid detection
     // Get current Chrome version: Chrome 131+ (as of 2025)
     command += ` --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"`
