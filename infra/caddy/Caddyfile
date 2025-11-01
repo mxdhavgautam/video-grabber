@@ -2,6 +2,13 @@
     email {$ACME_EMAIL}
 }
 
+# Local development
+:80 {
+    encode zstd gzip
+    reverse_proxy frontend:80
+}
+
+# Production domains
 video-grabber.mxdhavgautam.com {
     encode zstd gzip
     reverse_proxy frontend:80

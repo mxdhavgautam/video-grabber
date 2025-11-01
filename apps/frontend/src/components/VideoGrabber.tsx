@@ -8,10 +8,11 @@ import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { useToast } from '@/components/ui/use-toast'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Loader2, Download, Video, Music, Link2, Clipboard } from 'lucide-react'
+import { Loader2, Download, Video, Music, Link2, Clipboard, Cookie } from 'lucide-react'
 import { extractVideoInfo, detectPlatform, getApiBaseUrl } from '@/lib/video-extractor'
 import { extractAudioFromVideo } from '@/lib/ffmpeg'
-import { downloadBlob, formatFileSize, formatDuration, formatViewCount, sanitizeFilename, type VideoInfo, type VideoFormat } from '@/lib/types'
+import { downloadBlob, formatFileSize, formatDuration, formatViewCount, sanitizeFilename, normalizeYouTubeUrl, type VideoInfo, type VideoFormat } from '@/lib/types'
+import { CookieUploadModal } from '@/components/CookieUploadModal'
 
 // Helper function to fetch through proxy (bypasses CORS)
 async function downloadFormatWithoutProgress(url: string): Promise<Blob> {
@@ -192,6 +193,7 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [prevUrl, setPrevUrl] = useState<string>('')
   const [extractionStatus, setExtractionStatus] = useState<string | null>(null)
+  const [cookieModalOpen, setCookieModalOpen] = useState(false)
   const { toast } = useToast()
 
   // Notify parent when extracting state changes
@@ -535,6 +537,13 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
       return
     }
 
+    // Normalize YouTube URL (convert youtu.be to youtube.com/watch format)
+    const normalizedUrl = normalizeYouTubeUrl(url)
+    if (normalizedUrl !== url) {
+      setUrl(normalizedUrl)
+      console.log('Normalized URL:', url, '->', normalizedUrl)
+    }
+
     setLoading(true)
     setVideoInfo(null)
     setSelectedVideoQuality('')
@@ -546,13 +555,14 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
     setExtractionStatus('🔍 Extracting video information...')
 
     try {
-      const info = await extractVideoInfo(url)
+      // Use normalized URL for extraction
+      const info = await extractVideoInfo(normalizedUrl)
       if (!info) {
         throw new Error('Failed to extract video information')
       }
 
       setVideoInfo(info)
-      setPrevUrl(url)
+      setPrevUrl(normalizedUrl)
       setErrorMessage(null)
       setExtractionStatus(null)
       
@@ -1424,7 +1434,21 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
                       <span className="sm:hidden">Paste</span>
                     </Button>
                     <Button
-                      onClick={handleExtract}
+                      onClick={() => setCookieModalOpen(true)}
+                      disabled={loading}
+                      variant="outline"
+                      className="w-full sm:w-auto text-xs sm:text-sm h-11 sm:h-12 px-2 sm:px-3"
+                      title="Upload YouTube cookies"
+                      aria-label="Upload YouTube cookies"
+                    >
+                      <Cookie className="h-3.5 w-3.5 mr-1 sm:mr-0" />
+                      <span className="sm:hidden">Cookies</span>
+                    </Button>
+                    <Button
+                      onClick={(e) => {
+                        console.log('Extract button clicked!', e);
+                        handleExtract();
+                      }}
                       disabled={loading || !url.trim()}
                       className="w-full sm:w-auto bg-primary hover:bg-primary/90 text-xs sm:text-sm h-11 sm:h-12 px-2 sm:px-3"
                       aria-label={loading ? "Extracting video information..." : "Extract video information"}
@@ -1734,6 +1758,13 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
           </CardContent>
         </Card>
       )}
+
+      {/* Cookie Upload Modal */}
+      <CookieUploadModal
+        open={cookieModalOpen}
+        onOpenChange={setCookieModalOpen}
+        apiBaseUrl={getApiBaseUrl()}
+      />
     </div>
   )
 }

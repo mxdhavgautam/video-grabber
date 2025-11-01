@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>URL Normalization Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; }
+        input { width: 100%; padding: 10px; margin: 10px 0; font-size: 14px; }
+        button { padding: 10px 20px; background: #0066cc; color: white; border: none; cursor: pointer; }
+        .result { margin-top: 20px; padding: 15px; background: #f0f0f0; border-radius: 5px; }
+        .test-case { margin: 15px 0; padding: 10px; background: #fff; border: 1px solid #ddd; }
+    </style>
+</head>
+<body>
+    <h1>YouTube URL Normalization Test</h1>
+    
+    <div>
+        <label>Enter YouTube URL:</label>
+        <input type="text" id="urlInput" placeholder="Paste any YouTube URL here...">
+        <button onclick="testNormalization()">Normalize</button>
+    </div>
+    
+    <div class="result" id="result" style="display: none;">
+        <h3>Result:</h3>
+        <p><strong>Original:</strong> <span id="original"></span></p>
+        <p><strong>Normalized:</strong> <span id="normalized"></span></p>
+    </div>
+
+    <h2>Test Cases:</h2>
+    <div id="testCases"></div>
+
+    <script>
+        function normalizeYouTubeUrl(url) {
+            try {
+                const urlObj = new URL(url);
+                
+                // Handle youtu.be share links
+                if (urlObj.hostname === 'youtu.be' || urlObj.hostname === 'www.youtu.be') {
+                    const videoId = urlObj.pathname.slice(1).split('/')[0];
+                    return `https://www.youtube.com/watch?v=${videoId}`;
+                }
+                
+                // Handle youtube.com URLs
+                if (urlObj.hostname.includes('youtube.com')) {
+                    // Extract video ID from various formats
+                    let videoId = urlObj.searchParams.get('v');
+                    
+                    // Handle /embed/ format
+                    if (!videoId && urlObj.pathname.includes('/embed/')) {
+                        videoId = urlObj.pathname.split('/embed/')[1].split('/')[0];
+                    }
+                    
+                    // Handle /v/ format
+                    if (!videoId && urlObj.pathname.includes('/v/')) {
+                        videoId = urlObj.pathname.split('/v/')[1].split('/')[0];
+                    }
+                    
+                    // Handle /watch format (already normalized)
+                    if (videoId) {
+                        return `https://www.youtube.com/watch?v=${videoId}`;
+                    }
+                }
+                
+                // Return original URL if we couldn't normalize it
+                return url;
+            } catch (e) {
+                // If URL parsing fails, return original
+                return url;
+            }
+        }
+
+        function testNormalization() {
+            const input = document.getElementById('urlInput').value;
+            const normalized = normalizeYouTubeUrl(input);
+            
+            document.getElementById('original').textContent = input;
+            document.getElementById('normalized').textContent = normalized;
+            document.getElementById('result').style.display = 'block';
+        }
+
+        // Run test cases on load
+        const testCases = [
+            'https://youtu.be/C84YEp-8-hI?si=D8CLKuFSCRmVrGdK',
+            'https://www.youtube.com/watch?v=C84YEp-8-hI',
+            'https://youtube.com/watch?v=C84YEp-8-hI&t=10s',
+            'https://www.youtube.com/embed/C84YEp-8-hI',
+            'https://www.youtube.com/v/C84YEp-8-hI',
+            'https://youtu.be/C84YEp-8-hI'
+        ];
+
+        const container = document.getElementById('testCases');
+        testCases.forEach(testUrl => {
+            const normalized = normalizeYouTubeUrl(testUrl);
+            const div = document.createElement('div');
+            div.className = 'test-case';
+            div.innerHTML = `
+                <strong>Input:</strong> ${testUrl}<br>
+                <strong>Output:</strong> ${normalized}<br>
+                <strong>Status:</strong> ${normalized.includes('youtube.com/watch?v=') ? '✅ Normalized' : '❌ Failed'}
+            `;
+            container.appendChild(div);
+        });
+    </script>
+</body>
+</html>

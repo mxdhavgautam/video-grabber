@@ -2,11 +2,12 @@ FROM node:20-bookworm AS builder
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
+COPY package.json ./
 COPY apps/frontend/package.json apps/frontend/package.json
 COPY apps/backend/package.json apps/backend/package.json
 
-RUN npm install --workspace @video-grabber/frontend
+# Install all dependencies without package-lock to avoid optional deps bug
+RUN npm install --no-package-lock
 
 COPY apps/frontend ./apps/frontend
 

@@ -2,11 +2,16 @@ version: "3.9"
 
 services:
   backend:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: apps/backend/Dockerfile
+      platforms:
+        - linux/amd64
     env_file:
       - apps/backend/.env.production
+    ports:
+      - "3001:3001"
     volumes:
       - backend_data:/var/lib/video-grabber
     restart: unless-stopped
@@ -20,13 +25,18 @@ services:
       start_period: 30s
 
   frontend:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: apps/frontend/Dockerfile
+      platforms:
+        - linux/amd64
       args:
-        VITE_API_URL: ${VITE_API_URL:-https://video-grabber-api.mxdhavgautam.com}
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3001/api}
     environment:
       - NODE_ENV=production
+    ports:
+      - "8080:80"
     depends_on:
       backend:
         condition: service_started
@@ -35,6 +45,7 @@ services:
       - video-grabber
 
   caddy:
+    platform: linux/amd64
     image: caddy:2.8
     restart: unless-stopped
     ports:
