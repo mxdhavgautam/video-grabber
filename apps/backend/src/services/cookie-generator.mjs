@@ -1,17 +1,31 @@
 /**
  * Cookie Generator Service
  * 
- * Runs a Chrome browser instance that performs human-like browsing
- * to generate legitimate cookies for YouTube extraction.
+ * Strategic Cookie Generation for YouTube Bot Detection Bypass
  * 
- * Strategy:
- * - Visit LinkedIn, GitHub, Google, YouTube
- * - Perform searches, scroll, interact naturally
- * - Export cookies periodically (every 10 minutes)
- * - Run continuously in background
+ * High-Level Strategy:
+ * 1. **YouTube-First Focus (80% of activity)**: Prioritize YouTube engagement over generic browsing
+ *    - Watching videos generates critical cookies (VISITOR_INFO1_LIVE, YSC, session cookies)
+ *    - Interacting with YouTube feed creates natural browsing history
+ *    - Multiple searches build search history that YouTube trusts
  * 
- * The cookies from this "warm" browser session are more trusted by YouTube
- * than cold requests from yt-dlp alone.
+ * 2. **Cookie Quality > Quantity**: Focus on getting the RIGHT cookies, not just any cookies
+ *    - VISITOR_INFO1_LIVE: Session identifier (critical for bot detection bypass)
+ *    - YSC: YouTube session cookie (proves active YouTube session)
+ *    - CONSENT: Privacy consent (legitimizes the session)
+ *    - Google auth cookies: Support cross-domain authentication
+ * 
+ * 3. **Session Warmup Pattern**: Build legitimate browsing history
+ *    - Homepage visit → Feed scroll → Search → Watch video → Search again → Watch another
+ *    - Creates natural pattern YouTube's algorithms recognize as human
+ * 
+ * 4. **Maintenance Strategy**: 
+ *    - Light YouTube activity every 2-3 minutes (keeps session alive)
+ *    - Full session renewal every 10 minutes (fresh cookies)
+ *    - Export cookies immediately after video watching (capture session cookies)
+ * 
+ * The goal: Generate cookies that make yt-dlp requests appear to come from
+ * an active, engaged browser session, not a cold automated request.
  */
 
 import puppeteer from 'puppeteer-core';
@@ -26,22 +40,34 @@ class CookieGenerator {
     this.page = null;
     this.isRunning = false;
     this.cookieUpdateInterval = null;
-    this.sessionDuration = 10 * 60 * 1000; // 10 minutes in milliseconds
+    this.restartTimeout12h = null;
+    this.restartTimeout24h = null;
+    this.sessionDuration12h = 12 * 60 * 60 * 1000; // 12 hours in milliseconds
+    this.sessionDuration24h = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+    this.botDetectionFailures = 0; // Track consecutive bot detection failures
+    this.maxConsecutiveFailures = 3; // Restart after 3 consecutive failures (even with fresh cookies)
+    this.lastFailureTime = null;
+    this.restartCooldown = 30 * 60 * 1000; // Don't restart more than once every 30 minutes
+    this.lastRestartTime = null;
   }
 
   /**
    * Initialize and start the cookie generation service
+   * Can be called multiple times for 12-hour restarts
    */
   async start() {
+    // Allow restart even if already running (for 12-hour restarts)
     if (this.isRunning) {
-      console.log('[CookieGenerator] Already running');
-      return;
+      // If already running and this is a restart attempt, clean up first
+      console.log('[CookieGenerator] Restarting browser instance...');
+      await this.cleanupBrowser();
+      this.isRunning = false;
     }
 
     try {
       console.log('[CookieGenerator] Starting Chrome browser for human-like browsing...');
       
-      // Ensure profile directory exists
+      // Ensure profile directory exists (will be created fresh if wiped)
       if (!fs.existsSync(this.profileDir)) {
         fs.mkdirSync(this.profileDir, { recursive: true });
       }
@@ -78,6 +104,10 @@ class CookieGenerator {
       this.isRunning = true;
       console.log('[CookieGenerator] Browser started successfully');
 
+      // Reset bot detection failure counter on fresh start
+      this.botDetectionFailures = 0;
+      this.lastFailureTime = null;
+
       // Start the browsing session
       await this.performBrowsingSession();
 
@@ -86,10 +116,17 @@ class CookieGenerator {
         await this.exportCookies();
       }, 5 * 60 * 1000); // 5 minutes
 
-      // Schedule session renewal (restart browsing after 10 minutes)
-      setTimeout(() => {
-        this.renewSession();
-      }, this.sessionDuration);
+      // Schedule 12-hour browser instance restart (primary renewal)
+      this.restartTimeout12h = setTimeout(() => {
+        this.restartBrowserInstance();
+      }, this.sessionDuration12h);
+      console.log(`[CookieGenerator] Scheduled browser restart in 12 hours`);
+
+      // Schedule 24-hour browser instance restart (secondary renewal)
+      this.restartTimeout24h = setTimeout(() => {
+        this.restartBrowserInstance();
+      }, this.sessionDuration24h);
+      console.log(`[CookieGenerator] Scheduled browser restart in 24 hours`);
 
     } catch (error) {
       console.error('[CookieGenerator] Failed to start:', error.message);
@@ -99,51 +136,311 @@ class CookieGenerator {
   }
 
   /**
+   * Report bot detection failure from YouTube extraction
+   * This allows the extractor to signal that cookies might be stale/reputation issues
+   */
+  reportBotDetectionFailure() {
+    const now = Date.now();
+    
+    // Reset counter if last failure was more than 10 minutes ago (separate incidents)
+    if (this.lastFailureTime && (now - this.lastFailureTime) > 10 * 60 * 1000) {
+      this.botDetectionFailures = 0;
+    }
+    
+    this.botDetectionFailures++;
+    this.lastFailureTime = now;
+    
+    console.warn(`[CookieGenerator] Bot detection failure reported (${this.botDetectionFailures}/${this.maxConsecutiveFailures})`);
+    
+    // If we have fresh cookies but still getting bot detection, restart browser
+    if (this.botDetectionFailures >= this.maxConsecutiveFailures) {
+      const timeSinceLastRestart = this.lastRestartTime ? (now - this.lastRestartTime) : Infinity;
+      
+      if (timeSinceLastRestart > this.restartCooldown) {
+        console.warn(`[CookieGenerator] ⚠️  ${this.botDetectionFailures} consecutive bot detection failures with fresh cookies`);
+        console.warn(`[CookieGenerator] Restarting browser instance to reset reputation...`);
+        this.restartBrowserInstance().catch(error => {
+          console.error('[CookieGenerator] Error restarting due to bot detection:', error.message);
+        });
+      } else {
+        console.log(`[CookieGenerator] Restart cooldown active (${Math.round((this.restartCooldown - timeSinceLastRestart) / 60000)}m remaining)`);
+      }
+    }
+  }
+
+  /**
+   * Reset bot detection failure counter (called on successful extraction)
+   */
+  reportSuccessfulExtraction() {
+    // Reset counter on success - this means cookies are working
+    if (this.botDetectionFailures > 0) {
+      console.log(`[CookieGenerator] Successful extraction - resetting bot detection failure counter`);
+      this.botDetectionFailures = 0;
+      this.lastFailureTime = null;
+    }
+  }
+
+  /**
    * Perform human-like browsing activities
+   * 
+   * Strategic Pattern: YouTube-First Focus
+   * - 80% YouTube activity (homepage, feed, searches, video watching)
+   * - 20% supporting activity (Google search, quick visits)
+   * - Priority: Generate high-quality YouTube session cookies
    */
   async performBrowsingSession() {
     try {
-      console.log('[CookieGenerator] Starting human-like browsing session...');
+      console.log('[CookieGenerator] Starting strategic YouTube-focused browsing session...');
 
-      // 1. Visit LinkedIn (social media activity) - quick visit, don't need to fully load
-      await this.humanVisit('https://www.linkedin.com', {
-        waitTime: [2000, 4000],
-        scroll: true,
-        randomDelay: false // Skip mouse movement for speed
-      });
-
-      // 2. Visit GitHub (developer activity)
-      await this.humanVisit('https://github.com', {
-        waitTime: [2000, 4000],
-        scroll: true,
-        randomDelay: false
-      });
-
-      // 3. Search on Google (web browsing activity) - simplified
-      // Use a simple search that's likely to work
-      await this.googleSearch('technology', {
+      // Phase 1: Quick Google visit (builds Google auth cookies that support YouTube)
+      await this.googleSearch('technology news', {
         waitTime: [2000, 3000],
-        scroll: true
+        scroll: false // Quick visit, no deep scrolling
       });
 
-      // 4. Visit YouTube and search (video platform activity) - most important for cookies
-      await this.youtubeBrowse({
-        searchQueries: [
-          'technology' // Just one simple search
-        ],
-        watchVideo: false, // Just search, don't watch (faster)
-      });
+      // Phase 2: YouTube Session Warmup (CRITICAL - generates best cookies)
+      // This is where we spend most of our time for maximum cookie quality
+      await this.youtubeSessionWarmup();
 
-      // 5. Export cookies after initial browsing
+      // Phase 3: Export cookies immediately after YouTube activity
+      // This captures fresh session cookies from video watching
       await this.exportCookies();
       
-      console.log('[CookieGenerator] Initial browsing session completed, cookies exported');
+      console.log('[CookieGenerator] ✓ YouTube-focused browsing session completed, cookies exported');
+      
+      // Verify cookie quality
+      await this.verifyCookieQuality();
 
       // Continue light browsing periodically
       this.scheduleLightBrowsing();
 
     } catch (error) {
       console.error('[CookieGenerator] Error during browsing session:', error.message);
+    }
+  }
+
+  /**
+   * YouTube Session Warmup - Strategic Pattern
+   * 
+   * Pattern: Homepage → Feed Scroll → Search → Watch → Search → Watch
+   * This creates natural browsing history that YouTube trusts
+   */
+  async youtubeSessionWarmup() {
+    try {
+      console.log('[CookieGenerator] Starting YouTube session warmup...');
+
+      // Step 1: Visit YouTube homepage and scroll feed (builds initial session)
+      await this.humanVisit('https://www.youtube.com', {
+        waitTime: [3000, 5000],
+        scroll: true, // Scroll through feed
+        randomDelay: true
+      });
+
+      await this.sleep(this.randomBetween(2000, 4000));
+
+      // Step 2: Perform a search and watch a video (generates VISITOR_INFO1_LIVE)
+      const searchQueries = [
+        'technology',
+        'programming tutorials',
+        'latest tech news'
+      ];
+      
+      // Do 2-3 searches with video watching
+      for (let i = 0; i < Math.min(2, searchQueries.length); i++) {
+        const query = searchQueries[i];
+        console.log(`[CookieGenerator] YouTube search ${i + 1}: "${query}"`);
+        
+        await this.youtubeSearchAndWatch(query, {
+          watchDuration: [8000, 12000], // Watch for 8-12 seconds (enough for cookies)
+          scrollFeed: i === 0 // Scroll feed on first search
+        });
+        
+        // Export cookies after watching (capture session cookies)
+        if (i === 0 || Math.random() > 0.5) {
+          await this.exportCookies();
+        }
+        
+        // Wait between searches
+        if (i < searchQueries.length - 1) {
+          await this.sleep(this.randomBetween(3000, 5000));
+        }
+      }
+
+      console.log('[CookieGenerator] ✓ YouTube session warmup completed');
+
+    } catch (error) {
+      console.warn('[CookieGenerator] YouTube session warmup error:', error.message);
+    }
+  }
+
+  /**
+   * Search YouTube and watch a video
+   * This is critical for generating VISITOR_INFO1_LIVE and session cookies
+   */
+  async youtubeSearchAndWatch(query, options = {}) {
+    const { watchDuration = [5000, 10000], scrollFeed = false } = options;
+
+    try {
+      // Navigate to YouTube if not already there
+      const currentUrl = this.page.url();
+      if (!currentUrl.includes('youtube.com')) {
+        await this.humanVisit('https://www.youtube.com', {
+          waitTime: [2000, 3000],
+          scroll: scrollFeed,
+          randomDelay: false
+        });
+      }
+
+      // Find and use search box
+      let searchBox = null;
+      const selectors = [
+        'input[name="search_query"]',
+        'input[id="search"]',
+        'input[placeholder*="Search"]',
+        'input[aria-label*="Search"]'
+      ];
+
+      for (const selector of selectors) {
+        try {
+          searchBox = await this.page.$(selector);
+          if (searchBox) break;
+        } catch (e) {
+          continue;
+        }
+      }
+
+      if (!searchBox) {
+        console.warn('[CookieGenerator] Could not find YouTube search box');
+        return;
+      }
+
+      // Perform search
+      await searchBox.click({ delay: this.randomBetween(50, 100) });
+      await this.sleep(this.randomBetween(200, 500));
+      
+      // Clear any existing text
+      await this.page.keyboard.down('Control');
+      await this.page.keyboard.press('a');
+      await this.page.keyboard.up('Control');
+      await this.sleep(this.randomBetween(100, 200));
+      
+      await searchBox.type(query, { delay: this.randomBetween(50, 150) });
+      await this.sleep(this.randomBetween(500, 1000));
+      await searchBox.press('Enter');
+
+      // Wait for search results
+      try {
+        await this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
+      } catch (navError) {
+        console.warn('[CookieGenerator] Search navigation timeout, continuing...');
+      }
+
+      await this.sleep(this.randomBetween(2000, 3000));
+      await this.humanScroll(); // Scroll search results
+
+      // CRITICAL: Click on a video and watch it (generates session cookies)
+      try {
+        const videoSelectors = [
+          'a#video-title',
+          'a#video-title-link',
+          'ytd-video-renderer a',
+          'a[href*="/watch"]'
+        ];
+
+        let videoLink = null;
+        for (const selector of videoSelectors) {
+          try {
+            const links = await this.page.$$(selector);
+            if (links.length > 0) {
+              // Pick a video from top 5 results (most relevant)
+              const index = Math.min(Math.floor(Math.random() * 5), links.length - 1);
+              videoLink = links[index];
+              break;
+            }
+          } catch (e) {
+            continue;
+          }
+        }
+
+        if (videoLink) {
+          console.log('[CookieGenerator] Watching video to generate session cookies...');
+          await videoLink.click();
+          
+          try {
+            await this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
+            
+            // Watch video for specified duration (critical for cookie generation)
+            const watchTime = this.randomBetween(watchDuration[0], watchDuration[1]);
+            console.log(`[CookieGenerator] Watching video for ${Math.round(watchTime / 1000)}s...`);
+            
+            // Scroll a bit while watching (human-like behavior)
+            await this.sleep(watchTime / 2);
+            await this.humanScroll();
+            await this.sleep(watchTime / 2);
+            
+            // Sometimes interact (scroll, move mouse) while watching
+            await this.randomMouseMovement();
+            
+            console.log('[CookieGenerator] ✓ Video watched, session cookies generated');
+          } catch (videoNavError) {
+            console.warn('[CookieGenerator] Video navigation timeout, but may still have cookies');
+          }
+        } else {
+          console.warn('[CookieGenerator] Could not find video link in search results');
+        }
+      } catch (watchError) {
+        console.warn('[CookieGenerator] Error watching video:', watchError.message);
+      }
+
+    } catch (error) {
+      console.warn(`[CookieGenerator] YouTube search and watch failed:`, error.message);
+    }
+  }
+
+  /**
+   * Verify cookie quality - log which important cookies we have
+   */
+  async verifyCookieQuality() {
+    try {
+      if (!this.page) return;
+
+      const cookies = await this.page.cookies();
+      const youtubeCookies = cookies.filter(c => 
+        c.domain.includes('youtube.com') || c.domain.includes('.youtube.com')
+      );
+
+      const criticalCookies = {
+        'VISITOR_INFO1_LIVE': false,
+        'YSC': false,
+        'CONSENT': false,
+        'PREF': false
+      };
+
+      const foundCookies = [];
+      youtubeCookies.forEach(cookie => {
+        if (criticalCookies.hasOwnProperty(cookie.name)) {
+          criticalCookies[cookie.name] = true;
+          foundCookies.push(cookie.name);
+        }
+      });
+
+      console.log(`[CookieGenerator] Cookie Quality Check:`);
+      console.log(`[CookieGenerator]   Total YouTube cookies: ${youtubeCookies.length}`);
+      console.log(`[CookieGenerator]   Critical cookies found: ${foundCookies.join(', ') || 'none'}`);
+      
+      const missingCookies = Object.keys(criticalCookies).filter(
+        name => !criticalCookies[name]
+      );
+      
+      if (missingCookies.length > 0) {
+        console.warn(`[CookieGenerator]   ⚠️  Missing critical cookies: ${missingCookies.join(', ')}`);
+        console.warn(`[CookieGenerator]   💡 Watching more videos will generate these cookies`);
+      } else {
+        console.log(`[CookieGenerator]   ✓ All critical cookies present!`);
+      }
+
+    } catch (error) {
+      console.warn('[CookieGenerator] Cookie quality verification failed:', error.message);
     }
   }
 
@@ -295,7 +592,8 @@ class CookieGenerator {
   }
 
   /**
-   * Browse YouTube with searches
+   * Browse YouTube with searches (LEGACY - use youtubeSearchAndWatch instead)
+   * @deprecated Use youtubeSearchAndWatch for better cookie generation
    */
   async youtubeBrowse(options = {}) {
     const { searchQueries = [], watchVideo = false } = options;
@@ -513,17 +811,31 @@ class CookieGenerator {
 
   /**
    * Schedule light browsing to maintain session
+   * Strategic: Quick YouTube activity every 2-3 minutes keeps session alive
    */
   scheduleLightBrowsing() {
-    // Every 2-3 minutes, do a quick YouTube visit
+    // Every 2-3 minutes, do quick YouTube activity (homepage or search)
     setInterval(async () => {
       if (this.isRunning && this.page) {
         try {
-          await this.humanVisit('https://www.youtube.com', {
-            waitTime: [1000, 2000],
-            scroll: true,
-            randomDelay: false
-          });
+          // Alternate between homepage visit and quick search
+          if (Math.random() > 0.5) {
+            // Option 1: Visit homepage and scroll feed
+            await this.humanVisit('https://www.youtube.com', {
+              waitTime: [2000, 3000],
+              scroll: true,
+              randomDelay: false
+            });
+          } else {
+            // Option 2: Quick search (faster but still generates cookies)
+            await this.youtubeSearchAndWatch('latest', {
+              watchDuration: [3000, 5000], // Short watch (3-5s)
+              scrollFeed: false
+            });
+          }
+          
+          // Export cookies after light browsing
+          await this.exportCookies();
         } catch (error) {
           console.warn('[CookieGenerator] Light browsing failed:', error.message);
         }
@@ -532,28 +844,94 @@ class CookieGenerator {
   }
 
   /**
-   * Renew the browsing session (restart after 10 minutes)
+   * Restart browser instance - completely close old Chrome and start fresh
+   * This happens every 12 hours OR when consecutive bot detections occur
+   * 
+   * Strategy: Instead of renewing within the same browser session,
+   * we completely wipe the old instance and start fresh. This:
+   * - Creates a new browser fingerprint
+   * - Starts with clean cookies (builds reputation from scratch)
+   * - Avoids patterns that might flag long-running sessions
    */
-  async renewSession() {
+  async restartBrowserInstance() {
     if (!this.isRunning) return;
 
     try {
-      console.log('[CookieGenerator] Renewing browsing session...');
+      console.log('[CookieGenerator] Restarting browser instance (12h renewal or bot detection)...');
       
-      // Export cookies one last time
+      // Export cookies one last time before closing
       await this.exportCookies();
       
-      // Start a new browsing session (don't await - run in background)
-      this.performBrowsingSession().catch(error => {
-        console.error('[CookieGenerator] Error during session renewal:', error.message);
+      // Clean up current browser
+      await this.cleanupBrowser();
+      
+      // Clear the profile directory to start completely fresh
+      // This ensures we don't carry over any reputation or fingerprint issues
+      try {
+        if (fs.existsSync(this.profileDir)) {
+          console.log('[CookieGenerator] Cleaning old Chrome profile for fresh start...');
+          fs.rmSync(this.profileDir, { recursive: true, force: true });
+          // Recreate directory
+          fs.mkdirSync(this.profileDir, { recursive: true });
+          console.log('[CookieGenerator] ✓ Profile cleaned, starting fresh browser instance');
+        }
+      } catch (cleanupError) {
+        console.warn('[CookieGenerator] Profile cleanup warning:', cleanupError.message);
+        // Continue anyway - profile might be in use or already clean
+      }
+      
+      // Record restart time (for cooldown tracking)
+      this.lastRestartTime = Date.now();
+      
+      // Reset bot detection counter
+      this.botDetectionFailures = 0;
+      this.lastFailureTime = null;
+      
+      // Start fresh browser instance (don't await - run in background)
+      this.start().catch(error => {
+        console.error('[CookieGenerator] Error restarting browser instance:', error.message);
+        // Try again after a delay if startup fails
+        setTimeout(() => {
+          this.restartBrowserInstance();
+        }, 5 * 60 * 1000); // Retry after 5 minutes
       });
       
-      // Schedule next renewal
-      setTimeout(() => {
-        this.renewSession();
-      }, this.sessionDuration);
     } catch (error) {
-      console.error('[CookieGenerator] Error renewing session:', error.message);
+      console.error('[CookieGenerator] Error restarting browser instance:', error.message);
+      // Try again after a delay
+      setTimeout(() => {
+        this.restartBrowserInstance();
+      }, 5 * 60 * 1000);
+    }
+  }
+
+  /**
+   * Clean up browser resources (without stopping the service)
+   */
+  async cleanupBrowser() {
+    try {
+      // Clear intervals/timeouts
+      if (this.cookieUpdateInterval) {
+        clearInterval(this.cookieUpdateInterval);
+        this.cookieUpdateInterval = null;
+      }
+      if (this.restartTimeout12h) {
+        clearTimeout(this.restartTimeout12h);
+        this.restartTimeout12h = null;
+      }
+      if (this.restartTimeout24h) {
+        clearTimeout(this.restartTimeout24h);
+        this.restartTimeout24h = null;
+      }
+
+      // Close browser instance
+      if (this.browser) {
+        await this.browser.close();
+        this.browser = null;
+        this.page = null;
+      }
+    } catch (error) {
+      console.warn('[CookieGenerator] Error during browser cleanup:', error.message);
     }
   }
 
@@ -567,19 +945,11 @@ class CookieGenerator {
     
     this.isRunning = false;
     
-    if (this.cookieUpdateInterval) {
-      clearInterval(this.cookieUpdateInterval);
-      this.cookieUpdateInterval = null;
-    }
+    // Clean up all timers and browser
+    await this.cleanupBrowser();
 
     // Final cookie export
     await this.exportCookies();
-
-    if (this.browser) {
-      await this.browser.close();
-      this.browser = null;
-      this.page = null;
-    }
 
     console.log('[CookieGenerator] Stopped');
   }
