@@ -105,32 +105,31 @@ class CookieGenerator {
     try {
       console.log('[CookieGenerator] Starting human-like browsing session...');
 
-      // 1. Visit LinkedIn (social media activity)
+      // 1. Visit LinkedIn (social media activity) - quick visit, don't need to fully load
       await this.humanVisit('https://www.linkedin.com', {
-        waitTime: [3000, 6000],
+        waitTime: [2000, 4000],
         scroll: true,
-        randomDelay: true
+        randomDelay: false // Skip mouse movement for speed
       });
 
       // 2. Visit GitHub (developer activity)
       await this.humanVisit('https://github.com', {
         waitTime: [2000, 4000],
         scroll: true,
-        randomDelay: true
+        randomDelay: false
       });
 
-      // 3. Search on Google (web browsing activity)
-      await this.googleSearch('latest technology news 2025', {
-        waitTime: [3000, 5000],
+      // 3. Search on Google (web browsing activity) - simplified
+      // Use a simple search that's likely to work
+      await this.googleSearch('technology', {
+        waitTime: [2000, 3000],
         scroll: true
       });
 
-      // 4. Visit YouTube and search (video platform activity)
+      // 4. Visit YouTube and search (video platform activity) - most important for cookies
       await this.youtubeBrowse({
         searchQueries: [
-          'technology news',
-          'programming tutorials',
-          'latest updates'
+          'technology' // Just one simple search
         ],
         watchVideo: false, // Just search, don't watch (faster)
       });
@@ -161,10 +160,25 @@ class CookieGenerator {
     try {
       console.log(`[CookieGenerator] Visiting ${url}...`);
       
-      await this.page.goto(url, {
-        waitUntil: 'networkidle2',
-        timeout: 30000
-      });
+      // Try multiple wait strategies - be more lenient with timeouts
+      try {
+        await this.page.goto(url, {
+          waitUntil: 'domcontentloaded', // Less strict than networkidle2
+          timeout: 20000 // 20 seconds
+        });
+      } catch (timeoutError) {
+        // If domcontentloaded times out, try just loading
+        console.warn(`[CookieGenerator] ${url} took too long, trying simpler load...`);
+        try {
+          await this.page.goto(url, {
+            waitUntil: 'load',
+            timeout: 15000
+          });
+        } catch (loadError) {
+          // Even if load fails, continue - page might still be usable
+          console.warn(`[CookieGenerator] ${url} load incomplete, but continuing...`);
+        }
+      }
 
       // Random wait (human-like)
       const wait = this.randomBetween(waitTime[0], waitTime[1]);
@@ -182,6 +196,7 @@ class CookieGenerator {
 
     } catch (error) {
       console.warn(`[CookieGenerator] Failed to visit ${url}:`, error.message);
+      // Continue even if visit fails - not critical
     }
   }
 
@@ -194,22 +209,59 @@ class CookieGenerator {
     try {
       console.log(`[CookieGenerator] Searching Google for: ${query}...`);
       
-      await this.page.goto('https://www.google.com', {
-        waitUntil: 'networkidle2',
-        timeout: 30000
-      });
+      // Visit Google with lenient timeout
+      try {
+        await this.page.goto('https://www.google.com', {
+          waitUntil: 'domcontentloaded',
+          timeout: 20000
+        });
+      } catch (error) {
+        console.warn(`[CookieGenerator] Google homepage load slow, continuing...`);
+      }
 
       await this.sleep(this.randomBetween(1000, 2000));
 
-      // Find and type in search box
-      const searchBox = await this.page.$('input[name="q"]') || await this.page.$('textarea[name="q"]');
+      // Try multiple selectors for search box
+      let searchBox = null;
+      const selectors = [
+        'input[name="q"]',
+        'textarea[name="q"]',
+        'input[type="text"]',
+        'input[aria-label*="Search"]',
+        'input[title*="Search"]'
+      ];
+
+      for (const selector of selectors) {
+        try {
+          searchBox = await this.page.$(selector);
+          if (searchBox) break;
+        } catch (e) {
+          continue;
+        }
+      }
+
       if (searchBox) {
-        await searchBox.type(query, { delay: this.randomBetween(50, 150) });
-        await this.sleep(this.randomBetween(500, 1000));
-        
-        // Press Enter
-        await searchBox.press('Enter');
-        await this.page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
+        try {
+          await searchBox.click({ delay: this.randomBetween(50, 100) });
+          await this.sleep(this.randomBetween(200, 500));
+          await searchBox.type(query, { delay: this.randomBetween(50, 150) });
+          await this.sleep(this.randomBetween(500, 1000));
+          
+          // Press Enter
+          await searchBox.press('Enter');
+          
+          // Wait for navigation with lenient timeout
+          try {
+            await this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
+          } catch (navError) {
+            console.warn(`[CookieGenerator] Google search navigation timeout, but continuing...`);
+          }
+        } catch (typeError) {
+          console.warn(`[CookieGenerator] Failed to type in Google search box:`, typeError.message);
+        }
+      } else {
+        console.warn(`[CookieGenerator] Could not find Google search box, skipping search`);
+        return;
       }
 
       await this.sleep(this.randomBetween(waitTime[0], waitTime[1]));
@@ -218,17 +270,27 @@ class CookieGenerator {
         await this.humanScroll();
       }
 
-      // Click on a result occasionally
-      const results = await this.page.$$('h3');
-      if (results.length > 0) {
-        const randomResult = results[Math.floor(Math.random() * Math.min(3, results.length))];
-        await randomResult.click();
-        await this.page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
-        await this.sleep(this.randomBetween(2000, 4000));
+      // Click on a result occasionally (with timeout handling)
+      try {
+        await this.sleep(this.randomBetween(1000, 2000));
+        const results = await this.page.$$('h3');
+        if (results.length > 0 && Math.random() > 0.5) { // 50% chance to click
+          const randomResult = results[Math.floor(Math.random() * Math.min(3, results.length))];
+          await randomResult.click();
+          try {
+            await this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10000 });
+            await this.sleep(this.randomBetween(2000, 4000));
+          } catch (clickNavError) {
+            console.warn(`[CookieGenerator] Result click navigation timeout, continuing...`);
+          }
+        }
+      } catch (clickError) {
+        // Non-critical - just continue
       }
 
     } catch (error) {
       console.warn(`[CookieGenerator] Google search failed:`, error.message);
+      // Continue - not critical if search fails
     }
   }
 
@@ -241,52 +303,98 @@ class CookieGenerator {
     try {
       console.log('[CookieGenerator] Browsing YouTube...');
       
-      await this.page.goto('https://www.youtube.com', {
-        waitUntil: 'networkidle2',
-        timeout: 30000
-      });
+      // Visit YouTube with lenient timeout
+      try {
+        await this.page.goto('https://www.youtube.com', {
+          waitUntil: 'domcontentloaded',
+          timeout: 20000
+        });
+      } catch (error) {
+        console.warn(`[CookieGenerator] YouTube homepage load slow, continuing...`);
+      }
 
       await this.sleep(this.randomBetween(2000, 4000));
       await this.humanScroll();
 
-      // Perform searches
-      for (const query of searchQueries) {
+      // Perform searches (only first query to save time - main goal is cookies, not deep browsing)
+      const queriesToUse = searchQueries.slice(0, 1); // Just do one search
+      for (const query of queriesToUse) {
         try {
-          // Find search box
-          const searchBox = await this.page.$('input[name="search_query"]') || 
-                           await this.page.$('#search');
+          // Try multiple selectors for YouTube search box
+          let searchBox = null;
+          const selectors = [
+            'input[name="search_query"]',
+            'input[id="search"]',
+            'input[placeholder*="Search"]',
+            'input[aria-label*="Search"]'
+          ];
+
+          for (const selector of selectors) {
+            try {
+              searchBox = await this.page.$(selector);
+              if (searchBox) break;
+            } catch (e) {
+              continue;
+            }
+          }
           
           if (searchBox) {
-            await searchBox.click();
-            await this.sleep(this.randomBetween(200, 500));
-            await searchBox.type(query, { delay: this.randomBetween(50, 150) });
-            await this.sleep(this.randomBetween(500, 1000));
-            await searchBox.press('Enter');
-            
-            await this.page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
-            await this.sleep(this.randomBetween(2000, 4000));
-            await this.humanScroll();
+            try {
+              await searchBox.click({ delay: this.randomBetween(50, 100) });
+              await this.sleep(this.randomBetween(200, 500));
+              await searchBox.type(query, { delay: this.randomBetween(50, 150) });
+              await this.sleep(this.randomBetween(500, 1000));
+              await searchBox.press('Enter');
+              
+              // Wait for navigation with lenient timeout
+              try {
+                await this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
+              } catch (navError) {
+                console.warn(`[CookieGenerator] YouTube search navigation timeout, but continuing...`);
+              }
+              
+              await this.sleep(this.randomBetween(2000, 4000));
+              await this.humanScroll();
+            } catch (searchError) {
+              console.warn(`[CookieGenerator] YouTube search interaction failed:`, searchError.message);
+            }
+          } else {
+            console.warn(`[CookieGenerator] Could not find YouTube search box, skipping search`);
+          }
 
-            // Optionally click on a video (but don't watch to save time)
-            if (watchVideo) {
+          // Optionally click on a video (but don't watch to save time)
+          if (watchVideo && Math.random() > 0.7) { // 30% chance
+            try {
               const videos = await this.page.$$('a#video-title');
               if (videos.length > 0) {
                 const randomVideo = videos[Math.floor(Math.random() * Math.min(3, videos.length))];
                 await randomVideo.click();
-                await this.page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
-                await this.sleep(this.randomBetween(5000, 10000));
-                await this.page.goBack();
-                await this.page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 });
+                try {
+                  await this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10000 });
+                  await this.sleep(this.randomBetween(3000, 5000));
+                  await this.page.goBack();
+                  try {
+                    await this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 10000 });
+                  } catch (backNavError) {
+                    // Continue even if back navigation times out
+                  }
+                } catch (videoNavError) {
+                  console.warn(`[CookieGenerator] Video navigation timeout, continuing...`);
+                }
               }
+            } catch (videoClickError) {
+              // Non-critical
             }
           }
         } catch (error) {
           console.warn(`[CookieGenerator] YouTube search "${query}" failed:`, error.message);
+          // Continue with next query or finish
         }
       }
 
     } catch (error) {
       console.warn('[CookieGenerator] YouTube browsing failed:', error.message);
+      // Continue - not critical if browsing fails
     }
   }
 
