@@ -532,7 +532,7 @@ class CookieGenerator {
       await this.sleep(1000);
       
       // Check if we're already on results page
-      let currentUrl = this.page.url();
+      currentUrl = this.page.url();
       if (currentUrl.includes('/results')) {
         console.log(`[CookieGenerator] ✓ Already on search results page: ${currentUrl}`);
       } else {
