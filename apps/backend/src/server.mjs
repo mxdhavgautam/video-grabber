@@ -38,20 +38,25 @@ const ytdlpDir = path.join(runtimeDir, 'yt-dlp');
 const chromeProfilesDir = path.join(runtimeDir, 'chrome-profiles');
 const cookiesPath = process.env.COOKIES_FILE || path.join(ytdlpDir, 'cookies.txt');
 
-// Initialize YouTube extractor
-const youtubeExtractor = new YouTubeExtractor();
-
-// Initialize Cookie Generator (runs Chrome browser for human-like browsing)
+// Initialize Cookie Generator first (needed for YouTube extractor)
 // Dynamic import to handle missing puppeteer-core gracefully
 let cookieGenerator = null;
 
-// Async initialization for cookie generator
+// Initialize YouTube extractor (will get cookieGenerator reference after it's created)
+let youtubeExtractor = null;
+
+// Async initialization for cookie generator and extractor
 (async () => {
   try {
     const cookieGeneratorModule = await import('./services/cookie-generator.mjs');
     const CookieGenerator = cookieGeneratorModule.default;
     
     cookieGenerator = new CookieGenerator(cookiesPath, chromeProfilesDir);
+
+    // Initialize YouTube extractor with cookieGenerator reference
+    // This allows extractor to report bot detection failures to trigger browser restart
+    const YouTubeExtractor = (await import('./services/youtube-extractor.mjs')).default;
+    youtubeExtractor = new YouTubeExtractor(cookieGenerator);
 
     // Start cookie generator in background (non-blocking)
     // This will generate legitimate cookies through human-like browsing
@@ -65,14 +70,31 @@ let cookieGenerator = null;
         });
       });
       console.log('[Server] Cookie generator enabled - will start browsing in background');
+      console.log('[Server] Browser will restart every 12 hours (or on consecutive bot detection failures)');
     } else {
       console.log('[Server] Cookie generator disabled (ENABLE_COOKIE_GENERATOR=false)');
+      // Still create extractor without cookie generator
+      const YouTubeExtractor = (await import('./services/youtube-extractor.mjs')).default;
+      youtubeExtractor = new YouTubeExtractor(null);
     }
   } catch (error) {
     console.warn('[Server] CookieGenerator not available (puppeteer-core may not be installed):', error.message);
     console.warn('[Server] Cookie generator will not run, but manual cookie upload still works');
+    // Still create extractor without cookie generator
+    const YouTubeExtractor = (await import('./services/youtube-extractor.mjs')).default;
+    youtubeExtractor = new YouTubeExtractor(null);
   }
 })();
+
+// Fallback: Create extractor synchronously (will be replaced by async init above)
+// Import synchronously but initialize without cookieGenerator reference initially
+import('./services/youtube-extractor.mjs').then(module => {
+  if (!youtubeExtractor) {
+    youtubeExtractor = new module.default(null);
+  }
+}).catch(() => {
+  // Silently fail - async init will handle it
+});
 
 [runtimeDir, ytdlpDir, chromeProfilesDir].forEach(dir => {
   if (!fs.existsSync(dir)) {
@@ -167,6 +189,20 @@ app.delete('/api/cookies', (req, res) => {
 // Extract video info endpoint
 app.post('/api/extract', async (req, res) => {
   try {
+    // Wait for extractor to be initialized (async init might still be running)
+    let attempts = 0;
+    while (!youtubeExtractor && attempts < 50) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      attempts++;
+    }
+    
+    if (!youtubeExtractor) {
+      return res.status(503).json({ 
+        error: 'Service initializing, please try again in a moment',
+        message: 'YouTube extractor is not ready yet'
+      });
+    }
+
     const { url } = req.body;
     
     if (!url) {
@@ -188,7 +224,7 @@ app.post('/api/extract', async (req, res) => {
       success: true,
       data: videoInfo
     });
-      } catch (error) {
+  } catch (error) {
     console.error('[Extract] Error:', error);
     res.status(500).json({ 
       error: 'Failed to extract video info',

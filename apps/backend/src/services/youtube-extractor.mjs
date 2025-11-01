@@ -211,17 +211,17 @@ class YouTubeExtractor {
           const fullError = errorOutput.length > 0 ? errorOutput : output;
           const errorPreview = fullError.length > 2000 ? fullError.substring(0, 2000) : fullError;
           console.error('[yt-dlp] Error output:', errorPreview);
-          
+        
           // Check if it's an impersonate-related error
           if (fullError.includes('impersonate') || fullError.includes('curl_cffi') || fullError.includes('curl-cffi')) {
             console.error('[yt-dlp] curl_cffi/impersonate error detected - curl_cffi may not be properly installed');
             console.error('[yt-dlp] Attempting without --impersonate flag as fallback...');
             // Try again without impersonate flag
             return this.extractWithYtDlp(videoId, clientType, true).then(resolve).catch(reject);
-          }
-          
+    }
+
           reject(new Error(`yt-dlp failed: ${fullError.substring(0, 500)}`));
-        }
+    }
       });
 
       ytdlp.on('error', (error) => {
@@ -272,50 +272,79 @@ class YouTubeExtractor {
         throw new Error('All extraction attempts failed. YouTube may be rate limiting this IP address. Try again in a few moments.');
       } else {
         // With cookies, just use mweb (which requires PO token provider)
-        const videoInfo = await this.extractWithYtDlp(videoId, 'mweb');
-        return videoInfo;
+        try {
+          const videoInfo = await this.extractWithYtDlp(videoId, 'mweb');
+          
+          // Report successful extraction (cookies are working)
+          if (this.cookieGenerator) {
+            this.cookieGenerator.reportSuccessfulExtraction();
+          }
+          
+          return videoInfo;
+        } catch (error) {
+          // Check if this is a bot detection error (even with cookies)
+          const errorMsg = error.message || '';
+          const isBotDetection = errorMsg.includes('bot') || errorMsg.includes('Sign in') || errorMsg.includes('confirm');
+          
+          if (isBotDetection && this.cookieGenerator) {
+            // Report bot detection failure to cookie generator
+            // This will trigger browser restart if it happens consecutively
+            this.cookieGenerator.reportBotDetectionFailure();
+          }
+          
+          throw error;
+        }
       }
 
     } catch (error) {
       console.error('[Extract] Fatal error:', error.message);
+      
+      // Also check for bot detection in final catch
+      const errorMsg = error.message || '';
+      const isBotDetection = errorMsg.includes('bot') || errorMsg.includes('Sign in') || errorMsg.includes('confirm');
+      
+      if (isBotDetection && this.cookieGenerator) {
+        this.cookieGenerator.reportBotDetectionFailure();
+      }
+      
       throw error;
     }
   }
 
   parseCookiesTxt(cookiesPath) {
     try {
-      const cookieLines = fs.readFileSync(cookiesPath, 'utf-8').split('\n');
+    const cookieLines = fs.readFileSync(cookiesPath, 'utf-8').split('\n');
       const cookies = cookieLines
         .filter(line => {
           // Filter out comments and empty lines
           const trimmed = line.trim();
           return trimmed && !trimmed.startsWith('#');
         })
-        .map(line => {
-          const parts = line.split('\t');
+      .map(line => {
+        const parts = line.split('\t');
           if (parts.length < 7) {
             // Try Netscape format (space-separated)
             const spaceParts = line.trim().split(/\s+/);
             if (spaceParts.length >= 7) {
               const [domain, domainFlag, path, secure, expiration, name, ...valueParts] = spaceParts;
               const value = valueParts.join(' ');
-              return {
-                name,
-                value,
-                domain: domain.startsWith('.') ? domain.slice(1) : domain,
+        return {
+          name,
+          value,
+          domain: domain.startsWith('.') ? domain.slice(1) : domain,
                 path: path || '/',
                 expires: expiration === '0' ? undefined : parseInt(expiration),
-                httpOnly: false,
+          httpOnly: false,
                 secure: secure === 'TRUE' || secure === 'true'
               };
-            }
-            return null;
-          }
-          
+    }
+    return null;
+  }
+
           const [domain, domainFlag, path, secure, expiration, name, ...valueParts] = parts;
           const value = valueParts.join('\t'); // Rejoin in case value contains tabs
           
-          return {
+        return {
             name: name.trim(),
             value: value.trim(),
             domain: domain.startsWith('.') ? domain.slice(1) : domain,
@@ -388,9 +417,9 @@ class YouTubeExtractor {
         execSync('which deno', { stdio: 'pipe', timeout: 5000 });
         execSync('deno --version', { stdio: 'pipe', timeout: 5000 });
         resolve(true);
-      } catch (error) {
+    } catch (error) {
         resolve(false);
-      }
+    }
     });
   }
 
