@@ -1450,13 +1450,15 @@ server.listen(PORT, async () => {
       const controller = new AbortController()
       const timeoutId = setTimeout(() => controller.abort(), 5000)
       
-      const response = await fetch(`${POT_PROVIDER_BASE_URL}/health`, { 
+      // Use /ping endpoint as per bgutil-ytdlp-pot-provider server code
+      const response = await fetch(`${POT_PROVIDER_BASE_URL}/ping`, { 
         signal: controller.signal 
       })
       clearTimeout(timeoutId)
       
       if (response.ok) {
-        console.log(`✅ PO token provider service accessible at ${POT_PROVIDER_BASE_URL}`)
+        const data = await response.json()
+        console.log(`✅ PO token provider service accessible at ${POT_PROVIDER_BASE_URL} (version: ${data.version || 'unknown'})`)
       } else {
         console.warn(`⚠️ PO token provider service at ${POT_PROVIDER_BASE_URL} returned status ${response.status}`)
       }
