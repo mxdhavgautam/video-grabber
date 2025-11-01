@@ -24,11 +24,26 @@ class YouTubeExtractor {
 
     console.log('[YouTubeExtractor] Initializing...');
     
-    // Initialize BgUtils
+    // Initialize BgUtils - try multiple import methods
     try {
-      this.bgUtils = new BgUtils();
-      await this.bgUtils.init();
-      console.log('[YouTubeExtractor] BgUtils initialized');
+      // Try default import
+      if (typeof BgUtils === 'function') {
+        this.bgUtils = new BgUtils();
+        await this.bgUtils.init();
+        console.log('[YouTubeExtractor] BgUtils initialized (default import)');
+      } else if (BgUtils && typeof BgUtils.default === 'function') {
+        // Try default export
+        this.bgUtils = new BgUtils.default();
+        await this.bgUtils.init();
+        console.log('[YouTubeExtractor] BgUtils initialized (default.default)');
+      } else if (BgUtils && BgUtils.BgUtils) {
+        // Try named export
+        this.bgUtils = new BgUtils.BgUtils();
+        await this.bgUtils.init();
+        console.log('[YouTubeExtractor] BgUtils initialized (named export)');
+      } else {
+        console.warn('[YouTubeExtractor] BgUtils is not a constructor, skipping');
+      }
     } catch (error) {
       console.warn('[YouTubeExtractor] BgUtils initialization failed:', error.message);
     }
@@ -45,7 +60,9 @@ class YouTubeExtractor {
           '--disable-accelerated-2d-canvas',
           '--no-first-run',
           '--no-zygote',
-          '--disable-gpu'
+          '--disable-gpu',
+          '--disable-web-security',
+          '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
         ]
       });
       console.log('[YouTubeExtractor] Puppeteer browser launched');
@@ -187,38 +204,279 @@ class YouTubeExtractor {
   }
 
   async extractWithYouTubeIJS(videoId, poToken) {
-    try {
-      const { Innertube } = await import('youtubei.js');
-      
-      const options = {};
-      
-      if (poToken) {
-        options.po_token = poToken;
-      }
+    const { Innertube } = await import('youtubei.js');
+    
+    // Try multiple client types for better success rate
+    const clientTypes = ['WEB', 'ANDROID', 'TV_EMBEDDED', 'IOS', 'MWEB'];
+    
+    for (const clientType of clientTypes) {
+      try {
+        console.log(`[youtubei.js] Trying client type: ${clientType}`);
+        
+        const options = {
+          client: clientType,
+          fetch: async (input, init = {}) => {
+            // Use axios for better cookie/header handling
+            const axios = (await import('axios')).default;
+            try {
+              const response = await axios(input, {
+                ...init,
+                withCredentials: true,
+                headers: {
+                  ...init.headers,
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                  'Accept-Language': 'en-US,en;q=0.9',
+                  'Referer': 'https://www.youtube.com/',
+                }
+              });
+              // Create a simple headers-like object
+              const headers = {
+                get: (name) => {
+                  const key = Object.keys(response.headers).find(k => k.toLowerCase() === name.toLowerCase());
+                  return key ? response.headers[key] : null;
+                },
+                has: (name) => {
+                  const key = Object.keys(response.headers).find(k => k.toLowerCase() === name.toLowerCase());
+                  return !!key;
+                }
+              };
 
-      // Load visitor data from cookies if available
+              return {
+                ok: response.status >= 200 && response.status < 300,
+                status: response.status,
+                statusText: response.statusText || '',
+                headers: headers,
+                json: async () => response.data,
+                text: async () => typeof response.data === 'string' ? response.data : JSON.stringify(response.data),
+                arrayBuffer: async () => Buffer.from(typeof response.data === 'string' ? response.data : JSON.stringify(response.data))
+              };
+            } catch (error) {
+              throw new Error(`Fetch failed: ${error.message}`);
+            }
+          }
+        };
+        
+        if (poToken) {
+          options.po_token = poToken;
+        }
+
+        // Load visitor data from cookies if available
+        if (fs.existsSync(this.cookiesPath)) {
+          try {
+            const visitorData = this.extractVisitorDataFromCookies();
+            if (visitorData) {
+              options.visitor_data = visitorData;
+              console.log(`[youtubei.js] Using visitor data for ${clientType}`);
+            }
+          } catch (error) {
+            console.warn('[youtubei.js] Failed to extract visitor data:', error.message);
+          }
+        }
+
+        const youtube = await Innertube.create(options);
+        const info = await youtube.getInfo(videoId);
+        
+        // Check if we got streaming data
+        if (info.streaming_data && 
+            (info.streaming_data.formats?.length > 0 || info.streaming_data.adaptive_formats?.length > 0)) {
+          console.log(`[youtubei.js] Successfully extracted video info with ${clientType}`);
+          return await this.convertYouTubeIJSFormat(info);
+        } else {
+          console.log(`[youtubei.js] ${clientType} returned empty streaming_data, trying next client...`);
+          continue;
+        }
+      } catch (error) {
+        console.warn(`[youtubei.js] ${clientType} failed:`, error.message);
+        if (clientType === clientTypes[clientTypes.length - 1]) {
+          // Last client type failed, throw error
+          throw new Error(`All youtubei.js client types failed. Last error: ${error.message}`);
+        }
+        continue;
+      }
+    }
+    
+    throw new Error('All youtubei.js client types exhausted');
+  }
+
+  async extractWithPuppeteer(videoId) {
+    if (!this.browser) {
+      throw new Error('Browser not available for Puppeteer extraction');
+    }
+
+    console.log('[Puppeteer] Starting direct browser extraction...');
+    const page = await this.browser.newPage();
+    
+    try {
+      // Set cookies if available
       if (fs.existsSync(this.cookiesPath)) {
         try {
-          const visitorData = this.extractVisitorDataFromCookies();
-          if (visitorData) {
-            options.visitor_data = visitorData;
-          }
+          const cookies = this.parseCookiesTxt(this.cookiesPath);
+          await page.setCookie(...cookies);
+          console.log('[Puppeteer] Loaded cookies');
         } catch (error) {
-          console.warn('[youtubei.js] Failed to extract visitor data:', error.message);
+          console.warn('[Puppeteer] Failed to load cookies:', error.message);
         }
       }
 
-      const youtube = await Innertube.create(options);
-      const info = await youtube.getInfo(videoId);
-      
-      console.log('[youtubei.js] Successfully extracted video info');
-      
-      // Convert to yt-dlp-like format
-      return await this.convertYouTubeIJSFormat(info);
+      // Set viewport and user agent
+      await page.setViewport({ width: 1920, height: 1080 });
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36');
+
+      // Navigate to video page
+      await page.goto(`https://www.youtube.com/watch?v=${videoId}`, {
+        waitUntil: 'networkidle2',
+        timeout: 30000
+      });
+
+      // Wait for player to load
+      await page.waitForSelector('#movie_player', { timeout: 10000 });
+
+      // Extract streaming data directly from page
+      const streamingData = await page.evaluate(() => {
+        try {
+          // Method 1: Try ytInitialPlayerResponse
+          if (window.ytInitialPlayerResponse) {
+            const data = window.ytInitialPlayerResponse;
+            if (data.streamingData) {
+              return {
+                source: 'ytInitialPlayerResponse',
+                streamingData: data.streamingData,
+                videoDetails: data.videoDetails,
+                playerConfig: data.playerConfig
+              };
+            }
+          }
+
+          // Method 2: Try ytInitialData
+          if (window.ytInitialData) {
+            const data = window.ytInitialData;
+            const contents = data?.contents?.twoColumnWatchNextResults?.results?.results?.contents;
+            if (contents) {
+              for (const content of contents) {
+                if (content.videoPrimaryInfoRenderer) {
+                  // Found video info, but need streaming data
+                  const playerResponse = window.ytInitialPlayerResponse;
+                  if (playerResponse?.streamingData) {
+                    return {
+                      source: 'ytInitialData + ytInitialPlayerResponse',
+                      streamingData: playerResponse.streamingData,
+                      videoDetails: playerResponse.videoDetails
+                    };
+                  }
+                }
+              }
+            }
+          }
+
+          // Method 3: Try extracting from player element data
+          const playerElement = document.getElementById('movie_player');
+          if (playerElement && playerElement.getVideoData) {
+            const videoData = playerElement.getVideoData();
+            if (videoData) {
+              return {
+                source: 'playerElement.getVideoData',
+                videoData: videoData
+              };
+            }
+          }
+
+          return null;
+        } catch (error) {
+          console.error('Puppeteer extraction error:', error);
+          return { error: error.message };
+        }
+      });
+
+      await page.close();
+
+      if (!streamingData || streamingData.error) {
+        throw new Error(streamingData?.error || 'Failed to extract streaming data from page');
+      }
+
+      console.log(`[Puppeteer] Extracted data from: ${streamingData.source}`);
+
+      // Convert streaming data to our format
+      if (streamingData.streamingData) {
+        return await this.convertPuppeteerStreamingData(streamingData, videoId);
+      }
+
+      throw new Error('No streaming data found in page');
     } catch (error) {
-      console.error('[youtubei.js] Extraction failed:', error.message);
+      await page.close();
       throw error;
     }
+  }
+
+  async convertPuppeteerStreamingData(streamingData, videoId) {
+    const formats = [];
+    const sd = streamingData.streamingData;
+    const vd = streamingData.videoDetails || {};
+
+    // Process formats
+    if (sd.formats) {
+      formats.push(...sd.formats.map(f => ({
+        format_id: f.itag?.toString(),
+        url: f.url || f.signatureCipher || f.cipher,
+        ext: f.mimeType?.split('/')[1]?.split(';')[0] || 'mp4',
+        quality: f.qualityLabel || `${f.height}p`,
+        filesize: parseInt(f.contentLength) || null,
+        fps: f.fps || null,
+        width: f.width || null,
+        height: f.height || null,
+        vcodec: f.mimeType?.includes('video') ? (f.mimeType?.includes('vp9') ? 'vp9' : f.mimeType?.includes('av01') ? 'av01' : 'avc1') : 'none',
+        acodec: f.mimeType?.includes('audio') ? (f.mimeType?.includes('opus') ? 'opus' : 'aac') : 'none',
+        format_note: f.qualityLabel || f.quality,
+        hasVideo: !!f.width && !!f.height,
+        hasAudio: f.mimeType?.includes('audio') || (!f.width && !f.height)
+      })));
+    }
+
+    // Process adaptive formats
+    if (sd.adaptiveFormats) {
+      formats.push(...sd.adaptiveFormats.map(f => ({
+        format_id: f.itag?.toString(),
+        url: f.url || f.signatureCipher || f.cipher,
+        ext: f.mimeType?.split('/')[1]?.split(';')[0] || (f.width ? 'mp4' : 'webm'),
+        quality: f.qualityLabel || (f.height ? `${f.height}p` : 'audio only'),
+        filesize: parseInt(f.contentLength) || null,
+        fps: f.fps || null,
+        width: f.width || null,
+        height: f.height || null,
+        vcodec: f.mimeType?.includes('video') ? (f.mimeType?.includes('vp9') ? 'vp9' : f.mimeType?.includes('av01') ? 'av01' : 'avc1') : 'none',
+        acodec: f.mimeType?.includes('audio') ? (f.mimeType?.includes('opus') ? 'opus' : 'aac') : 'none',
+        abr: f.bitrate ? Math.round(f.bitrate / 1000) : null,
+        format_note: f.qualityLabel || f.quality,
+        hasVideo: !!f.width && !!f.height,
+        hasAudio: f.mimeType?.includes('audio') || (!f.width && !f.height)
+      })));
+    }
+
+    // Extract audio tracks
+    const audio_tracks = [];
+    const audioFormats = formats.filter(f => f.hasAudio && !f.hasVideo);
+    if (audioFormats.length > 0) {
+      audio_tracks.push({
+        language: 'English',
+        language_code: 'en',
+        format_ids: audioFormats.map(f => f.format_id)
+      });
+    }
+
+    console.log(`[convertPuppeteerStreamingData] Extracted ${formats.length} formats, ${audioFormats.length} audio-only`);
+
+    return {
+      id: videoId,
+      title: vd.title,
+      thumbnail: vd.thumbnail?.thumbnails?.[0]?.url || `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
+      description: vd.shortDescription,
+      duration: parseInt(vd.lengthSeconds) || null,
+      uploader: vd.author,
+      webpage_url: `https://www.youtube.com/watch?v=${videoId}`,
+      formats: formats,
+      audio_tracks: audio_tracks.length > 0 ? audio_tracks : null,
+      subtitle_tracks: null // TODO: Extract captions
+    };
   }
 
   async extract(videoId) {
@@ -228,7 +486,7 @@ class YouTubeExtractor {
       console.log(`[Extract] Starting extraction for video: ${videoId}`);
 
       // Step 1: Generate PO token
-      console.log('[Extract] [1/3] Generating PO token...');
+      console.log('[Extract] [1/4] Generating PO token...');
       const poToken = await this.generatePoToken(videoId);
       
       if (poToken) {
@@ -237,8 +495,20 @@ class YouTubeExtractor {
         console.log('[Extract] Proceeding without PO token');
       }
 
-      // Step 2: Try yt-dlp with EJS + PO token
-      console.log('[Extract] [2/3] Attempting yt-dlp extraction...');
+      // Step 2: Try Puppeteer direct extraction (most reliable for bot detection)
+      console.log('[Extract] [2/4] Attempting Puppeteer direct extraction...');
+      try {
+        const videoInfo = await this.extractWithPuppeteer(videoId);
+        if (videoInfo && videoInfo.formats && videoInfo.formats.length > 0) {
+          console.log('[Extract] Puppeteer extraction successful!');
+          return videoInfo;
+        }
+      } catch (puppeteerError) {
+        console.warn('[Extract] Puppeteer extraction failed:', puppeteerError.message);
+      }
+
+      // Step 3: Try yt-dlp with EJS + PO token
+      console.log('[Extract] [3/4] Attempting yt-dlp extraction...');
       try {
         const videoInfo = await this.extractWithYtDlp(videoId, poToken);
         return videoInfo;
@@ -246,8 +516,8 @@ class YouTubeExtractor {
         console.warn('[Extract] yt-dlp failed:', ytdlpError.message);
       }
 
-      // Step 3: Fallback to youtubei.js
-      console.log('[Extract] [3/3] Falling back to youtubei.js...');
+      // Step 4: Fallback to youtubei.js with multiple client types
+      console.log('[Extract] [4/4] Falling back to youtubei.js...');
       try {
         const videoInfo = await this.extractWithYouTubeIJS(videoId, poToken);
         return videoInfo;
@@ -306,10 +576,22 @@ class YouTubeExtractor {
     // Debug: Log available keys in info object
     console.log('[convertYouTubeIJSFormat] Available keys in info:', Object.keys(info || {}));
     console.log('[convertYouTubeIJSFormat] streaming_data exists:', !!info.streaming_data);
+    console.log('[convertYouTubeIJSFormat] streaming_data type:', typeof info.streaming_data);
+    console.log('[convertYouTubeIJSFormat] streaming_data value:', info.streaming_data ? JSON.stringify(info.streaming_data).substring(0, 500) : 'null/undefined');
+    
     if (info.streaming_data) {
       console.log('[convertYouTubeIJSFormat] streaming_data keys:', Object.keys(info.streaming_data || {}));
       console.log('[convertYouTubeIJSFormat] formats count:', info.streaming_data?.formats?.length || 0);
       console.log('[convertYouTubeIJSFormat] adaptive_formats count:', info.streaming_data?.adaptive_formats?.length || 0);
+    } else {
+      // Try alternative paths
+      console.log('[convertYouTubeIJSFormat] Checking alternative paths...');
+      if (info.basic_info) {
+        console.log('[convertYouTubeIJSFormat] basic_info keys:', Object.keys(info.basic_info || {}));
+      }
+      if (info.player_config) {
+        console.log('[convertYouTubeIJSFormat] player_config exists');
+      }
     }
     
     // Helper to determine if format has video/audio
