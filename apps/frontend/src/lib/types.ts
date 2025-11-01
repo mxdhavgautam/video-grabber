@@ -64,6 +64,51 @@ export function detectPlatform(url: string): VideoInfo['platform'] | null {
   return null
 }
 
+/**
+ * Normalize YouTube URLs to standard watch format
+ * Converts youtu.be share links and removes unnecessary parameters
+ * @param url - YouTube URL (any format)
+ * @returns Normalized YouTube URL in watch format
+ */
+export function normalizeYouTubeUrl(url: string): string {
+  try {
+    const urlObj = new URL(url)
+    
+    // Handle youtu.be share links
+    if (urlObj.hostname === 'youtu.be' || urlObj.hostname === 'www.youtu.be') {
+      const videoId = urlObj.pathname.slice(1).split('/')[0]
+      return `https://www.youtube.com/watch?v=${videoId}`
+    }
+    
+    // Handle youtube.com URLs
+    if (urlObj.hostname.includes('youtube.com')) {
+      // Extract video ID from various formats
+      let videoId = urlObj.searchParams.get('v')
+      
+      // Handle /embed/ format
+      if (!videoId && urlObj.pathname.includes('/embed/')) {
+        videoId = urlObj.pathname.split('/embed/')[1].split('/')[0]
+      }
+      
+      // Handle /v/ format
+      if (!videoId && urlObj.pathname.includes('/v/')) {
+        videoId = urlObj.pathname.split('/v/')[1].split('/')[0]
+      }
+      
+      // Handle /watch format (already normalized)
+      if (videoId) {
+        return `https://www.youtube.com/watch?v=${videoId}`
+      }
+    }
+    
+    // Return original URL if we couldn't normalize it
+    return url
+  } catch (e) {
+    // If URL parsing fails, return original
+    return url
+  }
+}
+
 export function formatFileSize(bytes?: number): string {
   if (!bytes) return 'Unknown size'
   const units = ['B', 'KB', 'MB', 'GB']

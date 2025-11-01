@@ -8,14 +8,14 @@ export function getApiBaseUrl(): string {
   if (envUrl && envUrl !== '' && !envUrl.includes('undefined')) {
     return envUrl
   }
-
+  
   if (typeof window !== 'undefined') {
     const origin = window.location.origin
     if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
       return '/api'
     }
   }
-
+  
   return '/api'
 }
 
@@ -27,7 +27,13 @@ export { detectPlatform }
  */
 export async function extractVideoInfo(url: string): Promise<VideoInfo | null> {
   try {
-    const response = await fetch(`${getApiBaseUrl()}/extract?url=${encodeURIComponent(url)}`)
+    const response = await fetch(`${getApiBaseUrl()}/extract`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ url }),
+    })
     
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
@@ -35,7 +41,7 @@ export async function extractVideoInfo(url: string): Promise<VideoInfo | null> {
     }
 
     const data = await response.json()
-    return data as VideoInfo
+    return data.success ? data.data : data
   } catch (error) {
     console.error('Error extracting video info:', error)
     throw error

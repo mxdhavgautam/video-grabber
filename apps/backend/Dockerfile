@@ -7,11 +7,12 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 
-# Install system dependencies for yt-dlp, ffmpeg, and Chromium
+# Install system dependencies for yt-dlp, ffmpeg, Chromium, and Deno
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         chromium \
+        curl \
         dumb-init \
         ffmpeg \
         fonts-liberation \
@@ -49,12 +50,18 @@ RUN apt-get update \
         libxtst6 \
         python3 \
         python3-pip \
+        unzip \
         wget \
         xdg-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp and the PO token provider plugin
-RUN python3 -m pip install --no-cache-dir yt-dlp bgutil-ytdlp-pot-provider
+# Install Deno for EJS runtime
+RUN curl -fsSL https://deno.land/install.sh | sh \
+    && mv /root/.deno/bin/deno /usr/local/bin/deno \
+    && deno --version
+
+# Install yt-dlp with EJS support (--break-system-packages needed for Debian Bookworm)
+RUN python3 -m pip install --no-cache-dir --break-system-packages "yt-dlp[default]"
 
 # Copy npm manifests for workspace installation
 COPY package.json package-lock.json ./
