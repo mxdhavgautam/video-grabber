@@ -109,6 +109,10 @@ const PROFILE_ROTATION_INTERVAL = 24 * 60 * 60 * 1000 // 24 hours
 let useBrowserCookies = true
 
 const POT_PROVIDER_BASE_URL = process.env.POT_PROVIDER_BASE_URL || 'http://pot-provider:4416'
+// Optional: yt-cipher server URL for remote JS challenge solving
+// See: https://github.com/kikkia/yt-cipher
+const YT_CIPHER_BASE_URL = process.env.YT_CIPHER_BASE_URL || null
+const YT_CIPHER_API_KEY = process.env.YT_CIPHER_API_KEY || null
 
 // =====================================================================
 // RATE LIMITING & SECURITY
@@ -551,34 +555,19 @@ async function getVideoInfoWithPuppeteer(videoUrl) {
     // Dynamic import to avoid errors if Puppeteer isn't installed yet
     const puppeteer = await import('puppeteer-core').catch(() => import('puppeteer'))
     
-    const chromeProfileDir = findChromeProfileDir(false)
-    const executablePath = process.env.CHROME_EXECUTABLE_PATH || '/usr/bin/google-chrome'
+    // CRITICAL: Connect to existing Chrome instance running on port 9222
+    // This uses the same Chrome instance that's already running with cookies!
+    // No need to launch a new instance - just connect to the existing one
+    const debugUrl = process.env.CHROME_DEBUG_URL || 'http://127.0.0.1:9222'
     
     console.log('🌐 Using Puppeteer with Chrome\'s actual network stack...')
-    console.log(`   Chrome profile: ${chromeProfileDir || 'default'}`)
-    console.log(`   Chrome executable: ${executablePath}`)
+    console.log(`   Connecting to existing Chrome instance at: ${debugUrl}`)
     
-    // Launch Chrome with existing profile (uses same cookies as startup script)
-    // Use Chrome's actual network stack - this bypasses bot detection!
-    // headless: 'new' uses Chrome's real network stack even without GUI
-    const browser = await puppeteer.launch({
-      executablePath,
-      headless: 'new', // New headless mode - still uses Chrome's real network stack!
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-blink-features=AutomationControlled',
-        '--window-size=1920,1080',
-        '--disable-web-security',
-        '--disable-features=IsolateOrigins,site-per-process',
-        ...(chromeProfileDir ? [`--user-data-dir=${chromeProfileDir}`] : [])
-      ],
-      env: {
-        ...process.env,
-        DISPLAY: ':99' // Use Xvfb display
-      }
+    // Connect to existing Chrome instance via DevTools Protocol
+    // This is WAY better than launching a new instance - uses the same Chrome with cookies!
+    const browser = await puppeteer.connect({
+      browserURL: debugUrl,
+      defaultViewport: { width: 1920, height: 1080 }
     })
     
     try {
@@ -672,13 +661,20 @@ async function getVideoInfoWithPuppeteer(videoUrl) {
         formats: formats
       }
       
-      await browser.close()
+      // Don't close browser - it's a shared instance!
+      // Just disconnect from it (page will be closed automatically)
+      browser.disconnect()
       
       console.log('✅ Successfully extracted video info using Puppeteer')
       return videoInfo
       
     } catch (error) {
-      await browser.close()
+      // Don't close browser - it's a shared instance!
+      try {
+        browser.disconnect()
+      } catch {
+        // Ignore disconnect errors
+      }
       throw error
     }
     
@@ -879,6 +875,18 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
       }
     } else {
       console.log(`🔑 Using ${clientType} client without PO token provider`)
+    }
+    
+    // Optional: Use yt-cipher remote JS challenge solver (retry 3+)
+    // See: https://github.com/coletdjnz/yt-dlp-remote-cipher
+    // This solves JS challenges remotely using a yt-cipher server
+    if (YT_CIPHER_BASE_URL && retryCount >= 3) {
+      let cipherArg = `youtubejsc-remotecipher:base_url=${YT_CIPHER_BASE_URL}`
+      if (YT_CIPHER_API_KEY) {
+        cipherArg += `;api_key=${YT_CIPHER_API_KEY}`
+      }
+      extractorArgs += ` --extractor-args "${cipherArg}"`
+      console.log(`🔐 Using yt-cipher remote JS challenge solver at ${YT_CIPHER_BASE_URL} (retry ${retryCount + 1})`)
     }
     command += extractorArgs
     
