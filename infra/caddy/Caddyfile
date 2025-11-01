@@ -1,0 +1,14 @@
+{
+    email {$ACME_EMAIL}
+}
+
+video-grabber.mxdhavgautam.com {
+    encode zstd gzip
+    reverse_proxy frontend:80
+}
+
+video-grabber-api.mxdhavgautam.com {
+    encode zstd gzip
+    reverse_proxy backend:3001
+}
+

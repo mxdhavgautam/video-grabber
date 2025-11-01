@@ -1,0 +1,66 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    env_file:
+      - apps/backend/.env.production
+    volumes:
+      - backend_data:/var/lib/video-grabber
+    restart: unless-stopped
+    networks:
+      - video-grabber
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-https://video-grabber-api.mxdhavgautam.com}
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      backend:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - video-grabber
+
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    environment:
+      - ACME_AGREE=true
+      - ACME_EMAIL=${ACME_EMAIL:-admin@mxdhavgautam.com}
+    depends_on:
+      frontend:
+        condition: service_started
+      backend:
+        condition: service_started
+    networks:
+      - video-grabber
+
+networks:
+  video-grabber:
+    driver: bridge
+
+volumes:
+  backend_data:
+  caddy_data:
+  caddy_config:
+

@@ -1,27 +1,21 @@
 import type { VideoInfo } from '@/lib/types'
 import { detectPlatform } from '@/lib/types'
 
-// Detect API base URL based on current path
-// Priority: 1. VITE_API_URL env, 2. /grabber/api for local dev, 3. /api for local dev
-function getApiBaseUrl(): string {
-  // First priority: Check for VITE_API_URL environment variable (production)
+// Detect API base URL based on current environment
+// Priority: 1. VITE_API_URL env (production), 2. local dev proxy
+export function getApiBaseUrl(): string {
   const envUrl = (import.meta as any).env?.VITE_API_URL
   if (envUrl && envUrl !== '' && !envUrl.includes('undefined')) {
-    console.log('[API Config] Using VITE_API_URL from environment:', envUrl)
     return envUrl
   }
-  
-  // Fallback: Check window location for local development
+
   if (typeof window !== 'undefined') {
-    const pathname = window.location.pathname
-    console.log('[API Config] pathname:', pathname, 'env:', envUrl)
-    if (pathname.startsWith('/grabber')) {
-      console.log('[API Config] Using local /grabber/api path')
-      return '/grabber/api'
+    const origin = window.location.origin
+    if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+      return '/api'
     }
   }
-  
-  console.log('[API Config] Using local /api path')
+
   return '/api'
 }
 
