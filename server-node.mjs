@@ -583,8 +583,9 @@ async function getVideoInfoWithPuppeteer(videoUrl) {
         timeout: 60000 
       })
       
-      // Wait for YouTube's player data to be available
-      await page.waitForTimeout(5000) // Give YouTube time to load player data
+      // Wait for YouTube's player data to be available using modern Promise-based approach
+      // (page.waitForTimeout was removed in newer Puppeteer versions)
+      await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 5000)))
       
       // Extract video data from page's JavaScript variables
       const videoData = await page.evaluate(() => {
@@ -696,369 +697,71 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     }
 
     // Build base command
-    // Use verbose mode only on first attempt to see plugin detection
-    // Note: --quiet and -v are mutually exclusive, so we use --no-warnings instead
     let command = `yt-dlp -j --dump-single-json`
     if (retryCount === 0) {
-      // First attempt: use verbose to see plugin detection
       command += ` -v`
     } else {
-      // Retries: use quiet mode to reduce noise
-      command += ` --quiet --no-warnings`
+      command += ` --quiet`
     }
     
-    // CRITICAL: Use external JS runtime (Deno) for n/sig solving (PR #14157)
-    // This bypasses YouTube's bot detection by using proper JS runtime instead of regex-based interpreter
-    // Deno is automatically detected if in PATH, but we can explicitly specify it
-    // Format: --js-runtimes deno (or node/bun/quickjs)
-    command += ` --js-runtimes deno`
-    
-    // CRITICAL: Use Linux Chrome user-agent to match our Docker environment
-    // Real Chrome works because user-agent matches the actual OS
-    // Using Windows/Mac user-agents on Linux is detectable!
-    // Chrome on Linux uses: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36
+    // Use Linux Chrome user-agent
     const userAgent = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
     command += ` --user-agent "${userAgent}"`
     
-    // CRITICAL: Add Referer header matching real Chrome behavior
-    // Real Chrome sends Referer: https://www.youtube.com when navigating
-    // This is crucial for YouTube to recognize legitimate browser traffic
+    // Add headers
     command += ` --add-header "Referer:https://www.youtube.com"`
     command += ` --add-header "Origin:https://www.youtube.com"`
     command += ` --socket-timeout 30`
-    // Add delay between requests to avoid rate limiting (5-10 seconds per docs)
-    // Only add delay on retries to avoid slowing down initial requests unnecessarily
+    
+    // Add delay on retries
     if (retryCount > 0) {
-      command += ` --sleep-interval 6 --max-sleep-interval 10`
+      command += ` --sleep-interval 3 --max-sleep-interval 8`
     }
 
-    // Use rotated Chrome profile directory for better success rate
-    // Rotate profiles on retries to avoid hitting rate limits with same cookies
-    const chromeProfileDir = findChromeProfileDir(retryCount > 0)
+    // Try to use Chrome cookies if available
+    const chromeProfileDir = findChromeProfileDir()
     const profileCookiesFile = chromeProfileDir ? `${chromeProfileDir}/cookies.txt` : null
     const cookiesExist = profileCookiesFile ? existsSync(profileCookiesFile) : false
     
-    // Also check for authenticated cookies (manually uploaded)
-    const authenticatedCookiesPath = chromeProfileDir ? `${chromeProfileDir}/authenticated-cookies.txt` : null
-    const hasAuthenticatedCookies = authenticatedCookiesPath ? existsSync(authenticatedCookiesPath) : false
-
-    // CRITICAL: When Chrome is running, the database is LOCKED and yt-dlp extracts 0 cookies!
-    // Real Chrome works because it uses cookies from memory/network stack, not database
-    // Solution: Check if Chrome is running, and if so, use exported cookies.txt file
-    // The cookies.txt file was exported while Chrome was running (fresh cookies)
-    const isChromeRunning = chromeProfileDir ? (() => {
-      try {
-        // Check if Chrome process is running by looking for the profile directory being locked
-        // Or check if cookies.txt exists and is recent (exported while Chrome was running)
-        const cookiesFile = `${chromeProfileDir}/cookies.txt`
-        if (existsSync(cookiesFile)) {
-          const stats = statSync(cookiesFile)
-          const ageMinutes = (Date.now() - stats.mtime.getTime()) / 1000 / 60
-          // If cookies.txt is less than 10 minutes old, Chrome likely just exported it (is running)
-          // If database exists but cookies.txt is fresh, Chrome is probably running
-          const dbPath = `${chromeProfileDir}/Default/Cookies`
-          if (existsSync(dbPath) && ageMinutes < 10) {
-            return true // Chrome likely running, use cookies.txt
-          }
-        }
-        return false
-      } catch {
-        return false
-      }
-    })() : false
-
-    // CRITICAL: Prioritize authenticated cookies over guest cookies
-    // Authenticated cookies are required to bypass bot detection (per yt-dlp docs)
-    // Strategy priority:
-    // 1. Authenticated cookies (manually uploaded) - BEST for bot detection bypass
-    // 2. Exported cookies.txt file (when Chrome is running OR if database locked) - WORKS when Chrome running!
-    // 3. Google Chrome profile via --cookies-from-browser (only when Chrome NOT running) - Good if logged in
-    // 4. PO token provider only - Last resort
-    
-    if (hasAuthenticatedCookies && retryCount < 3) {
-      // Use authenticated cookies first (best for bypassing bot detection)
-      command += ` --cookies "${authenticatedCookiesPath}"`
-      console.log(`🔐 Strategy 1.${retryCount === 0 ? 'A' : 'B'}: Using authenticated cookies file (${authenticatedCookiesPath})`)
-    } else if (isChromeRunning && cookiesExist) {
-      // CRITICAL FIX: Chrome is running → database is locked → use exported cookies.txt
-      // This matches real Chrome behavior - cookies are in memory/network stack
+    if (cookiesExist && retryCount < 2) {
       command += ` --cookies "${profileCookiesFile}"`
-      console.log(`🔐 Strategy 1.${retryCount === 0 ? 'C' : 'D'}: Using exported cookies.txt (Chrome running, database locked)`)
-    } else if (retryCount < 2 && useBrowserCookies && chromeProfileDir && !isChromeRunning) {
-      // Use Google Chrome profile directly (reads from cookie database)
-      // ONLY when Chrome is NOT running (database not locked)
-      const cookiesDbPath = `${chromeProfileDir}/Default/Cookies`
-      if (existsSync(cookiesDbPath)) {
-        // Use the Chrome profile directory directly - yt-dlp will read cookies from the database
-        // Format: --cookies-from-browser "chrome:PROFILE_PATH" (yt-dlp uses "chrome" for Google Chrome)
-        command += ` --cookies-from-browser "chrome:${chromeProfileDir}"`
-        console.log(`🔐 Strategy 1.${retryCount === 0 ? 'E' : 'F'}: Using Google Chrome profile via --cookies-from-browser (Chrome not running)`)
-      } else {
-        console.warn(`⚠️ Cookies database not found at ${cookiesDbPath}, falling back to exported cookies`)
-        if (cookiesExist) {
-          command += ` --cookies "${profileCookiesFile}"`
-          console.log(`🔐 Strategy 1.${retryCount === 0 ? 'G' : 'H'}: Using exported cookies file (${profileCookiesFile})`)
-        } else {
-          console.log(`⚠️ Strategy 1 fallback: No usable cookies, relying on PO token provider`)
-        }
-      }
-    } else if (retryCount === 0 && cookiesExist) {
-      // Fallback to exported cookies file
-      command += ` --cookies "${profileCookiesFile}"`
-      console.log(`🔐 Strategy 1.I: Using exported cookies file (${profileCookiesFile})`)
-    } else {
-      // Last resort: no cookies, rely on PO token provider
-      console.log(`⚠️ Strategy 1 fallback: No usable cookies, relying on PO token provider`)
+      console.log(`🍪 Using Chrome cookies: ${profileCookiesFile}`)
     }
 
-    // Always include mweb client and PO token provider when available
-    // According to bgutil-ytdlp-pot-provider README:
-    // - Multiple extractor args for the SAME provider/extractor must be in ONE flag, separated by semicolons
-    // - Different extractors/plugins can use separate --extractor-args flags
-    // - Format: --extractor-args "youtubepot-bgutilhttp:base_url=URL;disable_innertube=1"
-    // - The plugin auto-registers, but we need to configure it with base_url if using non-default hostname/port
-    // NOTE: Configuring base_url automatically enables the HTTP provider, no need for po-token-providers flag
-    // Try different clients based on retry count to avoid bot detection:
-    // - retryCount 0: mweb (recommended with PO tokens)
-    // - retryCount 1: mweb (retry with same client)
-    // - retryCount 2: android (mobile client, less bot detection)
-    // - retryCount 3: ios (iOS client, different user agent)
-    // - retryCount 4: android_embedded (embedded Android client)
-    let clientType = 'mweb'
-    if (retryCount === 2) {
-      clientType = 'android'
-    } else if (retryCount === 3) {
-      clientType = 'ios'
-    } else if (retryCount >= 4) {
-      clientType = 'android_embedded'
-    }
-    // Enhanced extractor args with experimental strategies
-    // See: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/youtube/jsc/README.md
-    let extractorArgs = ` --extractor-args "youtube:player-client=${clientType}"`
-    if (retryCount === 0) {
-      // Enable JS challenge tracing on first attempt to verify Deno is being used
-      extractorArgs += ` --extractor-args "youtube:jsc_trace=true"`
-    }
-    
-    // CRITICAL FALLBACK: Use player_js_version=actual workaround from issue #14680
-    // This uses actual player JS version instead of regex-based interpreter
-    // Works even if external JS runtime isn't functioning properly
-    // From issue #14680: --extractor-args "youtube:player_js_version=actual" works as temporary fix
-    if (retryCount >= 2) {
-      extractorArgs += ` --extractor-args "youtube:player_js_version=actual"`
-      console.log(`🔧 Using player_js_version=actual fallback (retry ${retryCount + 1})`)
-    }
-    
-    // Experimental: Try to skip webpage requests on later retries (may help with bot detection)
-    // This uses Innertube API directly without webpage scraping
-    if (retryCount >= 3) {
-      extractorArgs += ` --extractor-args "youtube:skip=dash"`
-    }
-    
-    // Experimental: Try different API endpoints
-    if (retryCount >= 4) {
-      extractorArgs += ` --extractor-args "youtube:player_skip=webpage"`
-    }
-    if (POT_PROVIDER_BASE_URL) {
-      // Configure HTTP provider with base_url
-      // Format: youtubepot-bgutilhttp:base_url=URL;disable_innertube=1
-      // The base_url configuration automatically enables the HTTP provider
-      let potArg = `youtubepot-bgutilhttp:base_url=${POT_PROVIDER_BASE_URL}`
-      if (retryCount >= 2) {
-        potArg += ';disable_innertube=1'
-      }
-      extractorArgs += ` --extractor-args "${potArg}"`
-      if (retryCount >= 2) {
-        console.log(`🔑 Using PO token provider at ${POT_PROVIDER_BASE_URL} with disable_innertube=1 (${clientType} client)`)
-      } else {
-        console.log(`🔑 Using PO token provider at ${POT_PROVIDER_BASE_URL} (${clientType} client)`)
-      }
-    } else {
-      console.log(`🔑 Using ${clientType} client without PO token provider`)
-    }
-    
-    // Optional: Use yt-cipher remote JS challenge solver (retry 3+)
-    // See: https://github.com/coletdjnz/yt-dlp-remote-cipher
-    // This solves JS challenges remotely using a yt-cipher server
-    if (YT_CIPHER_BASE_URL && retryCount >= 3) {
-      let cipherArg = `youtubejsc-remotecipher:base_url=${YT_CIPHER_BASE_URL}`
-      if (YT_CIPHER_API_KEY) {
-        cipherArg += `;api_key=${YT_CIPHER_API_KEY}`
-      }
-      extractorArgs += ` --extractor-args "${cipherArg}"`
-      console.log(`🔐 Using yt-cipher remote JS challenge solver at ${YT_CIPHER_BASE_URL} (retry ${retryCount + 1})`)
-    }
-    command += extractorArgs
-    
-    if (retryCount === 0) {
-      console.log(`🔍 Full yt-dlp command (verbose): ${command.replace(/\s+/g, ' ')}`)
-    }
-
+    // Add URL
     command += ` "${videoUrl}"`
 
-    let stdout = ''
-    let stderr = ''
+    console.log(`🔍 yt-dlp command: ${command.substring(0, 100)}...`)
 
-    exec(command, { maxBuffer: 50 * 1024 * 1024 },
-      async (error, out, err) => {
-        stdout = out
-        stderr = err
-
-        const retryWith = (nextDelay) => {
-          return getVideoInfo(videoUrl, retryCount + 1, nextDelay)
-            .then(resolve)
-            .catch(reject)
+    exec(command, (error, stdout, stderr) => {
+      if (error) {
+        console.error(`❌ yt-dlp error: ${error.message}`)
+        
+        // Check for specific errors
+        if (stderr.includes('LOGIN_REQUIRED') || stderr.includes('Sign in to confirm')) {
+          reject(new Error('LOGIN_REQUIRED'))
+        } else if (stderr.includes('ERROR: ')) {
+          // Extract the error message
+          const errorMatch = stderr.match(/ERROR: .*/)
+          if (errorMatch) {
+            console.error(`[yt-dlp stderr] ${errorMatch[0]}`)
+          }
+          reject(error)
+        } else {
+          reject(error)
         }
-
-        // On first attempt, check verbose output for plugin detection and usage
-        if (retryCount === 0 && stderr) {
-          const potProvidersMatch = stderr.match(/\[debug\]\s+\[youtube\]\s+\[pot\]\s+PO Token Providers:.*/i)
-          if (potProvidersMatch) {
-            console.log(`✅ Plugin detection: ${potProvidersMatch[0].substring(0, 200)}`)
-          } else {
-            console.warn(`⚠️ PO token providers not found in verbose output - plugin may not be loaded`)
-          }
-          
-          // Check if PO token provider is being used
-          if (stderr.includes('bgutil') || stderr.includes('PO Token')) {
-            console.log(`🔍 PO token provider activity detected in verbose output`)
-          }
-          
-          // Check for PO token requests/generation
-          const potRequestMatch = stderr.match(/\[debug\]\s+\[youtube\]\s+\[pot.*\].*bgutil/i)
-          if (potRequestMatch) {
-            console.log(`🔑 PO token request detected: ${potRequestMatch[0].substring(0, 200)}`)
-          }
-          
-          // Check for JS Challenge Provider activity (external JS runtime)
-          const jscProvidersMatch = stderr.match(/\[debug\]\s+\[youtube\]\s+\[jsc\]\s+JS Challenge Providers:.*/i)
-          if (jscProvidersMatch) {
-            console.log(`🔍 JS Challenge Providers detected: ${jscProvidersMatch[0].substring(0, 200)}`)
-            // Check if Deno is available
-            if (jscProvidersMatch[0].includes('deno')) {
-              console.log(`✅ Deno JS runtime is available for n/sig solving`)
-            } else {
-              console.warn(`⚠️ Deno JS runtime not found in available providers`)
-              console.warn(`⚠️ This may cause bot detection issues - verify Deno is installed and in PATH`)
-            }
-          }
-          
-          // Check for JS runtime detection
-          const jsRuntimesMatch = stderr.match(/\[debug\]\s+JS runtimes:.*/i)
-          if (jsRuntimesMatch) {
-            console.log(`🔍 JS Runtimes detected: ${jsRuntimesMatch[0].substring(0, 200)}`)
-            if (jsRuntimesMatch[0].includes('deno')) {
-              console.log(`✅ Deno runtime detected by yt-dlp`)
-            } else {
-              console.warn(`⚠️ Deno runtime NOT detected by yt-dlp - may not be in PATH`)
-            }
-          }
-          
-          // Check if JS challenges are being triggered
-          const jscChallengeMatch = stderr.match(/\[debug\]\s+\[youtube\]\s+\[jsc.*\].*/i)
-          if (jscChallengeMatch) {
-            console.log(`🔍 JS Challenge activity detected: ${jscChallengeMatch[0].substring(0, 200)}`)
-          }
-          
-          // Check for playability status
-          const playabilityMatch = stderr.match(/\[debug\]\s+\[youtube\].*playability status:\s*(\w+)/i)
-          if (playabilityMatch) {
-            console.log(`📊 YouTube playability status: ${playabilityMatch[1]}`)
-          }
-        }
-
-        const botDetectionTriggered = stderr && /Sign in to confirm you.?re not a bot/i.test(stderr)
-        const loginRequired = stderr && /LOGIN_REQUIRED/i.test(stderr) || stdout && /LOGIN_REQUIRED/i.test(stdout)
-
-        if (error && (botDetectionTriggered || loginRequired)) {
-          console.warn(`⚠️ Bot detection triggered on attempt ${retryCount + 1}`)
-          if (loginRequired) {
-            console.warn(`⚠️ LOGIN_REQUIRED detected - guest cookies may not be sufficient`)
-          }
-          if (stderr) {
-            // Show more verbose output on first attempt to help debug
-            const snapshotLength = retryCount === 0 ? 2000 : 500
-            console.warn(`[yt-dlp stderr snapshot] ${stderr.substring(0, snapshotLength)}`)
-          }
-          // Increase retry count to 5 to try more client types
-          if (retryCount < 4) {
-            const nextDelay = Math.min(delayMs * Math.pow(2, retryCount + 1), 30000)
-            return retryWith(nextDelay)
-          }
-          return reject(new Error('Failed to get video information from yt-dlp - Bot detection could not be bypassed after 5 retries. Guest cookies may not be sufficient - consider using authenticated cookies from a logged-in YouTube session.'))
-        }
-
-        if (error) {
-          if (stderr) {
-            console.error(`❌ Attempt ${retryCount + 1} failed: ${stderr.substring(0, 300)}`)
-          }
-
-          if (retryCount < 2 && (stderr.includes('Connection') || stderr.includes('timeout'))) {
-            const nextDelay = Math.min(delayMs * Math.pow(2, retryCount + 1), 30000)
-            return retryWith(nextDelay)
-          }
-
-          return reject(error)
-        }
-
-        try {
-          const jsonStart = stdout.indexOf('{')
-          if (jsonStart === -1) {
-            throw new Error('No JSON object found in output')
-          }
-
-          let braceCount = 0
-          let inString = false
-          let escapeNext = false
-          let jsonEnd = jsonStart
-
-          for (let i = jsonStart; i < stdout.length; i++) {
-            const char = stdout[i]
-
-            if (escapeNext) {
-              escapeNext = false
-              continue
-            }
-
-            if (char === '\\') {
-              escapeNext = true
-              continue
-            }
-
-            if (char === '"' && !escapeNext) {
-              inString = !inString
-              continue
-            }
-
-            if (!inString) {
-              if (char === '{') braceCount++
-              if (char === '}') {
-                braceCount--
-                if (braceCount === 0) {
-                  jsonEnd = i + 1
-                  break
-                }
-              }
-            }
-          }
-
-          const jsonStr = stdout.substring(jsonStart, jsonEnd)
-          const data = JSON.parse(jsonStr)
-          const transformedFormats = transformFormats(data)
-
-          console.log(`✅ Successfully extracted video: ${data.title || 'Unknown Title'}`)
-          console.log(`  - Video formats: ${transformedFormats.videoFormats.length}`)
-          console.log(`  - Audio formats: ${transformedFormats.audioFormats.length}`)
-          console.log(`  - Subtitle tracks: ${(data.subtitles && Object.keys(data.subtitles).length) || 0}`)
-
-          data.__transformedFormats = transformedFormats
-
-          resolve(data)
-        } catch (parseError) {
-          reject(new Error(`JSON Parse error: ${parseError.message}`))
-        }
+        return
       }
-    )
+
+      try {
+        const data = JSON.parse(stdout)
+        console.log(`✅ yt-dlp successfully extracted: ${data.title}`)
+        resolve(data)
+      } catch (parseError) {
+        console.error(`❌ Failed to parse yt-dlp output: ${parseError.message}`)
+        reject(parseError)
+      }
+    })
   })
 }
 
