@@ -27,8 +27,8 @@ const COOKIES_FILE = process.env.COOKIES_FILE || join(__dirname, '.yt-dlp', 'coo
 const hasCookies = existsSync(COOKIES_FILE)
 
 // Chrome profile directory for cookies persistence
-// If CHROME_PROFILE_DIR points to base directory, find the most recent profile
-function findChromeProfileDir() {
+// Enhanced with cookie pool rotation support
+function findChromeProfileDir(rotate = false) {
   const baseDir = process.env.CHROME_PROFILE_DIR || join(__dirname, 'chrome-profiles')
   
   // If it's already a full profile path (contains Default/Cookies), use it directly
@@ -36,12 +36,35 @@ function findChromeProfileDir() {
     return baseDir
   }
   
-  // Otherwise, look for the most recent profile subdirectory
+  // Check for cookie pool list (from enhanced cookie generator)
+  const poolListFile = join(baseDir, 'cookie-pool-list.txt')
+  if (existsSync(poolListFile) && rotate) {
+    try {
+      const poolList = readFileSync(poolListFile, 'utf-8')
+        .split('\n')
+        .filter(line => line.trim() && existsSync(line.trim()))
+        .map(line => line.trim())
+        .filter(path => existsSync(join(path, 'Default/Cookies')))
+      
+      if (poolList.length > 0) {
+        // Random selection for rotation
+        const randomProfile = poolList[Math.floor(Math.random() * poolList.length)]
+        if (existsSync(randomProfile)) {
+          return randomProfile
+        }
+      }
+    } catch (error) {
+      console.warn(`⚠️ Error reading cookie pool: ${error.message}`)
+    }
+  }
+  
+  // Otherwise, look for profile subdirectories (enhanced or regular)
   try {
     if (existsSync(baseDir)) {
       const entries = readdirSync(baseDir, { withFileTypes: true })
       const profiles = entries
-        .filter(entry => entry.isDirectory() && entry.name.startsWith('profile-'))
+        .filter(entry => entry.isDirectory() && 
+          (entry.name.startsWith('profile-') || entry.name.startsWith('enhanced-profile-')))
         .map(entry => ({
           name: entry.name,
           path: join(baseDir, entry.name),
@@ -50,8 +73,17 @@ function findChromeProfileDir() {
         .sort((a, b) => b.time - a.time)
       
       if (profiles.length > 0) {
+        // If rotating, pick random from recent profiles
+        if (rotate && profiles.length > 1) {
+          const recentProfiles = profiles.slice(0, Math.min(5, profiles.length))
+          const randomProfile = recentProfiles[Math.floor(Math.random() * recentProfiles.length)]
+          if (existsSync(join(randomProfile.path, 'Default/Cookies'))) {
+            return randomProfile.path
+          }
+        }
+        
+        // Otherwise, use most recent
         const latestProfile = profiles[0]
-        // Verify it has cookies
         if (existsSync(join(latestProfile.path, 'Default/Cookies'))) {
           return latestProfile.path
         }
@@ -539,9 +571,16 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     // Format: --js-runtimes deno (or node/bun/quickjs)
     command += ` --js-runtimes deno`
     
-    // Use a more recent user-agent to avoid detection
-    // Get current Chrome version: Chrome 131+ (as of 2025)
-    command += ` --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"`
+    // Rotate user-agents to avoid fingerprinting
+    const userAgents = [
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15'
+    ]
+    const userAgent = userAgents[retryCount % userAgents.length]
+    command += ` --user-agent "${userAgent}"`
     command += ` --socket-timeout 30`
     // Add delay between requests to avoid rate limiting (5-10 seconds per docs)
     // Only add delay on retries to avoid slowing down initial requests unnecessarily
@@ -549,8 +588,9 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
       command += ` --sleep-interval 6 --max-sleep-interval 10`
     }
 
-    // Use the found Chrome profile directory (which may be auto-detected)
-    const chromeProfileDir = CHROME_PROFILE_DIR
+    // Use rotated Chrome profile directory for better success rate
+    // Rotate profiles on retries to avoid hitting rate limits with same cookies
+    const chromeProfileDir = findChromeProfileDir(retryCount > 0)
     const profileCookiesFile = chromeProfileDir ? `${chromeProfileDir}/cookies.txt` : null
     const cookiesExist = profileCookiesFile ? existsSync(profileCookiesFile) : false
     
@@ -618,12 +658,23 @@ async function getVideoInfo(videoUrl, retryCount = 0, delayMs = 1000) {
     } else if (retryCount >= 4) {
       clientType = 'android_embedded'
     }
-    // Enable JS challenge tracing on first attempt to verify external JS runtime is working
+    // Enhanced extractor args with experimental strategies
     // See: https://github.com/yt-dlp/yt-dlp/blob/master/yt_dlp/extractor/youtube/jsc/README.md
     let extractorArgs = ` --extractor-args "youtube:player-client=${clientType}"`
     if (retryCount === 0) {
       // Enable JS challenge tracing on first attempt to verify Deno is being used
       extractorArgs += ` --extractor-args "youtube:jsc_trace=true"`
+    }
+    
+    // Experimental: Try to skip webpage requests on later retries (may help with bot detection)
+    // This uses Innertube API directly without webpage scraping
+    if (retryCount >= 3) {
+      extractorArgs += ` --extractor-args "youtube:skip=dash"`
+    }
+    
+    // Experimental: Try different API endpoints
+    if (retryCount >= 4) {
+      extractorArgs += ` --extractor-args "youtube:player_skip=webpage"`
     }
     if (POT_PROVIDER_BASE_URL) {
       // Configure HTTP provider with base_url
@@ -1168,18 +1219,17 @@ const server = createServer(async (req, res) => {
     try {
       console.log(`📥 Downloading format ${formatId} from: ${normalizedVideoUrl} (IP: ${clientIP})`)
 
-      // Prepare cookie flags for yt-dlp
-      // CRITICAL: Use --cookies-from-browser directly instead of exported cookies.txt
-      // This reads directly from Chromium's cookie database which is more reliable
+      // Prepare cookie flags for yt-dlp with rotation support
+      // Use rotated profile for better success rate
       let cookieFlags = []
-      const chromeProfileDir = CHROME_PROFILE_DIR
+      const chromeProfileDir = findChromeProfileDir(true) // Rotate for downloads
       const profileCookiesFile = chromeProfileDir ? `${chromeProfileDir}/cookies.txt` : null
       const cookiesExist = profileCookiesFile ? existsSync(profileCookiesFile) : false
 
       if (useBrowserCookies && chromeProfileDir) {
         // Prioritize --cookies-from-browser (reads directly from Chromium database)
         cookieFlags = ['--cookies-from-browser', `chromium:${chromeProfileDir}`]
-        console.log(`🔐 Download Strategy: Using Chromium profile via --cookies-from-browser (${chromeProfileDir})`)
+        console.log(`🔐 Download Strategy: Using rotated Chromium profile via --cookies-from-browser (${chromeProfileDir})`)
       } else if (cookiesExist) {
         // Fallback to exported cookies file
         cookieFlags = ['--cookies', profileCookiesFile]
