@@ -272,7 +272,7 @@ class YouTubeExtractor {
         throw new Error('All extraction attempts failed. YouTube may be rate limiting this IP address. Try again in a few moments.');
       } else {
         // With cookies, just use mweb (which requires PO token provider)
-        try {
+      try {
           const videoInfo = await this.extractWithYtDlp(videoId, 'mweb');
           
           // Report successful extraction (cookies are working)

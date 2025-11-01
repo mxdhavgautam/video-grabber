@@ -224,7 +224,7 @@ app.post('/api/extract', async (req, res) => {
       success: true,
       data: videoInfo
     });
-  } catch (error) {
+      } catch (error) {
     console.error('[Extract] Error:', error);
     res.status(500).json({ 
       error: 'Failed to extract video info',
