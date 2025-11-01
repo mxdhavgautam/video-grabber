@@ -72,34 +72,103 @@ class CookieGenerator {
         fs.mkdirSync(this.profileDir, { recursive: true });
       }
 
+      // Use Xvfb display if available (non-headless mode), otherwise fall back to headless
+      const useDisplay = process.env.DISPLAY || (process.env.USE_VNC === 'true' ? ':99' : null);
+      const isHeadless = !useDisplay;
+      
+      console.log(`[CookieGenerator] Launching Chrome in ${isHeadless ? 'headless' : 'VNC/Xvfb'} mode`);
+      if (useDisplay) {
+        console.log(`[CookieGenerator] Using DISPLAY: ${useDisplay}`);
+      }
+
+      // Chrome launch arguments with enhanced stealth and cookie support
+      const chromeArgs = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--window-size=1920,1080',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        // Cookie settings - allow ALL cookies (including third-party)
+        '--disable-features=BlockThirdPartyCookies',
+        '--enable-features=NetworkService',
+        // Additional stealth features
+        '--lang=en-US,en',
+        '--disable-background-networking',
+        '--disable-background-timer-throttling',
+        '--disable-breakpad',
+        '--disable-client-side-phishing-detection',
+        '--disable-component-extensions-with-background-pages',
+        '--disable-default-apps',
+        '--disable-domain-reliability',
+        '--disable-extensions',
+        '--disable-hang-monitor',
+        '--disable-popup-blocking',
+        '--disable-prompt-on-repost',
+        '--disable-sync',
+        '--disable-translate',
+        '--metrics-recording-only',
+        '--no-first-run',
+        '--safebrowsing-disable-auto-update',
+        '--enable-automation',
+        '--password-store=basic',
+        '--use-mock-keychain',
+      ];
+
+      // GPU and rendering settings (adjust for VNC vs headless)
+      if (isHeadless) {
+        chromeArgs.push('--disable-accelerated-2d-canvas', '--disable-gpu');
+      } else {
+        chromeArgs.push('--display=' + useDisplay);
+      }
+
       // Launch Chrome with persistent profile
       this.browser = await puppeteer.launch({
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--disable-gpu',
-          '--window-size=1920,1080',
-          '--disable-blink-features=AutomationControlled',
-          '--disable-features=IsolateOrigins,site-per-process',
-          '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-        ],
+        headless: isHeadless,
+        args: chromeArgs,
         userDataDir: this.profileDir,
       });
 
       this.page = await this.browser.newPage();
       
-      // Hide automation indicators
+      // Enhanced stealth: Hide automation indicators
       await this.page.evaluateOnNewDocument(() => {
+        // Remove webdriver property
         Object.defineProperty(navigator, 'webdriver', { get: () => false });
         delete navigator.__proto__.webdriver;
+        
+        // Override permissions API
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+          parameters.name === 'notifications' ?
+            Promise.resolve({ state: Notification.permission }) :
+            originalQuery(parameters)
+        );
+        
+        // Override plugins
+        Object.defineProperty(navigator, 'plugins', {
+          get: () => [1, 2, 3, 4, 5]
+        });
+        
+        // Override languages
+        Object.defineProperty(navigator, 'languages', {
+          get: () => ['en-US', 'en']
+        });
       });
 
       // Set realistic viewport
       await this.page.setViewport({ width: 1920, height: 1080 });
+      
+      // Set extra headers
+      await this.page.setExtraHTTPHeaders({
+        'Accept-Language': 'en-US,en;q=0.9',
+      });
+      
+      // Note: Request interception can break some navigation, so we use Chrome args instead
+      // Chrome args already include --disable-features=BlockThirdPartyCookies
+      // This allows all cookies without intercepting requests
 
       this.isRunning = true;
       console.log('[CookieGenerator] Browser started successfully');
@@ -384,22 +453,57 @@ class CookieGenerator {
         maxCharDelay: 250
       });
       
-      // Wait a moment before pressing Enter (human hesitation)
+      // Wait a moment before submitting (human hesitation)
       await this.sleep(this.randomBetween(500, 1000));
-      await searchBox.press('Enter');
-
-      console.log('[CookieGenerator] Waiting for search results page to load...');
-      // Wait for search results
+      
+      // Try multiple methods to submit search (Enter key might not work due to YouTube's JS)
+      // Method 1: Try clicking search button if available
+      console.log(`[CookieGenerator] Submitting YouTube search...`);
       try {
-        await this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
+        const searchButton = await this.page.$('button[aria-label="Search"]') || 
+                            await this.page.$('button#search-icon-legacy') ||
+                            await this.page.$('button.ytd-searchbox-button') ||
+                            await this.page.$('yt-icon-button[aria-label="Search"]');
+        if (searchButton) {
+          console.log(`[CookieGenerator] Clicking YouTube search button...`);
+          await searchButton.click();
+        } else {
+          console.log(`[CookieGenerator] No search button found, using Enter key...`);
+          await searchBox.press('Enter');
+        }
+      } catch (buttonError) {
+        console.log(`[CookieGenerator] Search button click failed, using Enter key:`, buttonError.message);
+        await searchBox.press('Enter');
+      }
+
+      console.log('[CookieGenerator] Waiting for YouTube search results page to load...');
+      // Wait for search results with multiple strategies
+      try {
+        // Strategy 1: Wait for navigation
+        // Strategy 2: Wait for results container
+        // Strategy 3: Wait for URL to change
+        await Promise.race([
+          this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }),
+          this.page.waitForSelector('#contents', { timeout: 20000 }).catch(() => null),
+          this.page.waitForSelector('ytd-video-renderer', { timeout: 20000 }).catch(() => null),
+          this.page.waitForFunction(() => window.location.href.includes('/results'), { timeout: 20000 })
+        ]);
         console.log(`[CookieGenerator] ✓ Search results loaded, URL: ${this.page.url()}`);
       } catch (navError) {
         console.warn('[CookieGenerator] Search navigation timeout, but continuing...');
         console.warn(`[CookieGenerator] Current URL after timeout: ${this.page.url()}`);
         // Check if we're actually on a search results page
         const currentUrl = this.page.url();
-        if (!currentUrl.includes('/results')) {
+        const hasResults = await this.page.$('#contents').catch(() => null);
+        if (currentUrl.includes('/results') || hasResults) {
+          console.log(`[CookieGenerator] Actually on search results page, navigation may have completed`);
+        } else {
           console.warn('[CookieGenerator] ⚠️  Not on search results page - navigation may have failed');
+          // Debug: Check if page is blocked
+          const pageContent = await this.page.content().catch(() => '');
+          if (pageContent.includes('Sign in') || pageContent.includes('confirm you')) {
+            console.warn('[CookieGenerator] ⚠️  Page shows bot detection message - YouTube is blocking requests');
+          }
         }
       }
 
@@ -738,22 +842,43 @@ class CookieGenerator {
           console.log(`[CookieGenerator] Search query typed, waiting before Enter...`);
           await this.sleep(this.randomBetween(500, 1000));
           
-          // Press Enter
-          console.log(`[CookieGenerator] Pressing Enter to submit search...`);
-          await searchBox.press('Enter');
+          // Submit search - try button first, then Enter
+          console.log(`[CookieGenerator] Submitting Google search...`);
+          try {
+            // Try clicking Google search button
+            const searchButton = await this.page.$('input[type="submit"]') ||
+                                await this.page.$('button[aria-label="Google Search"]') ||
+                                await this.page.$('button[name="btnK"]');
+            if (searchButton) {
+              console.log(`[CookieGenerator] Clicking Google search button...`);
+              await searchButton.click();
+            } else {
+              console.log(`[CookieGenerator] No search button, using Enter key...`);
+              await searchBox.press('Enter');
+            }
+          } catch (submitError) {
+            console.log(`[CookieGenerator] Button click failed, using Enter:`, submitError.message);
+            await searchBox.press('Enter');
+          }
           
-          // Wait for navigation with lenient timeout
+          // Wait for navigation with lenient timeout and better wait strategy
           console.log(`[CookieGenerator] Waiting for Google search results...`);
           try {
-            await this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
+            // Wait for URL to change OR for search results to appear
+            await Promise.race([
+              this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }),
+              this.page.waitForSelector('#search', { timeout: 20000 }).catch(() => null),
+              this.page.waitForFunction(() => window.location.href.includes('/search'), { timeout: 20000 })
+            ]);
             console.log(`[CookieGenerator] ✓ Google search results loaded, URL: ${this.page.url()}`);
           } catch (navError) {
-            console.warn(`[CookieGenerator] Google search navigation timeout after 15s`);
+            console.warn(`[CookieGenerator] Google search navigation timeout after 20s`);
             console.warn(`[CookieGenerator] Current URL: ${this.page.url()}`);
-            // Check if we're on results page
+            // Check if we're on results page by checking URL or page content
             const currentUrl = this.page.url();
-            if (currentUrl.includes('/search')) {
-              console.log(`[CookieGenerator] Actually on search results page, navigation may have completed`);
+            const hasResults = await this.page.$('#search').catch(() => null);
+            if (currentUrl.includes('/search') || hasResults) {
+              console.log(`[CookieGenerator] Actually on search results page, navigation completed`);
             } else {
               console.warn(`[CookieGenerator] ⚠️  Not on search results page - navigation likely failed`);
             }

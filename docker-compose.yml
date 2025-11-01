@@ -26,8 +26,11 @@ services:
       - apps/backend/.env.production
     environment:
       - PO_TOKEN_PROVIDER_URL=http://po-token-provider:4416
+      - USE_VNC=true
+      - DISPLAY=:99
     ports:
       - "3001:3001"
+      - "5900:5900"  # VNC port (optional, for debugging)
     volumes:
       - backend_data:/var/lib/video-grabber
     restart: unless-stopped
@@ -44,6 +47,34 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    # Start Xvfb and VNC server for non-headless Chrome
+    # Using a startup script to initialize Xvfb before the app starts
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        # Start Xvfb virtual display in background
+        Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset > /dev/null 2>&1 &
+        export DISPLAY=:99
+        
+        # Wait for Xvfb to be ready
+        sleep 2
+        
+        # Start VNC server (optional, for remote viewing/debugging)
+        x11vnc -display :99 -nopw -listen localhost -xkb -forever -shared -rfbport 5900 > /dev/null 2>&1 &
+        
+        # Start lightweight window manager
+        fluxbox > /dev/null 2>&1 &
+        
+        # Wait a moment for everything to initialize
+        sleep 1
+        
+        echo "[Docker] Xvfb display :99 started"
+        echo "[Docker] VNC server started on port 5900 (accessible via localhost:5900)"
+        echo "[Docker] Starting backend application..."
+        
+        # Start the actual application (preserve dumb-init for proper signal handling)
+        exec dumb-init -- node apps/backend/src/index.mjs
 
   frontend:
     platform: linux/amd64
