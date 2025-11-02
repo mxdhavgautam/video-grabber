@@ -328,31 +328,52 @@ class CookieGenerator {
 
       // CRITICAL: Test connectivity with curl BEFORE using Chrome
       // This ensures the proxy is actually working before we try to use it
+      // Retry multiple times as Tor may still be bootstrapping even after healthcheck passes
       if (useTorForCookies) {
         console.log('[CookieGenerator] Testing Tor HTTP proxy connectivity with curl...');
-        try {
-          const { execSync } = await import('child_process');
-          // Test with curl - this is more reliable than Chrome for initial connectivity check
-          const curlTest = execSync('timeout 10 curl -s -o /dev/null -w "%{http_code}" --proxy http://tor-proxy:8118 https://www.google.com', {
-            encoding: 'utf8',
-            timeout: 12000,
-            stdio: 'pipe'
-          }).trim();
-          
-          if (curlTest === '200' || curlTest.startsWith('3')) {
-            console.log(`[CookieGenerator] ✓ Tor HTTP proxy connectivity confirmed (curl returned: ${curlTest})`);
-            console.log('[CookieGenerator] ✓ Tor proxy is working - Chrome should be able to connect');
-          } else {
-            console.error(`[CookieGenerator] ✗ Tor HTTP proxy test failed (curl returned: ${curlTest})`);
-            console.error('[CookieGenerator] Proxy may not be working correctly - Chrome connections may fail');
-            throw new Error(`Tor proxy connectivity test failed: curl returned ${curlTest}`);
+        console.log('[CookieGenerator] Tor may still be bootstrapping - will retry up to 5 times...');
+        
+        let curlSuccess = false;
+        const maxRetries = 5;
+        const retryDelay = 5000; // 5 seconds between retries
+        
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+          try {
+            const { execSync } = await import('child_process');
+            // Test with curl - this is more reliable than Chrome for initial connectivity check
+            const curlTest = execSync('timeout 10 curl -s -o /dev/null -w "%{http_code}" --proxy http://tor-proxy:8118 https://www.google.com', {
+              encoding: 'utf8',
+              timeout: 15000,
+              stdio: 'pipe'
+            }).trim();
+            
+            if (curlTest === '200' || curlTest.startsWith('3')) {
+              console.log(`[CookieGenerator] ✓ Tor HTTP proxy connectivity confirmed (curl returned: ${curlTest}) on attempt ${attempt}/${maxRetries}`);
+              console.log('[CookieGenerator] ✓ Tor proxy is working - Chrome should be able to connect');
+              curlSuccess = true;
+              break;
+            } else {
+              console.warn(`[CookieGenerator] ⚠️ Tor HTTP proxy test returned ${curlTest} on attempt ${attempt}/${maxRetries}`);
+              if (attempt < maxRetries) {
+                console.log(`[CookieGenerator] Retrying in ${retryDelay/1000}s...`);
+                await new Promise(resolve => setTimeout(resolve, retryDelay));
+              }
+            }
+          } catch (curlError) {
+            console.warn(`[CookieGenerator] ⚠️ Tor HTTP proxy connectivity test failed on attempt ${attempt}/${maxRetries}: ${curlError.message}`);
+            if (attempt < maxRetries) {
+              console.log(`[CookieGenerator] Tor may still be bootstrapping - retrying in ${retryDelay/1000}s...`);
+              await new Promise(resolve => setTimeout(resolve, retryDelay));
+            }
           }
-        } catch (curlError) {
-          console.error('[CookieGenerator] ✗ Tor HTTP proxy connectivity test failed:', curlError.message);
+        }
+        
+        if (!curlSuccess) {
+          console.error('[CookieGenerator] ✗ Tor HTTP proxy connectivity test failed after all retries');
           console.error('[CookieGenerator] Chrome may not be able to route through Tor HTTP proxy');
-          console.error('[CookieGenerator] Verify Tor HTTP proxy is running on tor-proxy:8118');
+          console.error('[CookieGenerator] Verify Tor HTTP proxy is running and bootstrapped on tor-proxy:8118');
           console.error('[CookieGenerator] Fix connectivity issues before proceeding');
-          throw new Error('Tor proxy connectivity test failed - cannot proceed without working proxy');
+          throw new Error('Tor proxy connectivity test failed after all retries - cannot proceed without working proxy');
         }
       }
       
