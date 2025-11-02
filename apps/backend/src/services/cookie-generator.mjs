@@ -327,29 +327,29 @@ class CookieGenerator {
       console.log('[CookieGenerator] Browser started successfully');
 
       // CRITICAL: Test connectivity with curl BEFORE using Chrome
-      // This ensures the proxy is actually working before we try to use it
-      // Retry multiple times as Tor may still be bootstrapping even after healthcheck passes
+      // Docker Compose healthcheck should ensure Tor is bootstrapped, but verify here too
+      // Retry multiple times as a safety measure - healthcheck may pass but proxy still needs a moment
       if (useTorForCookies) {
         console.log('[CookieGenerator] Testing Tor HTTP proxy connectivity with curl...');
-        console.log('[CookieGenerator] Tor may still be bootstrapping - will retry up to 5 times...');
+        console.log('[CookieGenerator] Docker healthcheck should ensure Tor is bootstrapped, verifying connectivity...');
         
         let curlSuccess = false;
-        const maxRetries = 5;
-        const retryDelay = 5000; // 5 seconds between retries
+        const maxRetries = 3; // Reduced retries since healthcheck should ensure readiness
+        const retryDelay = 3000; // 3 seconds between retries
         
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
           try {
             const { execSync } = await import('child_process');
-            // Test with curl - this is more reliable than Chrome for initial connectivity check
-            const curlTest = execSync('timeout 10 curl -s -o /dev/null -w "%{http_code}" --proxy http://tor-proxy:8118 https://www.google.com', {
+            // Test with curl - use longer timeout for Tor (can be slow)
+            const curlTest = execSync('timeout 20 curl -s -o /dev/null -w "%{http_code}" --proxy http://tor-proxy:8118 --connect-timeout 10 --max-time 15 https://www.google.com', {
               encoding: 'utf8',
-              timeout: 15000,
+              timeout: 25000,
               stdio: 'pipe'
             }).trim();
             
             if (curlTest === '200' || curlTest.startsWith('3')) {
               console.log(`[CookieGenerator] ✓ Tor HTTP proxy connectivity confirmed (curl returned: ${curlTest}) on attempt ${attempt}/${maxRetries}`);
-              console.log('[CookieGenerator] ✓ Tor proxy is working - Chrome should be able to connect');
+              console.log('[CookieGenerator] ✓ Tor proxy is fully operational - Chrome should be able to connect');
               curlSuccess = true;
               break;
             } else {
@@ -362,7 +362,7 @@ class CookieGenerator {
           } catch (curlError) {
             console.warn(`[CookieGenerator] ⚠️ Tor HTTP proxy connectivity test failed on attempt ${attempt}/${maxRetries}: ${curlError.message}`);
             if (attempt < maxRetries) {
-              console.log(`[CookieGenerator] Tor may still be bootstrapping - retrying in ${retryDelay/1000}s...`);
+              console.log(`[CookieGenerator] Tor proxy may need a moment - retrying in ${retryDelay/1000}s...`);
               await new Promise(resolve => setTimeout(resolve, retryDelay));
             }
           }
@@ -370,9 +370,9 @@ class CookieGenerator {
         
         if (!curlSuccess) {
           console.error('[CookieGenerator] ✗ Tor HTTP proxy connectivity test failed after all retries');
-          console.error('[CookieGenerator] Chrome may not be able to route through Tor HTTP proxy');
-          console.error('[CookieGenerator] Verify Tor HTTP proxy is running and bootstrapped on tor-proxy:8118');
-          console.error('[CookieGenerator] Fix connectivity issues before proceeding');
+          console.error('[CookieGenerator] Even though healthcheck passed, proxy test failed');
+          console.error('[CookieGenerator] This may indicate Tor is still bootstrapping or proxy is misconfigured');
+          console.error('[CookieGenerator] Check Tor container logs: docker compose logs tor-proxy');
           throw new Error('Tor proxy connectivity test failed after all retries - cannot proceed without working proxy');
         }
       }
