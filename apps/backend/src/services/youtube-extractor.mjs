@@ -40,7 +40,9 @@ class YouTubeExtractor {
       let playerResponse = null;
       let ytInitialData = null;
       let extractionTimeout = null;
-      const timeout = 30000; // 30 seconds timeout
+      // Use longer timeout when Tor is enabled (Tor is slow)
+      const useTor = process.env.USE_TOR_PROXY !== 'false';
+      const timeout = useTor ? 90000 : 30000; // 90s for Tor, 30s for direct
 
       // Intercept network responses to capture YouTube API calls
       const responseHandler = async (response) => {
@@ -94,7 +96,14 @@ class YouTubeExtractor {
 
       try {
         console.log(`[BrowserIntercept] Navigating to: ${videoUrl}`);
-        await page.goto(videoUrl, { waitUntil: 'networkidle2', timeout: 15000 });
+        // Use lenient timeout (Tor is slow) and less strict wait strategy
+        try {
+          await page.goto(videoUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }); // 60s for Tor
+        } catch (timeoutError) {
+          // If domcontentloaded times out, try even simpler load
+          console.warn('[BrowserIntercept] domcontentloaded timeout, trying load...');
+          await page.goto(videoUrl, { waitUntil: 'load', timeout: 45000 });
+        }
 
         // Also try to extract ytInitialPlayerResponse from page JavaScript
         console.log('[BrowserIntercept] Attempting to extract video data from page JavaScript...');
@@ -155,8 +164,18 @@ class YouTubeExtractor {
           };
         });
 
-        // Wait a bit for network responses to come through
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        // Wait longer for network responses (Tor is slow)
+        const networkWaitTime = useTor ? 5000 : 2000; // 5s for Tor, 2s for direct
+        await new Promise(resolve => setTimeout(resolve, networkWaitTime));
+
+        // Verify we actually reached YouTube (not error page)
+        const currentUrl = page.url();
+        if (!currentUrl.includes('youtube.com/watch')) {
+          page.off('response', responseHandler);
+          if (extractionTimeout) clearTimeout(extractionTimeout);
+          reject(new Error(`Browser interception failed - did not reach YouTube video page. Current URL: ${currentUrl}`));
+          return;
+        }
 
         // Clear timeout
         if (extractionTimeout) clearTimeout(extractionTimeout);
