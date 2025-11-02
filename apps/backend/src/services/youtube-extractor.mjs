@@ -53,6 +53,47 @@ class YouTubeExtractor {
     const page = this.cookieGenerator.page;
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
     
+    // CRITICAL: Verify cookies are present in browser BEFORE attempting interception
+    // YouTube requires valid cookies to be in the browser context when making API requests
+    try {
+      console.log('[BrowserIntercept] Verifying cookies in browser context before extraction...');
+      const browserCookies = await page.cookies();
+      const youtubeCookies = browserCookies.filter(c => 
+        c.domain.includes('youtube.com') || c.domain.includes('google.com')
+      );
+      const criticalCookies = ['VISITOR_INFO1_LIVE', 'YSC', 'CONSENT', 'PREF'];
+      const foundCritical = criticalCookies.filter(name => 
+        youtubeCookies.some(c => c.name === name)
+      );
+      
+      if (foundCritical.length < 3) {
+        console.warn(`[BrowserIntercept] ⚠️ Missing critical cookies (found: ${foundCritical.join(', ')}) - refreshing from browser...`);
+        // Force cookie refresh from current browser state
+        await this.cookieGenerator.exportCookies(true);
+        
+        // Re-check after refresh
+        const refreshedCookies = await page.cookies();
+        const refreshedYoutubeCookies = refreshedCookies.filter(c => 
+          c.domain.includes('youtube.com') || c.domain.includes('google.com')
+        );
+        const refreshedCritical = criticalCookies.filter(name => 
+          refreshedYoutubeCookies.some(c => c.name === name)
+        );
+        
+        if (refreshedCritical.length < 3) {
+          console.error(`[BrowserIntercept] ❌ Still missing critical cookies after refresh (found: ${refreshedCritical.join(', ')})`);
+          console.error(`[BrowserIntercept] YouTube will likely block access - browser interception may fail`);
+        } else {
+          console.log(`[BrowserIntercept] ✓ Critical cookies refreshed (found: ${refreshedCritical.join(', ')})`);
+        }
+      } else {
+        console.log(`[BrowserIntercept] ✓ Critical cookies verified in browser (found: ${foundCritical.join(', ')})`);
+      }
+    } catch (cookieError) {
+      console.warn(`[BrowserIntercept] Failed to verify cookies: ${cookieError.message}`);
+      console.warn(`[BrowserIntercept] Proceeding anyway - cookies may still be valid`);
+    }
+    
     return new Promise(async (resolve, reject) => {
       let playerResponse = null;
       let ytInitialData = null;
@@ -132,11 +173,33 @@ class YouTubeExtractor {
         const isAlreadyOnVideo = currentPageUrl.includes(`youtube.com/watch`) && currentPageUrl.includes(videoId);
         
         if (!isAlreadyOnVideo) {
-          // Only navigate if not already on the correct video page
-          // Don't navigate to about:blank - it can trigger Google bot detection
-          // Navigate directly to YouTube URL
-          console.log(`[BrowserIntercept] Navigating to: ${videoUrl} (videoId: ${videoId})`);
-          console.log(`[BrowserIntercept] Current page URL: ${currentPageUrl}`);
+          // CRITICAL: Ensure we're on YouTube domain before navigating to video
+          // Navigating to video from non-YouTube page can trigger bot detection
+          const isOnYouTube = currentPageUrl.includes('youtube.com');
+          
+          if (!isOnYouTube) {
+            // First ensure we're on YouTube homepage to establish legitimate session context
+            console.log(`[BrowserIntercept] Not on YouTube - establishing session context first...`);
+            console.log(`[BrowserIntercept] Current page URL: ${currentPageUrl}`);
+            
+            try {
+              await page.goto('https://www.youtube.com/', { 
+                waitUntil: 'domcontentloaded', 
+                timeout: 60000,
+                referer: undefined
+              });
+              
+              // Wait a moment to let YouTube establish session
+              await new Promise(resolve => setTimeout(resolve, 3000));
+              console.log('[BrowserIntercept] ✓ YouTube homepage loaded, session context established');
+            } catch (homepageError) {
+              console.warn('[BrowserIntercept] Homepage navigation failed, continuing to video anyway:', homepageError.message);
+            }
+          }
+          
+          // Now navigate to the video URL (from YouTube context)
+          console.log(`[BrowserIntercept] Navigating to video: ${videoUrl} (videoId: ${videoId})`);
+          console.log(`[BrowserIntercept] Current page URL: ${page.url()}`);
           
           // Use lenient timeout (Tor is slow) and less strict wait strategy
           // Add cache-control headers to prevent caching
