@@ -297,16 +297,53 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
   const qualityOptions = useMemo(() => {
     if (!videoInfo) return []
 
-    const videoFormats = videoInfo.formats.filter(f =>
-      f.format_id &&
-      f.format_id.trim() !== '' &&
-      // Include formats that have video properties (height/width) or has_video flag
-      ((f.height && f.width) || f.hasVideo === true || (f.video_codec && f.video_codec !== 'none'))
-    )
+    // Debug: Log all formats to understand what we're receiving
+    console.log('[Frontend] Processing formats:', {
+      totalFormats: videoInfo.formats?.length || 0,
+      sampleFormat: videoInfo.formats?.[0],
+      formatIds: videoInfo.formats?.map(f => f.format_id).slice(0, 10)
+    })
+
+    // More lenient filter: Include formats with video codec OR hasVideo flag OR height/width
+    // Exclude only explicit audio-only formats (hasVideo === false)
+    const videoFormats = videoInfo.formats.filter(f => {
+      if (!f.format_id || f.format_id.trim() === '') {
+        return false
+      }
+      
+      // Explicitly exclude audio-only formats
+      if (f.hasVideo === false) {
+        return false
+      }
+      
+      // Include if has video properties
+      // Be lenient: include if has any video indicator OR format_note suggests video
+      const hasHeightWidth = (typeof f.height === 'number' && f.height > 0) || 
+                             (typeof f.width === 'number' && f.width > 0) ||
+                             (typeof f.height === 'string' && parseInt(f.height, 10) > 0) ||
+                             (typeof f.width === 'string' && parseInt(f.width, 10) > 0)
+      const hasVideoCodec = f.video_codec && f.video_codec !== 'none' && f.video_codec !== 'unknown'
+      const hasVideoFlag = f.hasVideo === true
+      
+      // Include if any video indicator is present, or if format_note suggests video
+      const formatNoteSuggestsVideo = f.format_note && (
+        /\d+p/.test(f.format_note) || 
+        !f.format_note.toLowerCase().includes('audio only')
+      )
+      
+      return hasHeightWidth || hasVideoCodec || hasVideoFlag || formatNoteSuggestsVideo
+    })
+
+    console.log('[Frontend] Filtered video formats:', {
+      total: videoInfo.formats?.length || 0,
+      filtered: videoFormats.length,
+      sampleFiltered: videoFormats[0]
+    })
 
     // If no formats are available from the API, show a friendly message
     if (videoFormats.length === 0) {
-      console.log('[Frontend] No video formats from API')
+      console.warn('[Frontend] No video formats after filtering')
+      console.warn('[Frontend] All formats:', videoInfo.formats?.slice(0, 5))
       return [
         {
           key: '720p@30fps',
@@ -333,19 +370,42 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
     const qualityMap = new Map<string, QualityOption>()
 
     videoFormats.forEach(format => {
-      // Get height from format.height
-      let height = typeof format.height === 'number' && format.height > 0 ? format.height : 0
+      // Get height from format.height - handle both number and string types
+      let height = 0
+      if (typeof format.height === 'number' && format.height > 0) {
+        height = format.height
+      } else if (typeof format.height === 'string' && format.height) {
+        const parsed = parseInt(format.height, 10)
+        if (!isNaN(parsed) && parsed > 0) {
+          height = parsed
+        }
+      }
 
       // If height is missing, try to parse from format_note
       if (height === 0 && format.format_note) {
         const match = format.format_note.match(/(\d+)p/i)
-        if (match) height = parseInt(match[1], 10)
+        if (match) {
+          height = parseInt(match[1], 10)
+        }
       }
 
-      // Default to 360p if height is still missing
-      if (height === 0) height = 360
+      // Default to 360p if height is still missing (but log warning)
+      if (height === 0) {
+        console.warn('[Frontend] Format missing height, defaulting to 360p:', format.format_id, format)
+        height = 360
+      }
 
-      const fps = format.fps || 30
+      // Get fps - handle both number and string types
+      let fps = 30
+      if (typeof format.fps === 'number' && format.fps > 0) {
+        fps = format.fps
+      } else if (typeof format.fps === 'string' && format.fps) {
+        const parsed = parseInt(format.fps, 10)
+        if (!isNaN(parsed) && parsed > 0) {
+          fps = parsed
+        }
+      }
+
       const key = `${height}p@${fps}fps`
 
       if (!qualityMap.has(key)) {
@@ -358,24 +418,50 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
       }
       qualityMap.get(key)!.formats.push(format)
     })
-
-    // Sort by height (highest first), then fps
-    return Array.from(qualityMap.values()).sort((a, b) => {
+    
+    const result = Array.from(qualityMap.values()).sort((a, b) => {
       if (a.height !== b.height) return b.height - a.height
       return b.fps - a.fps
     })
+    
+    console.log('[Frontend] Quality options created:', {
+      count: result.length,
+      options: result.map(r => ({ key: r.key, height: r.height, fps: r.fps, formatCount: r.formats.length }))
+    })
+    
+    return result
+
   }, [videoInfo])
 
   // Get distinct audio quality options (grouped by bitrate only, largest size per bitrate)
   const audioQualityOptions = useMemo(() => {
     if (!videoInfo) return []
 
-    // Audio-only formats: hasVideo === false (explicitly marked as audio-only)
+    // Audio-only formats: hasVideo === false OR no video codec
     // Note: f.url is optional - backend will resolve URLs via /api/download endpoint
-    const audioFormats = videoInfo.formats.filter(f => 
-      f.format_id && // Must have format_id for backend resolution
-      f.hasVideo === false // Explicitly marked as audio-only format
-    )
+    const audioFormats = videoInfo.formats.filter(f => {
+      if (!f.format_id || f.format_id.trim() === '') {
+        return false
+      }
+      
+      // Explicit audio-only: hasVideo === false
+      if (f.hasVideo === false) {
+        return true
+      }
+      
+      // Also include formats with audio codec but no video codec
+      const hasAudio = f.audio_codec && f.audio_codec !== 'none'
+      const hasVideo = f.video_codec && f.video_codec !== 'none'
+      const noHeightWidth = (!f.height || f.height === 0) && (!f.width || f.width === 0)
+      
+      return hasAudio && !hasVideo && noHeightWidth
+    })
+    
+    console.log('[Frontend] Filtered audio formats:', {
+      total: videoInfo.formats?.length || 0,
+      filtered: audioFormats.length,
+      sampleFiltered: audioFormats[0]
+    })
 
     // Create a map of format_id to language from audio tracks
     const formatIdToLanguage = new Map<string, string>()

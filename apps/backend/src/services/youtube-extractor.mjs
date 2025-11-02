@@ -583,7 +583,7 @@ class YouTubeExtractor {
           console.log('[yt-dlp] Using cookies from Tor-generated session (IP matches Tor exit node)');
           console.log('[yt-dlp] Cookies generated through Tor, so they match the exit node IP - high-res formats enabled');
         } else {
-          console.log('[yt-dlp] Using cookies from:', this.cookiesPath);
+        console.log('[yt-dlp] Using cookies from:', this.cookiesPath);
         }
       } else {
         console.warn('[yt-dlp] No cookies file found - extraction may fail due to bot detection');
@@ -595,8 +595,8 @@ class YouTubeExtractor {
       const extractorArgs = [];
       
         // Use provided client type, or determine based on cookies and Tor
-        let selectedClient = clientType;
-        if (!selectedClient) {
+      let selectedClient = clientType;
+      if (!selectedClient) {
           if (useTorProxy) {
             // When using Tor: Use 'web' client (working approach from checkpoint - got 360p working)
             // Cookies are generated through Tor so they match exit node IP
@@ -604,12 +604,12 @@ class YouTubeExtractor {
             console.log('[yt-dlp] Using WEB client with Tor (checkpoint approach - 360p working)');
           } else if (fs.existsSync(this.cookiesPath)) {
             // With cookies and direct connection: Use mweb for best format support
-            selectedClient = 'mweb';
-          } else {
-            // Default to ANDROID for no cookies (PROVEN SUCCESS - Chrome impersonation works best)
-            selectedClient = 'android';
-          }
+          selectedClient = 'mweb';
+        } else {
+          // Default to ANDROID for no cookies (PROVEN SUCCESS - Chrome impersonation works best)
+          selectedClient = 'android';
         }
+      }
       
       extractorArgs.push(`youtube:player_client=${selectedClient}`);
       console.log(`[yt-dlp] Using ${selectedClient.toUpperCase()} client`);
@@ -929,7 +929,7 @@ class YouTubeExtractor {
         }
         
         console.warn('[Extract] ANDROID client failed after retries, trying IOS client...');
-        
+          
         // Strategy 2: IOS client (Safari impersonation)
         const iosResult = await this.extractWithRetry(videoId, 'ios', 2);
         if (iosResult) {
