@@ -389,15 +389,24 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
     const qualityMap = new Map<number, VideoFormat>()
     
     audioFormats.forEach(format => {
-      // Try to extract bitrate from format_note (e.g., "audio only - 128kbps")
-      let bitrate = parseInt(format.format_note?.match(/(\d+)kbps/)?.[1] || '0') || 0
+      // Extract bitrate from format_note (e.g., "audio only - 128kbps")
+      // Backend now includes bitrate in format_note for audio-only formats
+      let bitrate = 0;
       
-      // Fallback: Use tbr or abr from format object if format_note parsing failed
+      // First try parsing from format_note
+      if (format.format_note) {
+        const kbpsMatch = format.format_note.match(/(\d+)kbps/i);
+        if (kbpsMatch) {
+          bitrate = parseInt(kbpsMatch[1]) || 0;
+        }
+      }
+      
+      // Fallback: Use abr (audio bitrate) first, then tbr (total bitrate)
+      // For audio-only formats, abr is more accurate than tbr
       if (bitrate === 0) {
-        // tbr (total bitrate) or abr (audio bitrate) might be available
-        const formatBitrate = format.tbr || format.abr || 0
+        const formatBitrate = format.abr || format.tbr || 0;
         if (formatBitrate > 0) {
-          bitrate = Math.round(formatBitrate) // Convert to kbps (format is usually in kbps already)
+          bitrate = Math.round(formatBitrate); // Already in kbps from backend
         }
       }
       
@@ -487,23 +496,21 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
     }
     
     if (videoInfo && audioQualityOptions.length > 0 && !selectedAudioSource) {
-      // For Audio Only: Find highest quality MP3
-      // First, look for MP3 options and sort by bitrate descending
-      const mp3Options = audioQualityOptions.filter(q => 
-        q.formats && q.formats.length > 0 && q.formats[0].ext === 'mp3'
-      )
+      // For Audio Only: Auto-select highest bitrate audio format
+      // YouTube typically provides webm/opus or m4a formats, not MP3
+      // So we select highest bitrate regardless of format (user can convert to MP3 later)
+      const sortedAudio = [...audioQualityOptions].sort((a, b) => {
+        // Sort by bitrate descending, then by filesize descending
+        if (b.bitrate !== a.bitrate) return b.bitrate - a.bitrate;
+        return b.filesize - a.filesize;
+      });
       
-      if (mp3Options.length > 0) {
-        // Sort by bitrate descending
-        mp3Options.sort((a, b) => b.bitrate - a.bitrate)
-        setSelectedAudioSource(mp3Options[0].key)
-        console.log('[Frontend] Set Audio Only to highest MP3:', mp3Options[0].key, 'bitrate:', mp3Options[0].bitrate)
-      } else {
-        // Fallback to highest bitrate audio regardless of format
-        const sortedAudio = [...audioQualityOptions].sort((a, b) => b.bitrate - a.bitrate)
-        setSelectedAudioSource(sortedAudio[0].key)
-        console.log('[Frontend] No MP3 found, using highest bitrate audio:', sortedAudio[0].key)
-      }
+      const bestAudio = sortedAudio[0];
+      setSelectedAudioSource(bestAudio.key);
+      
+      const formatExt = bestAudio.formats?.[0]?.ext || 'unknown';
+      const formatName = formatExt.toUpperCase();
+      console.log(`[Frontend] Auto-selected highest bitrate audio: ${bestAudio.bitrate}kbps (${formatName}) - ${bestAudio.key}`);
     }
     
     if (videoInfo && !selectedAudioFormat) {
@@ -1711,12 +1718,19 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
                             No audio available
                           </SelectItem>
                         ) : (
-                          audioQualityOptions.map((option) => (
-                            <SelectItem key={option.key} value={option.key}>
-                              {option.bitrate > 0 ? `${option.bitrate}kbps` : 'Audio'}
-                              {option.filesize > 0 && ` • ${formatFileSize(option.filesize)}`}
-                            </SelectItem>
-                          ))
+                          audioQualityOptions.map((option) => {
+                            const formatExt = option.formats?.[0]?.ext || '';
+                            const formatName = formatExt ? formatExt.toUpperCase() : '';
+                            const displayName = option.bitrate > 0 
+                              ? `${option.bitrate}kbps${formatName ? ` (${formatName})` : ''}`
+                              : formatName || 'Audio';
+                            return (
+                              <SelectItem key={option.key} value={option.key}>
+                                {displayName}
+                                {option.filesize > 0 && ` • ${formatFileSize(option.filesize)}`}
+                              </SelectItem>
+                            );
+                          })
                         )}
                       </SelectContent>
                     </Select>

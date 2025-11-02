@@ -455,7 +455,19 @@ class YouTubeExtractor {
         else if (mimeType.includes('3gpp')) ext = '3gp';
         
         // Build quality label
-        const formatNote = quality || (height > 0 ? `${height}p` : 'unknown');
+        // For audio-only formats, include bitrate in format_note
+        // For video formats, use resolution or quality label
+        let formatNote = '';
+        if (!hasVideo && hasAudio) {
+          // Audio-only format: include bitrate
+          const audioBitrateKbps = audioBitrate > 0 ? Math.round(audioBitrate / 1000) : (bitrate > 0 ? Math.round(bitrate / 1000) : 0);
+          formatNote = audioBitrateKbps > 0 ? `audio only - ${audioBitrateKbps}kbps` : 'audio only';
+        } else if (hasVideo) {
+          // Video format: use resolution or quality label
+          formatNote = quality || (height > 0 ? `${height}p${fps > 0 ? `@${fps}fps` : ''}` : 'unknown');
+        } else {
+          formatNote = 'unknown';
+        }
         
         const result = {
           format_id: String(formatId),
@@ -464,7 +476,7 @@ class YouTubeExtractor {
           width: width,
           height: height,
           fps: fps,
-          tbr: bitrate > 0 ? bitrate / 1000 : 0, // Convert to kbps
+          tbr: bitrate > 0 ? bitrate / 1000 : 0, // Convert to kbps (total bitrate)
           abr: audioBitrate > 0 ? audioBitrate / 1000 : 0, // Audio bitrate in kbps
           vcodec: vcodec,
           acodec: acodec,
