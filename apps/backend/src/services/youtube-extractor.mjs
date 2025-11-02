@@ -22,7 +22,7 @@ class YouTubeExtractor {
     this.initialized = true;
   }
 
-  async extractWithYtDlp(videoId, clientType = null, skipImpersonate = false, requestAllFormats = false) {
+  async extractWithYtDlp(videoId, clientType = null, skipImpersonate = false, requestAllFormats = false, forceTorProxy = null) {
     return new Promise(async (resolve, reject) => {
       const args = [
         '--dump-json',
@@ -46,14 +46,19 @@ class YouTubeExtractor {
 
       // Add proxy support (Tor) to bypass datacenter IP detection
       // Tor routes requests through residential exit nodes
-      // Enable via USE_TOR_PROXY environment variable (default: true for datacenter IPs)
-      const useTorProxy = process.env.USE_TOR_PROXY !== 'false';
+      // Enable via USE_TOR_PROXY environment variable (default: false - YouTube blocks Tor exit nodes)
+      // forceTorProxy can override the env var setting (used for automatic fallback)
+      // WARNING: YouTube often blocks Tor exit nodes, so Tor may not work for YouTube
+      const useTorProxy = forceTorProxy !== null ? forceTorProxy : (process.env.USE_TOR_PROXY === 'true');
       if (useTorProxy) {
         // Use socks5h:// format (hostname resolution through proxy) - recommended for Tor
         const torProxyUrl = process.env.TOR_PROXY_URL || 'socks5h://tor-proxy:9050';
         args.push('--proxy', torProxyUrl);
         console.log('[yt-dlp] Using Tor proxy:', torProxyUrl);
         console.log('[yt-dlp] Requests will route through Tor network (residential IPs from exit nodes)');
+        console.log('[yt-dlp] ⚠️  Note: YouTube often blocks Tor exit nodes - extraction may fail');
+      } else {
+        console.log('[yt-dlp] Using direct connection (Tor proxy disabled)');
       }
 
       // Add cookies if available (critical for bypassing bot detection)
@@ -341,12 +346,37 @@ class YouTubeExtractor {
               console.log('[Extract] ✓ ANDROID client succeeded with cookies (fallback from MWEB)!');
               return androidVideoInfo;
             } catch (androidError) {
+              const androidErrorMsg = androidError.message || '';
+              const androidBotDetection = androidErrorMsg.includes('bot') || androidErrorMsg.includes('Sign in') || androidErrorMsg.includes('confirm');
+              
               console.error('[Extract] Both MWEB and ANDROID clients failed with cookies');
+              
+              // Strategy 3: Try with Tor proxy as last resort (YouTube may block datacenter IPs)
+              // Only try Tor if we're not already using it and bot detection occurred
+              const currentTorSetting = process.env.USE_TOR_PROXY === 'true';
+              if (androidBotDetection && !currentTorSetting) {
+                console.warn('[Extract] Direct connection failed with bot detection, trying with Tor proxy as fallback...');
+                console.warn('[Extract] This will route through residential exit nodes (may be slower but less likely blocked)');
+                
+                try {
+                  // Try with Tor - use MWEB client with cookies + Tor (forceTorProxy=true)
+                  const torVideoInfo = await this.extractWithYtDlp(videoId, 'mweb', false, false, true);
+                  
+                  if (this.cookieGenerator) {
+                    this.cookieGenerator.reportSuccessfulExtraction();
+                  }
+                  
+                  console.log('[Extract] ✓ Tor proxy fallback succeeded! Consider enabling USE_TOR_PROXY=true for future requests');
+                  return torVideoInfo;
+                } catch (torError) {
+                  console.error('[Extract] Tor proxy fallback also failed:', torError.message.substring(0, 200));
+                  console.error('[Extract] This confirms YouTube is blocking Tor exit nodes - cookies + direct connection may work better');
+                }
+              }
               
               // Report bot detection failure if it's a bot error
               if (this.cookieGenerator) {
-                const androidErrorMsg = androidError.message || '';
-                if (androidErrorMsg.includes('bot') || androidErrorMsg.includes('Sign in') || androidErrorMsg.includes('confirm')) {
+                if (androidBotDetection) {
                   this.cookieGenerator.reportBotDetectionFailure();
                 }
               }
