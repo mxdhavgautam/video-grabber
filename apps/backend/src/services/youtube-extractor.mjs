@@ -211,12 +211,12 @@ class YouTubeExtractor {
         
         console.log('[BrowserIntercept] Page extraction debug:', pageData.debugInfo);
 
-        // Verify we actually reached YouTube (not error page)
-        const currentUrl = page.url();
-        if (!currentUrl.includes('youtube.com/watch')) {
+        // Verify we actually reached YouTube (not error page) - reuse currentUrl from earlier check
+        const finalUrl = page.url();
+        if (!finalUrl.includes('youtube.com/watch')) {
           page.off('response', responseHandler);
           if (extractionTimeout) clearTimeout(extractionTimeout);
-          reject(new Error(`Browser interception failed - did not reach YouTube video page. Current URL: ${currentUrl}`));
+          reject(new Error(`Browser interception failed - did not reach YouTube video page. Current URL: ${finalUrl}`));
           return;
         }
 
