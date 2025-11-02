@@ -61,10 +61,11 @@ services:
       - PO_TOKEN_PROVIDER_URL=http://po-token-provider:4416
       - USE_VNC=true
       - DISPLAY=:99
-      - USE_TOR_PROXY=false  # Tor disabled by default - YouTube blocks Tor exit nodes
+      - USE_TOR_PROXY=true  # Tor enabled as primary - direct connections consistently fail with bot detection
       - TOR_PROXY_URL=socks5h://tor-proxy:9050  # Tor proxy URL (socks5h resolves DNS through proxy)
-      # Strategy: Try without Tor first (cookies + PO tokens + curl_cffi impersonation should work)
-      # If that fails, extractor will automatically retry with Tor as fallback
+      # Strategy: Use Tor primarily (direct connections fail consistently)
+      # When using Tor, cookies are skipped (IP mismatch: cookies from Hetzner vs Tor exit node)
+      # PO tokens + curl_cffi impersonation provide authentication instead
     ports:
       - "3001:3001"
       - "5900:5900"  # VNC port (optional, for debugging)
