@@ -1,7 +1,7 @@
 services:
   tor-proxy:
     platform: linux/amd64
-    image: pimylifeup/tor-proxy:latest
+    image: dperson/torproxy:latest
     restart: unless-stopped
     # Tor proxy exposes SOCKS5 on port 9050
     # This routes requests through Tor network (residential IPs from exit nodes)
@@ -10,6 +10,7 @@ services:
       - video-grabber
     # No need to expose port externally - only backend container uses it
     # SOCKS5 proxy available at tor-proxy:9050 within Docker network
+    # dperson/torproxy exposes both SOCKS5 (9050) and HTTP proxy (8118)
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.1 9050 || exit 1"]
       interval: 30s
