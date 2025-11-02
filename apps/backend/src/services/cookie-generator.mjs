@@ -1155,6 +1155,10 @@ class CookieGenerator {
             
             console.log('[CookieGenerator] ✓ Video watched, session cookies should be generated');
             
+            // Wait a moment longer for YouTube to fully register the view and update cookies
+            // This ensures VISITOR_INFO1_LIVE and other session cookies are properly updated
+            await this.sleep(this.randomBetween(2000, 3000));
+            
             // Verify we're still on video page
             const finalUrl = this.page.url();
             if (finalUrl.includes('/watch')) {
@@ -1415,6 +1419,10 @@ class CookieGenerator {
             await this.randomMouseMovement();
             
             console.log('[CookieGenerator] ✓ Video watched, session cookies should be generated');
+            
+            // Wait a moment longer for YouTube to fully register the view and update cookies
+            // This ensures VISITOR_INFO1_LIVE and other session cookies are properly updated
+            await this.sleep(this.randomBetween(2000, 3000));
             
             // Verify we're still on video page
             const finalUrl = this.page.url();
@@ -1955,10 +1963,19 @@ class CookieGenerator {
       // Convert to Netscape format (for yt-dlp)
       const netscapeFormat = this.convertToNetscapeFormat(youtubeCookies);
       
-      // Write to cookies file
-      fs.writeFileSync(this.cookiesPath, netscapeFormat);
+      // Write to cookies file atomically (write to temp file first, then rename)
+      // This ensures yt-dlp doesn't read a partially written file
+      const tempPath = `${this.cookiesPath}.tmp`;
+      fs.writeFileSync(tempPath, netscapeFormat, 'utf-8');
+      fs.renameSync(tempPath, this.cookiesPath);
+      
+      // Verify the file was written correctly
+      const fileStats = fs.statSync(this.cookiesPath);
+      const fileContent = fs.readFileSync(this.cookiesPath, 'utf-8');
+      const cookieLines = fileContent.split('\n').filter(line => line.trim() && !line.startsWith('#'));
       
       console.log(`[CookieGenerator] ✓ Exported ${youtubeCookies.length} YouTube/Google cookies to ${this.cookiesPath}`);
+      console.log(`[CookieGenerator] Cookie file size: ${fileStats.size} bytes, ${cookieLines.length} cookie lines`);
       console.log(`[CookieGenerator] Cookies will be used by yt-dlp for extraction`);
 
     } catch (error) {
@@ -1985,14 +2002,18 @@ class CookieGenerator {
       const path = cookie.path || '/';
       const secure = cookie.secure ? 'TRUE' : 'FALSE';
       
-      // Handle expiration: yt-dlp doesn't like -1, use 0 for session cookies or valid timestamp
+      // Handle expiration: yt-dlp and YouTube require valid expiration timestamps
+      // Session cookies (expires = -1 or undefined) should get a future expiration
+      // YouTube may reject cookies with expiration 0 or missing expiration
       let expiration;
       if (cookie.expires && cookie.expires > 0) {
         // Valid expiration timestamp (seconds since epoch)
         expiration = Math.floor(cookie.expires);
       } else {
-        // Session cookie or invalid expiration - use 0 (never expires in Netscape format)
-        expiration = 0;
+        // Session cookie or invalid expiration - set to 1 year in the future
+        // This ensures cookies are treated as valid by yt-dlp and YouTube
+        const oneYearFromNow = Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60);
+        expiration = oneYearFromNow;
       }
       
       const name = cookie.name;

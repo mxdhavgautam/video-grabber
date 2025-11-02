@@ -8,10 +8,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 class YouTubeExtractor {
-  constructor() {
+  constructor(cookieGenerator = null) {
     this.cookiesPath = process.env.COOKIES_FILE || path.join(process.cwd(), 'runtime', 'yt-dlp', 'cookies.txt');
     this.initialized = false;
     this.formatParser = new FormatParser();
+    this.cookieGenerator = cookieGenerator; // Reference to cookie generator for refreshing cookies
   }
 
   async init() {
@@ -237,6 +238,26 @@ class YouTubeExtractor {
 
       console.log(`[Extract] Starting extraction for video: ${videoId}`);
 
+      // If we have cookies and cookie generator, refresh cookies right before extraction
+      // This ensures cookies are fresh from active browser session (within last few minutes)
+      if (fs.existsSync(this.cookiesPath) && this.cookieGenerator && this.cookieGenerator.isRunning) {
+        try {
+          const cookieStats = fs.statSync(this.cookiesPath);
+          const cookieAge = Date.now() - cookieStats.mtimeMs;
+          const maxCookieAge = 5 * 60 * 1000; // 5 minutes
+          
+          if (cookieAge > maxCookieAge) {
+            console.log(`[Extract] Cookies are ${Math.round(cookieAge / 1000)}s old, refreshing from browser...`);
+            await this.cookieGenerator.exportCookies(true); // Force refresh
+            console.log('[Extract] ✓ Cookies refreshed from active browser session');
+          } else {
+            console.log(`[Extract] Cookies are fresh (${Math.round(cookieAge / 1000)}s old), using existing cookies`);
+          }
+        } catch (refreshError) {
+          console.warn('[Extract] Failed to refresh cookies, using existing:', refreshError.message);
+        }
+      }
+
       // Try multiple client strategies if first attempt fails (only when no cookies)
       // ANDROID client with Chrome impersonation has proven most successful
       // Success factors: Chrome TLS fingerprint + Android client + PO token + mobile headers + delays
@@ -271,8 +292,10 @@ class YouTubeExtractor {
         console.error('[Extract] All client types failed after retries');
         throw new Error('All extraction attempts failed. YouTube may be rate limiting this IP address. Try again in a few moments.');
       } else {
-        // With cookies, just use mweb (which requires PO token provider)
-      try {
+        // With cookies, try multiple client strategies
+        // Strategy 1: MWEB client (best for cookies, but sometimes gets detected)
+        try {
+          console.log('[Extract] Attempting extraction with MWEB client (cookies available)...');
           const videoInfo = await this.extractWithYtDlp(videoId, 'mweb');
           
           // Report successful extraction (cookies are working)
@@ -280,19 +303,46 @@ class YouTubeExtractor {
             this.cookieGenerator.reportSuccessfulExtraction();
           }
           
+          console.log('[Extract] ✓ MWEB client succeeded with cookies!');
           return videoInfo;
-        } catch (error) {
-          // Check if this is a bot detection error (even with cookies)
-          const errorMsg = error.message || '';
+        } catch (mwebError) {
+          // Check if this is a bot detection error
+          const errorMsg = mwebError.message || '';
           const isBotDetection = errorMsg.includes('bot') || errorMsg.includes('Sign in') || errorMsg.includes('confirm');
           
-          if (isBotDetection && this.cookieGenerator) {
-            // Report bot detection failure to cookie generator
-            // This will trigger browser restart if it happens consecutively
-            this.cookieGenerator.reportBotDetectionFailure();
+          if (isBotDetection) {
+            console.warn('[Extract] MWEB client failed with bot detection, trying ANDROID client with cookies...');
+            
+            // Strategy 2: Fallback to ANDROID client with cookies
+            // Android client + cookies sometimes works better than mweb for bot detection
+            try {
+              const androidVideoInfo = await this.extractWithYtDlp(videoId, 'android');
+              
+              // Report successful extraction
+              if (this.cookieGenerator) {
+                this.cookieGenerator.reportSuccessfulExtraction();
+              }
+              
+              console.log('[Extract] ✓ ANDROID client succeeded with cookies (fallback from MWEB)!');
+              return androidVideoInfo;
+            } catch (androidError) {
+              console.error('[Extract] Both MWEB and ANDROID clients failed with cookies');
+              
+              // Report bot detection failure if it's a bot error
+              if (this.cookieGenerator) {
+                const androidErrorMsg = androidError.message || '';
+                if (androidErrorMsg.includes('bot') || androidErrorMsg.includes('Sign in') || androidErrorMsg.includes('confirm')) {
+                  this.cookieGenerator.reportBotDetectionFailure();
+                }
+              }
+              
+              // Throw the original mweb error (more descriptive)
+              throw mwebError;
+            }
+          } else {
+            // Non-bot error, throw immediately
+            throw mwebError;
           }
-          
-          throw error;
         }
       }
 
