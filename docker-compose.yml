@@ -3,14 +3,28 @@ services:
     platform: linux/amd64
     image: dperson/torproxy:latest
     restart: unless-stopped
-    # Tor proxy exposes SOCKS5 on port 9050
+    # SECURITY: Tor proxy is NOT exposed externally - no ports mapping
+    # Tor only accepts connections from containers in the video-grabber network
+    # This runs as a CLIENT proxy only (not an exit relay) - routes outbound traffic only
+    # Tor proxy exposes SOCKS5 on port 9050 (internal Docker network only)
     # This routes requests through Tor network (residential IPs from exit nodes)
     # Helps bypass datacenter IP detection - Hetzner VPS IPs are flagged by YouTube
     networks:
       - video-grabber
-    # No need to expose port externally - only backend container uses it
-    # SOCKS5 proxy available at tor-proxy:9050 within Docker network
-    # dperson/torproxy exposes both SOCKS5 (9050) and HTTP proxy (8118)
+    # CRITICAL: No ports exposed - only accessible via Docker network
+    # SOCKS5 proxy available at tor-proxy:9050 within Docker network only
+    # dperson/torproxy exposes both SOCKS5 (9050) and HTTP proxy (8118) - internal only
+    # UFW firewall will block any attempts to connect from outside (ports not open)
+    # By default, dperson/torproxy runs as CLIENT ONLY (not exit relay)
+    # Even if Tor listens on 0.0.0.0:9050 inside container, Docker network isolation prevents external access
+    # Configure Tor to use US exit nodes (less likely to be blocked by YouTube)
+    # This is set via torrc file - dperson/torproxy supports TOR_ExitNodes env var
+    environment:
+      # Use US-based exit nodes (less likely blocked by YouTube)
+      # Format: {country code} - multiple countries: {us},{gb}
+      # Empty or "-" means allow any country (default)
+      - TOR_ExitNodes={us}
+      - TOR_StrictNodes=0  # Don't require strict nodes (allows fallback if US nodes unavailable)
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.1 9050 || exit 1"]
       interval: 30s
@@ -47,8 +61,10 @@ services:
       - PO_TOKEN_PROVIDER_URL=http://po-token-provider:4416
       - USE_VNC=true
       - DISPLAY=:99
-      - USE_TOR_PROXY=true  # Enable Tor proxy to bypass datacenter IP detection (default: true)
+      - USE_TOR_PROXY=false  # Tor disabled by default - YouTube blocks Tor exit nodes
       - TOR_PROXY_URL=socks5h://tor-proxy:9050  # Tor proxy URL (socks5h resolves DNS through proxy)
+      # Strategy: Try without Tor first (cookies + PO tokens + curl_cffi impersonation should work)
+      # If that fails, extractor will automatically retry with Tor as fallback
     ports:
       - "3001:3001"
       - "5900:5900"  # VNC port (optional, for debugging)
