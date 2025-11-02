@@ -156,13 +156,51 @@ class CookieGenerator {
       const useTorForCookies = process.env.USE_TOR_PROXY !== 'false';
       
       if (useTorForCookies) {
-        // Chrome uses --proxy-server flag for SOCKS5 proxy
-        // Chrome ONLY supports socks5:// format (not socks5h:// - that's for yt-dlp/curl)
-        // Use socks5:// for Chrome (DNS resolution happens at proxy level)
-        const torProxyUrl = 'socks5://tor-proxy:9050';
-        chromeArgs.push(`--proxy-server=${torProxyUrl}`);
-        console.log('[CookieGenerator] Routing browser through Tor proxy:', torProxyUrl);
-        console.log('[CookieGenerator] Cookies will be generated from Tor exit node IP (matches yt-dlp requests)');
+        // Test Tor proxy connectivity before using it
+        console.log('[CookieGenerator] Testing Tor proxy connectivity...');
+        let torProxyAvailable = false;
+        
+        try {
+          const { execSync } = await import('child_process');
+          // Test if Tor proxy port is listening
+          execSync('timeout 3 bash -c "</dev/tcp/tor-proxy/9050"', { 
+            encoding: 'utf8',
+            stdio: 'pipe'
+          });
+          torProxyAvailable = true;
+          console.log('[CookieGenerator] ✓ Tor proxy is reachable on tor-proxy:9050');
+        } catch (error) {
+          // Try alternative test method
+          try {
+            const { execSync } = await import('child_process');
+            const result = execSync('nc -z -w 3 tor-proxy 9050 2>&1', { 
+              encoding: 'utf8',
+              timeout: 5000 
+            });
+            torProxyAvailable = true;
+            console.log('[CookieGenerator] ✓ Tor proxy connectivity confirmed');
+          } catch (testError) {
+            console.warn('[CookieGenerator] ⚠️  Tor proxy connectivity test failed');
+            console.warn('[CookieGenerator] Tor proxy may not be ready or not accessible');
+            console.warn('[CookieGenerator] Falling back to direct connection for cookie generation');
+            torProxyAvailable = false;
+          }
+        }
+        
+        if (torProxyAvailable) {
+          // Chrome uses --proxy-server flag for SOCKS5 proxy
+          // Chrome ONLY supports socks5:// format (not socks5h:// - that's for yt-dlp/curl)
+          // Use socks5:// for Chrome (DNS resolution happens at proxy level)
+          const torProxyUrl = 'socks5://tor-proxy:9050';
+          chromeArgs.push(`--proxy-server=${torProxyUrl}`);
+          
+          console.log('[CookieGenerator] Routing browser through Tor proxy:', torProxyUrl);
+          console.log('[CookieGenerator] Cookies will be generated from Tor exit node IP (matches yt-dlp requests)');
+        } else {
+          console.log('[CookieGenerator] Using direct connection (Tor proxy not available)');
+          console.log('[CookieGenerator] NOTE: Cookies will be generated from datacenter IP, may not match Tor exit node IP');
+          console.log('[CookieGenerator] This may cause IP mismatch issues with yt-dlp if it uses Tor');
+        }
       } else {
         console.log('[CookieGenerator] Using direct connection for cookie generation');
       }
@@ -270,6 +308,33 @@ class CookieGenerator {
 
       this.isRunning = true;
       console.log('[CookieGenerator] Browser started successfully');
+
+      // Test browser connectivity before proceeding
+      console.log('[CookieGenerator] Testing browser network connectivity...');
+      try {
+        await this.page.goto('about:blank', { waitUntil: 'load', timeout: 5000 });
+        
+        // Try to load a simple page to test connectivity
+        const testUrl = useTorForCookies ? 'https://www.google.com' : 'https://www.google.com';
+        console.log(`[CookieGenerator] Testing connectivity to ${testUrl}...`);
+        
+        try {
+          await this.page.goto(testUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+          const currentUrl = this.page.url();
+          if (currentUrl.includes('google.com') || currentUrl.includes('about:blank')) {
+            console.log('[CookieGenerator] ✓ Browser network connectivity confirmed');
+          } else {
+            console.warn(`[CookieGenerator] ⚠️  Unexpected URL after connectivity test: ${currentUrl}`);
+          }
+        } catch (connectError) {
+          console.error(`[CookieGenerator] ✗ Browser network connectivity test failed: ${connectError.message}`);
+          console.error('[CookieGenerator] Chrome may not be able to access the internet');
+          console.error('[CookieGenerator] If using Tor, verify Tor proxy is working');
+          // Continue anyway - might still work for some sites
+        }
+      } catch (error) {
+        console.warn('[CookieGenerator] Could not test browser connectivity:', error.message);
+      }
 
       // Reset bot detection failure counter on fresh start
       this.botDetectionFailures = 0;

@@ -76,7 +76,7 @@ services:
       - video-grabber
     depends_on:
       tor-proxy:
-        condition: service_started
+        condition: service_healthy  # Wait for Tor to be fully bootstrapped
       po-token-provider:
         condition: service_started
     # Note: PO provider may show as unhealthy but it's still functional
