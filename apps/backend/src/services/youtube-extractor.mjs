@@ -33,6 +33,14 @@ class YouTubeExtractor {
       throw new Error('Browser interception requires active CookieGenerator browser instance');
     }
 
+    // CRITICAL: Don't interrupt cookie generation if it's currently browsing
+    // Browser interception navigates the page, which would break ongoing cookie generation
+    if (this.cookieGenerator.isBrowsing) {
+      console.log('[BrowserIntercept] CookieGenerator is currently browsing - skipping interception to avoid interruption');
+      console.log('[BrowserIntercept] Will use yt-dlp extraction instead');
+      throw new Error('Browser interception skipped - CookieGenerator is currently browsing (would interrupt cookie generation)');
+    }
+
     const page = this.cookieGenerator.page;
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
     
