@@ -289,33 +289,124 @@ class YouTubeExtractor {
         }
       }
 
-      // Try multiple client strategies based on cookies and Tor settings
-      // With Tor enabled: Use WEB client without cookies (cookies are IP-bound, cause format restrictions)
-      // Without Tor + cookies: Use MWEB/ANDROID clients with cookies
-      // Without Tor + no cookies: Use ANDROID client with retry logic
+      // Multi-strategy approach based on research:
+      // 1. YouTube blocks Tor exit nodes (even with valid cookies)
+      // 2. Cookies from Tor may still work with direct connection (cookies provide legitimacy)
+      // 3. Try direct first (faster, less likely blocked), then Tor as fallback
+      // 4. Rotate through different client types for each strategy
       const useTorProxy = process.env.USE_TOR_PROXY !== 'false';
+      const hasCookies = fs.existsSync(this.cookiesPath);
       
-      if (useTorProxy) {
-        // Tor enabled: Use MWEB client with cookies (cookies generated through Tor match exit node IP)
-        console.log('[Extract] Tor enabled - using MWEB client with Tor-generated cookies for high-res formats...');
+      // Strategy: Try direct connection first (faster, cookies may provide enough legitimacy)
+      // Even if cookies were generated from Tor, they might work with direct connection
+      // Direct connection avoids YouTube's aggressive Tor exit node blocking
+      if (hasCookies) {
+        console.log('[Extract] Attempting direct connection with cookies (cookies provide legitimacy)...');
         try {
-          const videoInfo = await this.extractWithYtDlp(videoId, 'mweb');
+          // Try MWEB client first (best format support with cookies)
+          const videoInfo = await this.extractWithYtDlp(videoId, 'mweb', false, false, false); // forceTorProxy=false
           
           if (this.cookieGenerator) {
             this.cookieGenerator.reportSuccessfulExtraction();
           }
           
-          console.log('[Extract] ✓ Tor + MWEB client + cookies succeeded!');
+          console.log('[Extract] ✓ Direct connection + MWEB client + cookies succeeded!');
           return videoInfo;
-        } catch (torError) {
-          console.error('[Extract] Tor extraction failed:', torError.message.substring(0, 200));
-          throw torError;
+        } catch (directError) {
+          const errorMsg = directError.message || '';
+          const isBotDetection = errorMsg.includes('bot') || errorMsg.includes('Sign in') || errorMsg.includes('confirm');
+          
+          if (isBotDetection) {
+            console.warn('[Extract] Direct connection failed with bot detection, trying ANDROID client...');
+            
+            try {
+              // Try ANDROID client (sometimes works better than MWEB)
+              const androidVideoInfo = await this.extractWithYtDlp(videoId, 'android', false, false, false);
+              
+              if (this.cookieGenerator) {
+                this.cookieGenerator.reportSuccessfulExtraction();
+              }
+              
+              console.log('[Extract] ✓ Direct connection + ANDROID client + cookies succeeded!');
+              return androidVideoInfo;
+            } catch (androidError) {
+              const androidErrorMsg = androidError.message || '';
+              const androidBotDetection = androidErrorMsg.includes('bot') || androidErrorMsg.includes('Sign in') || androidErrorMsg.includes('confirm');
+              
+              console.warn('[Extract] Direct connection failed with both MWEB and ANDROID clients');
+              
+              // Strategy: Fallback to Tor (cookies match Tor exit node IP)
+              // Even though YouTube blocks many Tor exit nodes, some may work
+              // Rotate through different client types with Tor
+              if (useTorProxy) {
+                console.warn('[Extract] Direct connection blocked - trying Tor proxy with cookies (cookies match exit node IP)...');
+                console.warn('[Extract] ⚠️  Note: YouTube blocks many Tor exit nodes - this may fail');
+                
+                // Try Tor with different clients
+                const torClients = ['mweb', 'android', 'ios', 'web'];
+                for (const client of torClients) {
+                  try {
+                    console.log(`[Extract] Trying Tor + ${client.toUpperCase()} client + cookies...`);
+                    const torVideoInfo = await this.extractWithYtDlp(videoId, client, false, false, true); // forceTorProxy=true
+                    
+                    if (this.cookieGenerator) {
+                      this.cookieGenerator.reportSuccessfulExtraction();
+                    }
+                    
+                    console.log(`[Extract] ✓ Tor + ${client.toUpperCase()} client + cookies succeeded!`);
+                    return torVideoInfo;
+                  } catch (torClientError) {
+                    console.warn(`[Extract] Tor + ${client.toUpperCase()} failed:`, torClientError.message.substring(0, 100));
+                    // Continue to next client
+                  }
+                }
+                
+                console.error('[Extract] All Tor strategies failed - YouTube is blocking all Tor exit nodes');
+              }
+              
+              // Report failure
+              if (this.cookieGenerator && androidBotDetection) {
+                this.cookieGenerator.reportBotDetectionFailure();
+              }
+              
+              // Throw original error
+              throw directError;
+            }
+          } else {
+            // Non-bot error from direct connection
+            throw directError;
+          }
         }
-      } else if (!fs.existsSync(this.cookiesPath)) {
-        // Strategy 1: ANDROID client with retry (PROVEN SUCCESS - Chrome impersonation + PO token + mobile headers)
-        // Why it works: Chrome TLS fingerprint is more trusted, Android client less restrictive,
-        // PO token adds legitimacy, mobile headers match authentic Android Chrome behavior
-        // Retry logic handles transient bot detection failures
+      }
+      
+      // If we reach here, no cookies available
+      // Strategy depends on Tor setting
+      if (useTorProxy) {
+        // Tor enabled but no cookies: Try Tor with different clients
+        console.log('[Extract] Tor enabled but no cookies - trying Tor with different clients...');
+        const torClients = ['android', 'ios', 'web', 'mweb'];
+        for (const client of torClients) {
+          try {
+            console.log(`[Extract] Trying Tor + ${client.toUpperCase()} client (no cookies)...`);
+            const videoInfo = await this.extractWithYtDlp(videoId, client, false, false, true); // forceTorProxy=true
+            
+            if (this.cookieGenerator) {
+              this.cookieGenerator.reportSuccessfulExtraction();
+            }
+            
+            console.log(`[Extract] ✓ Tor + ${client.toUpperCase()} client succeeded!`);
+            return videoInfo;
+          } catch (torClientError) {
+            console.warn(`[Extract] Tor + ${client.toUpperCase()} failed:`, torClientError.message.substring(0, 100));
+            // Continue to next client
+          }
+        }
+        
+        console.error('[Extract] All Tor strategies failed without cookies');
+        throw new Error('All Tor extraction attempts failed. YouTube is blocking Tor exit nodes. Generate cookies first.');
+      } else {
+        // No cookies and Tor disabled: Use retry-based strategy with different clients
+        // Strategy 1: ANDROID client with retry (Chrome impersonation + PO token + mobile headers)
         const androidResult = await this.extractWithRetry(videoId, 'android', 2);
         if (androidResult) {
           console.log('[Extract] ✓ ANDROID client succeeded!');
@@ -323,8 +414,8 @@ class YouTubeExtractor {
         }
         
         console.warn('[Extract] ANDROID client failed after retries, trying IOS client...');
-          
-        // Strategy 2: IOS client (Safari impersonation - sometimes works but less reliable)
+        
+        // Strategy 2: IOS client (Safari impersonation)
         const iosResult = await this.extractWithRetry(videoId, 'ios', 2);
         if (iosResult) {
           return iosResult;
@@ -332,7 +423,7 @@ class YouTubeExtractor {
         
         console.warn('[Extract] IOS client failed after retries, trying TV client...');
         
-        // Strategy 3: TV client (last resort - Edge impersonation)
+        // Strategy 3: TV client (last resort)
         const tvResult = await this.extractWithRetry(videoId, 'tv', 2);
         if (tvResult) {
           return tvResult;
@@ -340,85 +431,6 @@ class YouTubeExtractor {
         
         console.error('[Extract] All client types failed after retries');
         throw new Error('All extraction attempts failed. YouTube may be rate limiting this IP address. Try again in a few moments.');
-      } else {
-        // With cookies, try multiple client strategies
-        // Strategy 1: MWEB client (best for cookies, but sometimes gets detected)
-        try {
-          console.log('[Extract] Attempting extraction with MWEB client (cookies available)...');
-          const videoInfo = await this.extractWithYtDlp(videoId, 'mweb');
-          
-          // Report successful extraction (cookies are working)
-          if (this.cookieGenerator) {
-            this.cookieGenerator.reportSuccessfulExtraction();
-          }
-          
-          console.log('[Extract] ✓ MWEB client succeeded with cookies!');
-          return videoInfo;
-        } catch (mwebError) {
-          // Check if this is a bot detection error
-          const errorMsg = mwebError.message || '';
-          const isBotDetection = errorMsg.includes('bot') || errorMsg.includes('Sign in') || errorMsg.includes('confirm');
-          
-          if (isBotDetection) {
-            console.warn('[Extract] MWEB client failed with bot detection, trying ANDROID client with cookies...');
-            
-            // Strategy 2: Fallback to ANDROID client with cookies
-            // Android client + cookies sometimes works better than mweb for bot detection
-            try {
-              const androidVideoInfo = await this.extractWithYtDlp(videoId, 'android');
-              
-              // Report successful extraction
-              if (this.cookieGenerator) {
-                this.cookieGenerator.reportSuccessfulExtraction();
-              }
-              
-              console.log('[Extract] ✓ ANDROID client succeeded with cookies (fallback from MWEB)!');
-              return androidVideoInfo;
-            } catch (androidError) {
-              const androidErrorMsg = androidError.message || '';
-              const androidBotDetection = androidErrorMsg.includes('bot') || androidErrorMsg.includes('Sign in') || androidErrorMsg.includes('confirm');
-              
-              console.error('[Extract] Both MWEB and ANDROID clients failed with cookies');
-              
-              // Strategy 3: Try with Tor proxy as last resort (YouTube may block datacenter IPs)
-              // Only try Tor if we're not already using it and bot detection occurred
-              const currentTorSetting = process.env.USE_TOR_PROXY === 'true';
-              if (androidBotDetection && !currentTorSetting) {
-                console.warn('[Extract] Direct connection failed with bot detection, trying with Tor proxy as fallback...');
-                console.warn('[Extract] This will route through residential exit nodes (may be slower but less likely blocked)');
-                
-                try {
-                  // Try with Tor - use MWEB client with cookies (forceTorProxy=true)
-                  // Cookies are now generated through Tor, so they match exit node IP
-                  const torVideoInfo = await this.extractWithYtDlp(videoId, 'mweb', false, false, true);
-                  
-                  if (this.cookieGenerator) {
-                    this.cookieGenerator.reportSuccessfulExtraction();
-                  }
-                  
-                  console.log('[Extract] ✓ Tor proxy fallback succeeded! Consider enabling USE_TOR_PROXY=true for future requests');
-                  return torVideoInfo;
-                } catch (torError) {
-                  console.error('[Extract] Tor proxy fallback also failed:', torError.message.substring(0, 200));
-                  console.error('[Extract] This confirms YouTube is blocking Tor exit nodes - cookies + direct connection may work better');
-                }
-              }
-              
-              // Report bot detection failure if it's a bot error
-              if (this.cookieGenerator) {
-                if (androidBotDetection) {
-                  this.cookieGenerator.reportBotDetectionFailure();
-                }
-              }
-              
-              // Throw the original mweb error (more descriptive)
-              throw mwebError;
-            }
-          } else {
-            // Non-bot error, throw immediately
-            throw mwebError;
-          }
-        }
       }
 
     } catch (error) {
