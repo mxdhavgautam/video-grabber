@@ -151,6 +151,21 @@ class CookieGenerator {
         chromeArgs.push('--display=' + useDisplay);
       }
 
+      // Configure proxy for CookieGenerator - route through Tor to match yt-dlp requests
+      // This ensures cookies are generated from Tor exit node IP, matching when yt-dlp uses Tor
+      const useTorForCookies = process.env.USE_TOR_PROXY !== 'false';
+      
+      if (useTorForCookies) {
+        const torProxyUrl = process.env.TOR_PROXY_URL || 'socks5://tor-proxy:9050';
+        // Chrome uses --proxy-server flag for SOCKS5 proxy
+        // Format: socks5://host:port (Chrome supports SOCKS5 natively)
+        chromeArgs.push(`--proxy-server=${torProxyUrl}`);
+        console.log('[CookieGenerator] Routing browser through Tor proxy:', torProxyUrl);
+        console.log('[CookieGenerator] Cookies will be generated from Tor exit node IP (matches yt-dlp requests)');
+      } else {
+        console.log('[CookieGenerator] Using direct connection for cookie generation');
+      }
+
       // Launch Chrome with persistent profile using puppeteer-extra (with stealth plugin)
       // puppeteerExtra.launch uses the same API as puppeteer.launch but includes stealth plugins
       this.browser = await puppeteerExtra.launch({
