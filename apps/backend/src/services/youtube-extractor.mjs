@@ -95,15 +95,45 @@ class YouTubeExtractor {
       page.on('response', responseHandler);
 
       try {
-        console.log(`[BrowserIntercept] Navigating to: ${videoUrl}`);
+        // Clear any previous navigation state by going to about:blank first
+        await page.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => {});
+        
+        console.log(`[BrowserIntercept] Navigating to: ${videoUrl} (videoId: ${videoId})`);
         // Use lenient timeout (Tor is slow) and less strict wait strategy
+        // Add cache-control headers to prevent caching
+        await page.setExtraHTTPHeaders({
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache',
+          'Expires': '0'
+        });
+        
         try {
-          await page.goto(videoUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }); // 60s for Tor
+          await page.goto(videoUrl, { 
+            waitUntil: 'domcontentloaded', 
+            timeout: 60000, // 60s for Tor
+            referer: undefined // Don't use referer to avoid cache issues
+          }); // 60s for Tor
         } catch (timeoutError) {
           // If domcontentloaded times out, try even simpler load
           console.warn('[BrowserIntercept] domcontentloaded timeout, trying load...');
-          await page.goto(videoUrl, { waitUntil: 'load', timeout: 45000 });
+          await page.goto(videoUrl, { 
+            waitUntil: 'load', 
+            timeout: 45000,
+            referer: undefined
+          });
         }
+        
+        // Verify we're on the correct page
+        const currentUrl = page.url();
+        if (!currentUrl.includes(videoId)) {
+          console.error(`[BrowserIntercept] Navigation failed - URL mismatch. Expected videoId ${videoId}, current URL: ${currentUrl}`);
+          page.off('response', responseHandler);
+          if (extractionTimeout) clearTimeout(extractionTimeout);
+          reject(new Error(`Failed to navigate to correct video - current URL: ${currentUrl}`));
+          return;
+        }
+        
+        console.log(`[BrowserIntercept] ✓ Successfully navigated to video page: ${currentUrl}`);
 
         // Also try to extract ytInitialPlayerResponse from page JavaScript
         console.log('[BrowserIntercept] Attempting to extract video data from page JavaScript...');
@@ -130,43 +160,56 @@ class YouTubeExtractor {
             }
           }
           
-          // Method 3: Extract from script tags
+          // Method 3: Extract from script tags (last resort)
           if (!playerResponse) {
             const scripts = document.querySelectorAll('script');
             for (const script of scripts) {
               const text = script.textContent || script.innerHTML;
               if (text.includes('ytInitialPlayerResponse')) {
-                // Try to extract JSON
-                const match = text.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
-                if (match) {
-                  try {
-                    playerResponse = JSON.parse(match[1]);
-                  } catch (e) {
-                    // Try to extract from var ytInitialPlayerResponse
-                    const varMatch = text.match(/var\s+ytInitialPlayerResponse\s*=\s*({.+?});/);
-                    if (varMatch) {
-                      try {
-                        playerResponse = JSON.parse(varMatch[1]);
-                      } catch (e2) {
-                        // Skip
-                      }
+                // Try multiple regex patterns
+                const patterns = [
+                  /ytInitialPlayerResponse\s*=\s*({.+?});/s,
+                  /var\s+ytInitialPlayerResponse\s*=\s*({.+?});/s,
+                  /ytInitialPlayerResponse\s*=\s*({[\s\S]+?});/
+                ];
+                
+                for (const pattern of patterns) {
+                  const match = text.match(pattern);
+                  if (match) {
+                    try {
+                      playerResponse = JSON.parse(match[1]);
+                      break;
+                    } catch (e) {
+                      // Try next pattern
                     }
                   }
                 }
+                if (playerResponse) break;
               }
             }
           }
           
+          // Debug info
+          const debugInfo = {
+            hasWindowResponse: !!window.ytInitialPlayerResponse,
+            hasYtplayerConfig: !!(window.ytplayer && window.ytplayer.config),
+            playerResponseKeys: playerResponse ? Object.keys(playerResponse) : [],
+            streamingDataKeys: playerResponse?.streamingData ? Object.keys(playerResponse.streamingData) : []
+          };
+          
           return {
             playerResponse,
             title: document.title,
-            videoId: new URL(window.location.href).searchParams.get('v')
+            videoId: new URL(window.location.href).searchParams.get('v'),
+            debugInfo
           };
         });
 
         // Wait longer for network responses (Tor is slow)
         const networkWaitTime = useTor ? 5000 : 2000; // 5s for Tor, 2s for direct
         await new Promise(resolve => setTimeout(resolve, networkWaitTime));
+        
+        console.log('[BrowserIntercept] Page extraction debug:', pageData.debugInfo);
 
         // Verify we actually reached YouTube (not error page)
         const currentUrl = page.url();
@@ -185,6 +228,19 @@ class YouTubeExtractor {
 
         // Use page data if we got it, otherwise use intercepted response
         const finalPlayerResponse = pageData.playerResponse || playerResponse;
+        
+        // Validate that we got the correct video (check videoId matches)
+        if (finalPlayerResponse && finalPlayerResponse.videoDetails) {
+          const extractedVideoId = finalPlayerResponse.videoDetails.videoId;
+          if (extractedVideoId && extractedVideoId !== videoId) {
+            console.error(`[BrowserIntercept] Video ID mismatch! Expected: ${videoId}, Got: ${extractedVideoId}`);
+            page.off('response', responseHandler);
+            if (extractionTimeout) clearTimeout(extractionTimeout);
+            reject(new Error(`Video ID mismatch - expected ${videoId} but got ${extractedVideoId}. This may be a cached response.`));
+            return;
+          }
+          console.log(`[BrowserIntercept] ✓ Verified video ID matches: ${videoId}`);
+        }
 
         if (!finalPlayerResponse) {
           // Try parsing ytInitialData if we have it
@@ -207,9 +263,20 @@ class YouTubeExtractor {
         }
 
         console.log('[BrowserIntercept] ✓ Successfully extracted video data from Chrome network responses');
+        console.log('[BrowserIntercept] Player response structure:', {
+          hasVideoDetails: !!finalPlayerResponse.videoDetails,
+          hasStreamingData: !!finalPlayerResponse.streamingData,
+          formatsCount: finalPlayerResponse.streamingData?.formats?.length || 0,
+          adaptiveFormatsCount: finalPlayerResponse.streamingData?.adaptiveFormats?.length || 0
+        });
         
         // Convert to yt-dlp compatible format
         const videoInfo = this.convertPlayerResponseToYtDlpFormat(finalPlayerResponse, videoId, pageData.title);
+        console.log('[BrowserIntercept] Converted video info:', {
+          id: videoInfo.id,
+          title: videoInfo.title,
+          formatsCount: videoInfo.formats?.length || 0
+        });
         resolve(videoInfo);
 
       } catch (error) {
@@ -232,40 +299,104 @@ class YouTubeExtractor {
     // Combine formats and adaptiveFormats
     const allFormats = [...formats, ...adaptiveFormats];
     
+    console.log(`[BrowserIntercept] Converting ${allFormats.length} formats from player response`);
+    
     // Parse formats to yt-dlp format
-    const ytDlpFormats = allFormats.map((format, index) => {
-      const formatId = format.itag || index;
-      const url = format.url || '';
-      const contentLength = format.contentLength || 0;
-      const mimeType = format.mimeType || '';
-      const quality = format.quality || format.qualityLabel || 'unknown';
-      const width = format.width || 0;
-      const height = format.height || 0;
-      const fps = format.fps || 0;
-      const bitrate = format.bitrate || 0;
-      
-      // Determine format type
-      const hasVideo = mimeType.includes('video');
-      const hasAudio = mimeType.includes('audio');
-      
-      return {
-        format_id: String(formatId),
-        url: url,
-        ext: mimeType.includes('mp4') ? 'mp4' : mimeType.includes('webm') ? 'webm' : 'unknown',
-        width: width,
-        height: height,
-        fps: fps,
-        tbr: bitrate / 1000, // Convert to kbps
-        vcodec: hasVideo ? mimeType.split('codecs="')[1]?.split('"')[0] || 'none' : 'none',
-        acodec: hasAudio ? mimeType.split('codecs="')[1]?.split('"')[0] || 'none' : 'none',
-        filesize: contentLength,
-        format_note: quality,
-        protocol: url.startsWith('https') ? 'https' : 'http'
-      };
-    });
+    const ytDlpFormats = allFormats
+      .filter((format) => {
+        // Filter out formats without itag (invalid)
+        return format.itag && format.itag > 0;
+      })
+      .map((format) => {
+        const formatId = format.itag;
+        
+        // Extract URL - YouTube might use signatureCipher instead of direct URL
+        let url = format.url || '';
+        if (!url && format.signatureCipher) {
+          // Parse signatureCipher format: "url=ENCODED_URL&s=SIGNATURE&sp=PARAMS"
+          try {
+            const params = new URLSearchParams(format.signatureCipher);
+            url = params.get('url') || '';
+          } catch (e) {
+            console.warn(`[BrowserIntercept] Failed to parse signatureCipher for itag ${formatId}`);
+          }
+        }
+        
+        const contentLength = format.contentLength || 0;
+        const mimeType = format.mimeType || '';
+        const quality = format.quality || format.qualityLabel || '';
+        const width = format.width || 0;
+        const height = format.height || 0;
+        const fps = format.fps || 0;
+        const bitrate = format.bitrate || 0;
+        const audioBitrate = format.audioBitrate || 0;
+        
+        // Parse codec from mimeType (format: "video/webm; codecs="vp9, opus"")
+        let vcodec = 'none';
+        let acodec = 'none';
+        
+        if (mimeType) {
+          const codecsMatch = mimeType.match(/codecs="([^"]+)"/);
+          if (codecsMatch) {
+            const codecs = codecsMatch[1].split(',').map(c => c.trim());
+            vcodec = codecs.find(c => c.startsWith('vp') || c.startsWith('avc') || c.startsWith('hev')) || 'none';
+            acodec = codecs.find(c => c.startsWith('opus') || c.startsWith('mp4a') || c.startsWith('vorbis')) || 'none';
+          }
+        }
+        
+        // Determine format type
+        const hasVideo = mimeType.includes('video') || (width > 0 && height > 0);
+        const hasAudio = mimeType.includes('audio') || acodec !== 'none';
+        
+        // Determine extension
+        let ext = 'unknown';
+        if (mimeType.includes('mp4')) ext = 'mp4';
+        else if (mimeType.includes('webm')) ext = 'webm';
+        else if (mimeType.includes('3gpp')) ext = '3gp';
+        
+        // Build quality label
+        const formatNote = quality || (height > 0 ? `${height}p` : 'unknown');
+        
+        const result = {
+          format_id: String(formatId),
+          url: url,
+          ext: ext,
+          width: width,
+          height: height,
+          fps: fps,
+          tbr: bitrate > 0 ? bitrate / 1000 : 0, // Convert to kbps
+          abr: audioBitrate > 0 ? audioBitrate / 1000 : 0, // Audio bitrate in kbps
+          vcodec: vcodec,
+          acodec: acodec,
+          video_codec: vcodec, // Frontend expects this
+          audio_codec: acodec, // Frontend expects this
+          filesize: contentLength,
+          format_note: formatNote,
+          protocol: url.startsWith('https') ? 'https' : (url.startsWith('http') ? 'http' : 'https'),
+          hasVideo: hasVideo,
+          hasAudio: hasAudio
+        };
+        
+        return result;
+      });
+    
+    console.log(`[BrowserIntercept] Converted to ${ytDlpFormats.length} yt-dlp formats`);
+    if (ytDlpFormats.length > 0) {
+      console.log(`[BrowserIntercept] Sample format:`, JSON.stringify(ytDlpFormats[0], null, 2));
+    }
+
+    // Validate formats exist
+    if (ytDlpFormats.length === 0) {
+      console.error(`[BrowserIntercept] WARNING: No formats extracted! Player response structure:`, {
+        hasStreamingData: !!streamingData,
+        hasFormats: !!formats && formats.length > 0,
+        hasAdaptiveFormats: !!adaptiveFormats && adaptiveFormats.length > 0,
+        streamingDataKeys: streamingData ? Object.keys(streamingData) : []
+      });
+    }
 
     // Build yt-dlp compatible response
-    return {
+    const result = {
       id: videoId,
       title: title || videoDetails.title || 'Unknown',
       duration: parseInt(videoDetails.lengthSeconds) || 0,
@@ -276,9 +407,19 @@ class YouTubeExtractor {
       view_count: parseInt(videoDetails.viewCount) || 0,
       formats: ytDlpFormats,
       thumbnail: videoDetails.thumbnail?.thumbnails?.[0]?.url || '',
+      webpage_url: `https://www.youtube.com/watch?v=${videoId}`,
       _extractor: 'browser-interception',
       _extractor_key: 'youtube'
     };
+    
+    console.log(`[BrowserIntercept] Final result:`, {
+      id: result.id,
+      title: result.title.substring(0, 50),
+      formatsCount: result.formats.length,
+      hasFormats: result.formats.length > 0
+    });
+    
+    return result;
   }
 
   async extractWithYtDlp(videoId, clientType = null, skipImpersonate = false, requestAllFormats = false, forceTorProxy = null) {
