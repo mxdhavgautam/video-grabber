@@ -59,6 +59,7 @@ class CookieGenerator {
     this.restartCooldown = 30 * 60 * 1000; // Don't restart more than once every 30 minutes
     this.lastRestartTime = null;
     this.lastBrowsingCompleteTime = 0; // Track when browsing session completes
+    this.isReady = false; // Backend readiness flag - set to true only after first successful cookie generation
     this.captchaSolver = null; // CAPTCHA solver service (optional)
     
     // Initialize CAPTCHA solver asynchronously (optional dependency)
@@ -325,14 +326,44 @@ class CookieGenerator {
       this.isRunning = true;
       console.log('[CookieGenerator] Browser started successfully');
 
-      // Test browser connectivity before proceeding
+      // CRITICAL: Test connectivity with curl BEFORE using Chrome
+      // This ensures the proxy is actually working before we try to use it
+      if (useTorForCookies) {
+        console.log('[CookieGenerator] Testing Tor HTTP proxy connectivity with curl...');
+        try {
+          const { execSync } = await import('child_process');
+          // Test with curl - this is more reliable than Chrome for initial connectivity check
+          const curlTest = execSync('timeout 10 curl -s -o /dev/null -w "%{http_code}" --proxy http://tor-proxy:8118 https://www.google.com', {
+            encoding: 'utf8',
+            timeout: 12000,
+            stdio: 'pipe'
+          }).trim();
+          
+          if (curlTest === '200' || curlTest.startsWith('3')) {
+            console.log(`[CookieGenerator] ✓ Tor HTTP proxy connectivity confirmed (curl returned: ${curlTest})`);
+            console.log('[CookieGenerator] ✓ Tor proxy is working - Chrome should be able to connect');
+          } else {
+            console.error(`[CookieGenerator] ✗ Tor HTTP proxy test failed (curl returned: ${curlTest})`);
+            console.error('[CookieGenerator] Proxy may not be working correctly - Chrome connections may fail');
+            throw new Error(`Tor proxy connectivity test failed: curl returned ${curlTest}`);
+          }
+        } catch (curlError) {
+          console.error('[CookieGenerator] ✗ Tor HTTP proxy connectivity test failed:', curlError.message);
+          console.error('[CookieGenerator] Chrome may not be able to route through Tor HTTP proxy');
+          console.error('[CookieGenerator] Verify Tor HTTP proxy is running on tor-proxy:8118');
+          console.error('[CookieGenerator] Fix connectivity issues before proceeding');
+          throw new Error('Tor proxy connectivity test failed - cannot proceed without working proxy');
+        }
+      }
+      
+      // Test browser connectivity after curl test passes
       console.log('[CookieGenerator] Testing browser network connectivity...');
       try {
         await this.page.goto('about:blank', { waitUntil: 'load', timeout: 5000 });
         
         // Try to load a simple page to test connectivity
-        const testUrl = useTorForCookies ? 'https://www.google.com' : 'https://www.google.com';
-        console.log(`[CookieGenerator] Testing connectivity to ${testUrl}...`);
+        const testUrl = 'https://www.google.com';
+        console.log(`[CookieGenerator] Testing browser connectivity to ${testUrl}...`);
         
         try {
           // Use longer timeout for Tor connections (slower than direct)
@@ -346,20 +377,22 @@ class CookieGenerator {
             }
           } else {
             console.warn(`[CookieGenerator] ⚠️  Unexpected URL after connectivity test: ${currentUrl}`);
+            console.warn('[CookieGenerator] Connection may be working but redirected');
           }
         } catch (connectError) {
           console.error(`[CookieGenerator] ✗ Browser network connectivity test failed: ${connectError.message}`);
           if (useTorForCookies) {
             console.error('[CookieGenerator] Chrome may not be able to route through Tor HTTP proxy');
-            console.error('[CookieGenerator] Verify Tor HTTP proxy is running on tor-proxy:8118');
-            console.error('[CookieGenerator] You can test: curl --proxy http://tor-proxy:8118 https://www.google.com');
+            console.error('[CookieGenerator] Even though curl test passed, Chrome connection failed');
+            throw new Error('Browser connectivity test failed - Chrome cannot connect through Tor proxy');
           } else {
             console.error('[CookieGenerator] Chrome may not be able to access the internet');
+            throw new Error('Browser connectivity test failed - Chrome cannot access internet');
           }
-          // Continue anyway - might still work for some sites
         }
       } catch (error) {
-        console.warn('[CookieGenerator] Could not test browser connectivity:', error.message);
+        console.error('[CookieGenerator] Browser connectivity test failed:', error.message);
+        throw error; // Fail fast - don't continue without working connection
       }
 
       // Reset bot detection failure counter on fresh start
@@ -475,6 +508,17 @@ class CookieGenerator {
       
       // Verify cookie quality
       await this.verifyCookieQuality();
+      
+      // CRITICAL: Mark backend as ready only after:
+      // 1. Successful Google navigation (Phase 1)
+      // 2. Successful YouTube navigation and interaction (Phase 2)
+      // 3. Cookies exported and verified (Phase 3)
+      if (!this.isReady) {
+        this.isReady = true;
+        console.log('[CookieGenerator] ✓ Backend is now ready - cookie generation completed successfully');
+        console.log('[CookieGenerator] ✓ Google and YouTube navigation confirmed');
+        console.log('[CookieGenerator] ✓ Fresh cookies saved - extraction requests can now proceed');
+      }
 
       // Continue light browsing periodically
       this.scheduleLightBrowsing();

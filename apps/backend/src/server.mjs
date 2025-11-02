@@ -203,6 +203,15 @@ app.post('/api/extract', async (req, res) => {
       });
     }
 
+    // CRITICAL: Check if cookie generator is ready before allowing extraction
+    // Block extraction until first successful cookie generation completes
+    if (cookieGenerator && !cookieGenerator.isReady) {
+      return res.status(503).json({
+        error: 'Backend is still powering on',
+        message: 'Please wait while my backend server finishes powering on. Feel free to try again in 5 minutes, thank you for your patience!'
+      });
+    }
+
     const { url } = req.body;
     
     if (!url) {
