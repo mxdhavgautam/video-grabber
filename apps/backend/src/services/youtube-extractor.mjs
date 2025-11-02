@@ -62,45 +62,42 @@ class YouTubeExtractor {
         console.log('[yt-dlp] Using direct connection (Tor proxy disabled)');
       }
 
-      // CRITICAL: Cookies are IP-bound - don't use cookies with Tor proxy
-      // When cookies were generated from Hetzner IP but request comes from Tor exit node,
-      // YouTube sees IP mismatch and restricts to low-res formats (640x360) for security
-      // Solution: Skip cookies when using Tor, use PO tokens + curl_cffi impersonation for authentication
-      const shouldUseCookies = !useTorProxy && fs.existsSync(this.cookiesPath);
-      
-      if (shouldUseCookies) {
+      // Cookies are now generated through Tor (matching exit node IP)
+      // So we CAN use cookies with Tor - they match the exit node IP
+      // This provides both authentication (cookies) and correct IP (Tor exit node) for high-res formats
+      if (fs.existsSync(this.cookiesPath)) {
         args.push('--cookies', this.cookiesPath);
-        console.log('[yt-dlp] Using cookies from:', this.cookiesPath);
-      } else if (useTorProxy && fs.existsSync(this.cookiesPath)) {
-        console.log('[yt-dlp] ⚠️  Skipping cookies when using Tor proxy (cookies are IP-bound to Hetzner, request from Tor exit node)');
-        console.log('[yt-dlp] Will use PO tokens + curl_cffi impersonation for authentication instead');
-        console.log('[yt-dlp] This should provide high-resolution formats without IP mismatch');
-      } else if (!fs.existsSync(this.cookiesPath)) {
+        if (useTorProxy) {
+          console.log('[yt-dlp] Using cookies from Tor-generated session (IP matches Tor exit node)');
+          console.log('[yt-dlp] Cookies generated through Tor, so they match the exit node IP - high-res formats enabled');
+        } else {
+          console.log('[yt-dlp] Using cookies from:', this.cookiesPath);
+        }
+      } else {
         console.warn('[yt-dlp] No cookies file found - extraction may fail due to bot detection');
-        console.warn('[yt-dlp] To fix: Upload cookies via the UI or place cookies.txt at:', this.cookiesPath);
-        console.warn('[yt-dlp] Cookies are essential for bypassing YouTube bot detection (when not using Tor)');
+        console.warn('[yt-dlp] To fix: CookieGenerator will generate cookies (through Tor if enabled)');
+        console.warn('[yt-dlp] Cookies are essential for bypassing YouTube bot detection');
       }
 
       // Build extractor args for YouTube client and PO token
       const extractorArgs = [];
       
-      // Use provided client type, or determine based on cookies and Tor
-      let selectedClient = clientType;
-      if (!selectedClient) {
-        if (useTorProxy) {
-          // When using Tor: Use 'web' client for best format support (desktop formats)
-          // Cookies are skipped (IP mismatch), PO tokens + curl_cffi provide authentication
-          selectedClient = 'web';
-          console.log('[yt-dlp] Using WEB client with Tor (best format support without cookies)');
-        } else if (shouldUseCookies) {
-          // If we have cookies and NOT using Tor, use mweb (but needs PO token)
-          selectedClient = 'mweb';
-        } else {
-          // Default to ANDROID for no cookies (PROVEN SUCCESS - Chrome impersonation works best)
-          // Android client with Chrome TLS fingerprint has highest success rate
-          selectedClient = 'android';
+        // Use provided client type, or determine based on cookies and Tor
+        let selectedClient = clientType;
+        if (!selectedClient) {
+          if (fs.existsSync(this.cookiesPath)) {
+            // With cookies (from Tor or direct): Use mweb for best format support
+            // Cookies generated through Tor match exit node IP, enabling high-res formats
+            selectedClient = 'mweb';
+            if (useTorProxy) {
+              console.log('[yt-dlp] Using MWEB client with Tor + cookies (high-res formats enabled)');
+            }
+          } else {
+            // Default to ANDROID for no cookies (PROVEN SUCCESS - Chrome impersonation works best)
+            // Android client with Chrome TLS fingerprint has highest success rate
+            selectedClient = 'android';
+          }
         }
-      }
       
       extractorArgs.push(`youtube:player_client=${selectedClient}`);
       console.log(`[yt-dlp] Using ${selectedClient.toUpperCase()} client`);
@@ -299,16 +296,16 @@ class YouTubeExtractor {
       const useTorProxy = process.env.USE_TOR_PROXY !== 'false';
       
       if (useTorProxy) {
-        // Tor enabled: Use WEB client for best format support (cookies skipped due to IP mismatch)
-        console.log('[Extract] Tor enabled - using WEB client without cookies for high-res formats...');
+        // Tor enabled: Use MWEB client with cookies (cookies generated through Tor match exit node IP)
+        console.log('[Extract] Tor enabled - using MWEB client with Tor-generated cookies for high-res formats...');
         try {
-          const videoInfo = await this.extractWithYtDlp(videoId, 'web');
+          const videoInfo = await this.extractWithYtDlp(videoId, 'mweb');
           
           if (this.cookieGenerator) {
             this.cookieGenerator.reportSuccessfulExtraction();
           }
           
-          console.log('[Extract] ✓ Tor + WEB client succeeded!');
+          console.log('[Extract] ✓ Tor + MWEB client + cookies succeeded!');
           return videoInfo;
         } catch (torError) {
           console.error('[Extract] Tor extraction failed:', torError.message.substring(0, 200));
@@ -391,9 +388,9 @@ class YouTubeExtractor {
                 console.warn('[Extract] This will route through residential exit nodes (may be slower but less likely blocked)');
                 
                 try {
-                  // Try with Tor - use WEB client without cookies (forceTorProxy=true)
-                  // WEB client provides best format support, cookies skipped due to IP mismatch
-                  const torVideoInfo = await this.extractWithYtDlp(videoId, 'web', false, false, true);
+                  // Try with Tor - use MWEB client with cookies (forceTorProxy=true)
+                  // Cookies are now generated through Tor, so they match exit node IP
+                  const torVideoInfo = await this.extractWithYtDlp(videoId, 'mweb', false, false, true);
                   
                   if (this.cookieGenerator) {
                     this.cookieGenerator.reportSuccessfulExtraction();
