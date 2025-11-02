@@ -13,7 +13,7 @@ COPY apps/frontend ./apps/frontend
 
 WORKDIR /app/apps/frontend
 
-ARG VITE_API_URL=https://video-grabber-api.mxdhavgautam.com
+ARG VITE_API_URL=https://video-grabber-api.mxdhavgautam.com/api
 ENV VITE_API_URL=${VITE_API_URL}
 
 RUN npm run build
