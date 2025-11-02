@@ -44,6 +44,18 @@ class YouTubeExtractor {
         console.warn('[yt-dlp] Deno not available, attempting without EJS runtime');
       }
 
+      // Add proxy support (Tor) to bypass datacenter IP detection
+      // Tor routes requests through residential exit nodes
+      // Enable via USE_TOR_PROXY environment variable (default: true for datacenter IPs)
+      const useTorProxy = process.env.USE_TOR_PROXY !== 'false';
+      if (useTorProxy) {
+        // Use socks5h:// format (hostname resolution through proxy) - recommended for Tor
+        const torProxyUrl = process.env.TOR_PROXY_URL || 'socks5h://tor-proxy:9050';
+        args.push('--proxy', torProxyUrl);
+        console.log('[yt-dlp] Using Tor proxy:', torProxyUrl);
+        console.log('[yt-dlp] Requests will route through Tor network (residential IPs from exit nodes)');
+      }
+
       // Add cookies if available (critical for bypassing bot detection)
       if (fs.existsSync(this.cookiesPath)) {
         args.push('--cookies', this.cookiesPath);
@@ -140,10 +152,13 @@ class YouTubeExtractor {
       args.push('--add-header', 'Upgrade-Insecure-Requests:1');
       
       // Add random delays to mimic human behavior and avoid rate limiting
-      // Random delay between 2-5 seconds before making request
-      args.push('--sleep-interval', '2');
-      args.push('--max-sleep-interval', '5');
-      console.log('[yt-dlp] Added random delays (2-5s) to mimic human behavior');
+      // When using Tor, delays are especially important to avoid rate limiting
+      // Tor exit nodes may have different rate limits
+      const sleepInterval = useTorProxy ? '3' : '2';  // Longer delays with Tor
+      const maxSleepInterval = useTorProxy ? '8' : '5';  // More variation with Tor
+      args.push('--sleep-interval', sleepInterval);
+      args.push('--max-sleep-interval', maxSleepInterval);
+      console.log(`[yt-dlp] Added random delays (${sleepInterval}-${maxSleepInterval}s) to mimic human behavior`);
 
       // Add video URL
       args.push(`https://www.youtube.com/watch?v=${videoId}`);

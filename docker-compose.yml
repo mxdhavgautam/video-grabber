@@ -1,4 +1,22 @@
 services:
+  tor-proxy:
+    platform: linux/amd64
+    image: pimylifeup/tor-proxy:latest
+    restart: unless-stopped
+    # Tor proxy exposes SOCKS5 on port 9050
+    # This routes requests through Tor network (residential IPs from exit nodes)
+    # Helps bypass datacenter IP detection - Hetzner VPS IPs are flagged by YouTube
+    networks:
+      - video-grabber
+    # No need to expose port externally - only backend container uses it
+    # SOCKS5 proxy available at tor-proxy:9050 within Docker network
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 9050 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s  # Tor takes time to bootstrap circuits
+
   po-token-provider:
     platform: linux/amd64
     image: brainicism/bgutil-ytdlp-pot-provider:latest
@@ -28,6 +46,8 @@ services:
       - PO_TOKEN_PROVIDER_URL=http://po-token-provider:4416
       - USE_VNC=true
       - DISPLAY=:99
+      - USE_TOR_PROXY=true  # Enable Tor proxy to bypass datacenter IP detection (default: true)
+      - TOR_PROXY_URL=socks5h://tor-proxy:9050  # Tor proxy URL (socks5h resolves DNS through proxy)
     ports:
       - "3001:3001"
       - "5900:5900"  # VNC port (optional, for debugging)
@@ -37,6 +57,8 @@ services:
     networks:
       - video-grabber
     depends_on:
+      tor-proxy:
+        condition: service_started
       po-token-provider:
         condition: service_started
     # Note: PO provider may show as unhealthy but it's still functional
