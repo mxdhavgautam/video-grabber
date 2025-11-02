@@ -289,67 +289,100 @@ class YouTubeExtractor {
         }
       }
 
-      // Simplified strategy based on working checkpoint (commit 25ad290 - 360p working)
-      // Tor enabled: Use WEB client with cookies (cookies generated through Tor match exit node IP)
-      // Without Tor + cookies: Use MWEB client with cookies
-      // Without Tor + no cookies: Use ANDROID client with retry logic
+      // Strategy: Prioritize direct connection for high-res, Tor as fallback
+      // 1. Direct connection + cookies (best for high-res - cookies provide legitimacy)
+      // 2. If direct fails, try Tor (may get 360p or better)
+      // 3. Rotate through clients for maximum compatibility
       const useTorProxy = process.env.USE_TOR_PROXY !== 'false';
+      const hasCookies = fs.existsSync(this.cookiesPath);
       
-      if (useTorProxy) {
-        // Tor enabled: Use WEB client with cookies (cookies generated through Tor match exit node IP)
-        // This was the working approach that got 360p - simplified and restored
-        console.log('[Extract] Tor enabled - using WEB client with Tor-generated cookies...');
+      // Strategy 1: Try direct connection first (best for high-res formats)
+      // Cookies from Tor-generated session provide legitimacy even with datacenter IP
+      // Direct connection avoids YouTube's aggressive Tor exit node blocking
+      if (hasCookies) {
+        console.log('[Extract] Attempting direct connection with cookies (best for high-res formats)...');
+        
+        // Try MWEB client first (best format support with cookies)
         try {
-          const videoInfo = await this.extractWithYtDlp(videoId, 'web');
+          const videoInfo = await this.extractWithYtDlp(videoId, 'mweb', false, false, false); // forceTorProxy=false
           
           if (this.cookieGenerator) {
             this.cookieGenerator.reportSuccessfulExtraction();
           }
           
-          console.log('[Extract] ✓ Tor + WEB client + cookies succeeded!');
+          console.log('[Extract] ✓ Direct connection + MWEB + cookies succeeded (high-res enabled)!');
+          return videoInfo;
+        } catch (directError) {
+          const errorMsg = directError.message || '';
+          const isBotDetection = errorMsg.includes('bot') || errorMsg.includes('Sign in') || errorMsg.includes('confirm');
+          
+          if (isBotDetection) {
+            console.warn('[Extract] Direct connection blocked - cookies may need matching IP');
+            console.warn('[Extract] Trying Tor proxy (cookies match Tor exit node IP)...');
+            
+            // Strategy 2: Fallback to Tor (cookies match exit node IP from cookie generation)
+            // Try MWEB client first with Tor (cookies match, should enable high-res)
+            if (useTorProxy) {
+              try {
+                console.log('[Extract] Trying Tor + MWEB client + cookies (cookies match exit node IP)...');
+                const torVideoInfo = await this.extractWithYtDlp(videoId, 'mweb', false, false, true); // forceTorProxy=true
+                
+                if (this.cookieGenerator) {
+                  this.cookieGenerator.reportSuccessfulExtraction();
+                }
+                
+                console.log('[Extract] ✓ Tor + MWEB + cookies succeeded!');
+                return torVideoInfo;
+              } catch (torMwebError) {
+                console.warn('[Extract] Tor + MWEB failed, trying Tor + WEB client (checkpoint approach)...');
+                
+                // Fallback to WEB client (checkpoint approach that got 360p)
+                try {
+                  const torWebVideoInfo = await this.extractWithYtDlp(videoId, 'web', false, false, true);
+                  
+                  if (this.cookieGenerator) {
+                    this.cookieGenerator.reportSuccessfulExtraction();
+                  }
+                  
+                  console.log('[Extract] ✓ Tor + WEB + cookies succeeded (360p+ formats)!');
+                  return torWebVideoInfo;
+                } catch (torWebError) {
+                  console.error('[Extract] Both Tor strategies failed - YouTube blocking Tor exit nodes');
+                  
+                  if (this.cookieGenerator) {
+                    this.cookieGenerator.reportBotDetectionFailure();
+                  }
+                  
+                  throw directError;
+                }
+              }
+            } else {
+              // No Tor available, throw direct error
+              if (this.cookieGenerator) {
+                this.cookieGenerator.reportBotDetectionFailure();
+              }
+              throw directError;
+            }
+          } else {
+            // Non-bot error, throw immediately
+            throw directError;
+          }
+        }
+      } else if (useTorProxy) {
+        // Tor enabled but no cookies: Try Tor with WEB client (checkpoint approach)
+        console.log('[Extract] Tor enabled but no cookies - using WEB client (checkpoint approach)...');
+        try {
+          const videoInfo = await this.extractWithYtDlp(videoId, 'web', false, false, true);
+          
+          if (this.cookieGenerator) {
+            this.cookieGenerator.reportSuccessfulExtraction();
+          }
+          
+          console.log('[Extract] ✓ Tor + WEB client succeeded!');
           return videoInfo;
         } catch (torError) {
           console.error('[Extract] Tor extraction failed:', torError.message.substring(0, 200));
           throw torError;
-        }
-      } else if (fs.existsSync(this.cookiesPath)) {
-        // With cookies but no Tor: Use MWEB client with cookies
-        console.log('[Extract] Attempting extraction with MWEB client (cookies available)...');
-        try {
-          const videoInfo = await this.extractWithYtDlp(videoId, 'mweb');
-          
-          if (this.cookieGenerator) {
-            this.cookieGenerator.reportSuccessfulExtraction();
-          }
-          
-          console.log('[Extract] ✓ MWEB client succeeded with cookies!');
-          return videoInfo;
-        } catch (mwebError) {
-          // Check if this is a bot detection error
-          const errorMsg = mwebError.message || '';
-          const isBotDetection = errorMsg.includes('bot') || errorMsg.includes('Sign in') || errorMsg.includes('confirm');
-          
-          if (isBotDetection) {
-            console.warn('[Extract] MWEB client failed with bot detection, trying ANDROID client with cookies...');
-            
-            try {
-              const androidVideoInfo = await this.extractWithYtDlp(videoId, 'android');
-              
-              if (this.cookieGenerator) {
-                this.cookieGenerator.reportSuccessfulExtraction();
-              }
-              
-              console.log('[Extract] ✓ ANDROID client succeeded with cookies (fallback from MWEB)!');
-              return androidVideoInfo;
-            } catch (androidError) {
-              if (this.cookieGenerator) {
-                this.cookieGenerator.reportBotDetectionFailure();
-              }
-              throw mwebError;
-            }
-          } else {
-            throw mwebError;
-          }
         }
       } else {
         // No cookies and Tor disabled: Use retry-based strategy with different clients
