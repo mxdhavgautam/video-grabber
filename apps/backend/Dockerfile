@@ -48,6 +48,7 @@ RUN apt-get update \
         libxrender1 \
         libxss1 \
         libxtst6 \
+        netcat-openbsd \
         python3 \
         python3-pip \
         unzip \
