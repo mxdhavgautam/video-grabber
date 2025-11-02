@@ -1531,11 +1531,14 @@ class CookieGenerator {
     try {
       console.log(`[CookieGenerator] Visiting ${url}...`);
       
-      // Try multiple wait strategies - be more lenient with timeouts
+      // Try multiple wait strategies - be more lenient with timeouts (Tor is slow)
+      const useTor = process.env.USE_TOR_PROXY !== 'false';
+      const baseTimeout = useTor ? 60000 : 20000; // 60s for Tor, 20s for direct
+      
       try {
         await this.page.goto(url, {
           waitUntil: 'domcontentloaded', // Less strict than networkidle2
-          timeout: 20000 // 20 seconds
+          timeout: baseTimeout
         });
       } catch (timeoutError) {
         // If domcontentloaded times out, try just loading
@@ -1543,7 +1546,7 @@ class CookieGenerator {
         try {
           await this.page.goto(url, {
             waitUntil: 'load',
-            timeout: 15000
+            timeout: Math.floor(baseTimeout * 0.75) // 75% of original timeout
           });
         } catch (loadError) {
           // Even if load fails, continue - page might still be usable
@@ -1580,17 +1583,31 @@ class CookieGenerator {
     try {
       console.log(`[CookieGenerator] Searching Google for: "${query}"...`);
       
-      // Visit Google with lenient timeout
+      // Visit Google with lenient timeout (Tor is slow)
       console.log('[CookieGenerator] Navigating to Google homepage...');
+      const useTor = process.env.USE_TOR_PROXY !== 'false';
+      const googleTimeout = useTor ? 60000 : 20000; // 60s for Tor, 20s for direct
+      
       try {
         await this.page.goto('https://www.google.com', {
           waitUntil: 'domcontentloaded',
-          timeout: 20000
+          timeout: googleTimeout
         });
         console.log(`[CookieGenerator] ✓ Google homepage loaded, URL: ${this.page.url()}`);
       } catch (error) {
         console.warn(`[CookieGenerator] Google homepage load slow:`, error.message);
-        console.warn(`[CookieGenerator] Current URL: ${this.page.url()}`);
+        // Try even simpler load if domcontentloaded fails
+        try {
+          await this.page.goto('https://www.google.com', {
+            waitUntil: 'load',
+            timeout: Math.floor(googleTimeout * 0.75)
+          });
+          console.log(`[CookieGenerator] ✓ Google homepage loaded (simplified), URL: ${this.page.url()}`);
+        } catch (loadError) {
+          console.warn(`[CookieGenerator] Google load incomplete:`, loadError.message);
+          console.warn(`[CookieGenerator] Current URL: ${this.page.url()}`);
+          // Continue anyway - page might still be partially loaded
+        }
       }
 
       console.log('[CookieGenerator] Waiting before interacting with page...');
@@ -1670,18 +1687,19 @@ class CookieGenerator {
             await searchBox.press('Enter');
           }
           
-          // Wait for navigation with lenient timeout and better wait strategy
+          // Wait for navigation with lenient timeout (Tor is slow)
           console.log(`[CookieGenerator] Waiting for Google search results...`);
+          const searchTimeout = useTor ? 45000 : 20000; // 45s for Tor, 20s for direct
           try {
             // Wait for URL to change OR for search results to appear
             await Promise.race([
-              this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }),
-              this.page.waitForSelector('#search', { timeout: 20000 }).catch(() => null),
-              this.page.waitForFunction(() => window.location.href.includes('/search'), { timeout: 20000 })
+              this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: searchTimeout }),
+              this.page.waitForSelector('#search', { timeout: searchTimeout }).catch(() => null),
+              this.page.waitForFunction(() => window.location.href.includes('/search'), { timeout: searchTimeout })
             ]);
             console.log(`[CookieGenerator] ✓ Google search results loaded, URL: ${this.page.url()}`);
           } catch (navError) {
-            console.warn(`[CookieGenerator] Google search navigation timeout after 20s`);
+            console.warn(`[CookieGenerator] Google search navigation timeout after ${Math.floor(searchTimeout/1000)}s`);
             console.warn(`[CookieGenerator] Current URL: ${this.page.url()}`);
             // Check if we're on results page by checking URL or page content
             const currentUrl = this.page.url();
@@ -1750,11 +1768,13 @@ class CookieGenerator {
     try {
       console.log('[CookieGenerator] Browsing YouTube...');
       
-      // Visit YouTube with lenient timeout
+      // Visit YouTube with lenient timeout (Tor is slow)
+      const useTor = process.env.USE_TOR_PROXY !== 'false';
+      const youtubeTimeout = useTor ? 60000 : 20000; // 60s for Tor, 20s for direct
       try {
         await this.page.goto('https://www.youtube.com', {
           waitUntil: 'domcontentloaded',
-          timeout: 20000
+          timeout: youtubeTimeout
         });
       } catch (error) {
         console.warn(`[CookieGenerator] YouTube homepage load slow, continuing...`);
@@ -1802,9 +1822,10 @@ class CookieGenerator {
               await this.sleep(this.randomBetween(500, 1000));
               await searchBox.press('Enter');
               
-              // Wait for navigation with lenient timeout
+              // Wait for navigation with lenient timeout (Tor is slow)
+              const youtubeSearchTimeout = useTor ? 45000 : 15000; // 45s for Tor, 15s for direct
               try {
-                await this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
+                await this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: youtubeSearchTimeout });
               } catch (navError) {
                 console.warn(`[CookieGenerator] YouTube search navigation timeout, but continuing...`);
               }
