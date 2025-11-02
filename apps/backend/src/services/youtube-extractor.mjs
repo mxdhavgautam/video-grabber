@@ -46,10 +46,11 @@ class YouTubeExtractor {
 
       // Add proxy support (Tor) to bypass datacenter IP detection
       // Tor routes requests through residential exit nodes
-      // Enable via USE_TOR_PROXY environment variable (default: false - YouTube blocks Tor exit nodes)
+      // Enable via USE_TOR_PROXY environment variable (default: true - direct connections fail)
       // forceTorProxy can override the env var setting (used for automatic fallback)
-      // WARNING: YouTube often blocks Tor exit nodes, so Tor may not work for YouTube
-      const useTorProxy = forceTorProxy !== null ? forceTorProxy : (process.env.USE_TOR_PROXY === 'true');
+      // CRITICAL: When using Tor, cookies must be skipped - they're IP-bound to Hetzner datacenter IP
+      // Tor exit nodes have different IPs, causing format restrictions (low-res only) if cookies used
+      const useTorProxy = forceTorProxy !== null ? forceTorProxy : (process.env.USE_TOR_PROXY !== 'false');
       if (useTorProxy) {
         // Use socks5h:// format (hostname resolution through proxy) - recommended for Tor
         const torProxyUrl = process.env.TOR_PROXY_URL || 'socks5h://tor-proxy:9050';
@@ -61,24 +62,38 @@ class YouTubeExtractor {
         console.log('[yt-dlp] Using direct connection (Tor proxy disabled)');
       }
 
-      // Add cookies if available (critical for bypassing bot detection)
-      if (fs.existsSync(this.cookiesPath)) {
+      // CRITICAL: Cookies are IP-bound - don't use cookies with Tor proxy
+      // When cookies were generated from Hetzner IP but request comes from Tor exit node,
+      // YouTube sees IP mismatch and restricts to low-res formats (640x360) for security
+      // Solution: Skip cookies when using Tor, use PO tokens + curl_cffi impersonation for authentication
+      const shouldUseCookies = !useTorProxy && fs.existsSync(this.cookiesPath);
+      
+      if (shouldUseCookies) {
         args.push('--cookies', this.cookiesPath);
         console.log('[yt-dlp] Using cookies from:', this.cookiesPath);
-      } else {
+      } else if (useTorProxy && fs.existsSync(this.cookiesPath)) {
+        console.log('[yt-dlp] ⚠️  Skipping cookies when using Tor proxy (cookies are IP-bound to Hetzner, request from Tor exit node)');
+        console.log('[yt-dlp] Will use PO tokens + curl_cffi impersonation for authentication instead');
+        console.log('[yt-dlp] This should provide high-resolution formats without IP mismatch');
+      } else if (!fs.existsSync(this.cookiesPath)) {
         console.warn('[yt-dlp] No cookies file found - extraction may fail due to bot detection');
         console.warn('[yt-dlp] To fix: Upload cookies via the UI or place cookies.txt at:', this.cookiesPath);
-        console.warn('[yt-dlp] Cookies are essential for bypassing YouTube bot detection');
+        console.warn('[yt-dlp] Cookies are essential for bypassing YouTube bot detection (when not using Tor)');
       }
 
       // Build extractor args for YouTube client and PO token
       const extractorArgs = [];
       
-      // Use provided client type, or determine based on cookies
+      // Use provided client type, or determine based on cookies and Tor
       let selectedClient = clientType;
       if (!selectedClient) {
-        if (fs.existsSync(this.cookiesPath)) {
-          // If we have cookies, use mweb (but needs PO token)
+        if (useTorProxy) {
+          // When using Tor: Use 'web' client for best format support (desktop formats)
+          // Cookies are skipped (IP mismatch), PO tokens + curl_cffi provide authentication
+          selectedClient = 'web';
+          console.log('[yt-dlp] Using WEB client with Tor (best format support without cookies)');
+        } else if (shouldUseCookies) {
+          // If we have cookies and NOT using Tor, use mweb (but needs PO token)
           selectedClient = 'mweb';
         } else {
           // Default to ANDROID for no cookies (PROVEN SUCCESS - Chrome impersonation works best)
@@ -112,6 +127,8 @@ class YouTubeExtractor {
           impersonateTarget = 'safari'; // Safari for iOS
         } else if (selectedClient === 'android') {
           impersonateTarget = 'chrome'; // Chrome for Android
+        } else if (selectedClient === 'web') {
+          impersonateTarget = 'chrome'; // Chrome for web client (best format support)
         } else {
           impersonateTarget = 'edge'; // Edge for TV/Desktop (sometimes works better)
         }
@@ -157,13 +174,10 @@ class YouTubeExtractor {
       args.push('--add-header', 'Upgrade-Insecure-Requests:1');
       
       // Add random delays to mimic human behavior and avoid rate limiting
-      // When using Tor, delays are especially important to avoid rate limiting
-      // Tor exit nodes may have different rate limits
-      const sleepInterval = useTorProxy ? '3' : '2';  // Longer delays with Tor
-      const maxSleepInterval = useTorProxy ? '8' : '5';  // More variation with Tor
-      args.push('--sleep-interval', sleepInterval);
-      args.push('--max-sleep-interval', maxSleepInterval);
-      console.log(`[yt-dlp] Added random delays (${sleepInterval}-${maxSleepInterval}s) to mimic human behavior`);
+      // Standard delays work fine for both direct and Tor connections
+      args.push('--sleep-interval', '2');
+      args.push('--max-sleep-interval', '5');
+      console.log('[yt-dlp] Added random delays (2-5s) to mimic human behavior');
 
       // Add video URL
       args.push(`https://www.youtube.com/watch?v=${videoId}`);
@@ -278,11 +292,29 @@ class YouTubeExtractor {
         }
       }
 
-      // Try multiple client strategies if first attempt fails (only when no cookies)
-      // ANDROID client with Chrome impersonation has proven most successful
-      // Success factors: Chrome TLS fingerprint + Android client + PO token + mobile headers + delays
-      // Note: Transient bot detection failures are common - retry logic handles this
-      if (!fs.existsSync(this.cookiesPath)) {
+      // Try multiple client strategies based on cookies and Tor settings
+      // With Tor enabled: Use WEB client without cookies (cookies are IP-bound, cause format restrictions)
+      // Without Tor + cookies: Use MWEB/ANDROID clients with cookies
+      // Without Tor + no cookies: Use ANDROID client with retry logic
+      const useTorProxy = process.env.USE_TOR_PROXY !== 'false';
+      
+      if (useTorProxy) {
+        // Tor enabled: Use WEB client for best format support (cookies skipped due to IP mismatch)
+        console.log('[Extract] Tor enabled - using WEB client without cookies for high-res formats...');
+        try {
+          const videoInfo = await this.extractWithYtDlp(videoId, 'web');
+          
+          if (this.cookieGenerator) {
+            this.cookieGenerator.reportSuccessfulExtraction();
+          }
+          
+          console.log('[Extract] ✓ Tor + WEB client succeeded!');
+          return videoInfo;
+        } catch (torError) {
+          console.error('[Extract] Tor extraction failed:', torError.message.substring(0, 200));
+          throw torError;
+        }
+      } else if (!fs.existsSync(this.cookiesPath)) {
         // Strategy 1: ANDROID client with retry (PROVEN SUCCESS - Chrome impersonation + PO token + mobile headers)
         // Why it works: Chrome TLS fingerprint is more trusted, Android client less restrictive,
         // PO token adds legitimacy, mobile headers match authentic Android Chrome behavior
@@ -359,8 +391,9 @@ class YouTubeExtractor {
                 console.warn('[Extract] This will route through residential exit nodes (may be slower but less likely blocked)');
                 
                 try {
-                  // Try with Tor - use MWEB client with cookies + Tor (forceTorProxy=true)
-                  const torVideoInfo = await this.extractWithYtDlp(videoId, 'mweb', false, false, true);
+                  // Try with Tor - use WEB client without cookies (forceTorProxy=true)
+                  // WEB client provides best format support, cookies skipped due to IP mismatch
+                  const torVideoInfo = await this.extractWithYtDlp(videoId, 'web', false, false, true);
                   
                   if (this.cookieGenerator) {
                     this.cookieGenerator.reportSuccessfulExtraction();

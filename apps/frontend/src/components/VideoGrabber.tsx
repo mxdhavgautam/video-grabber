@@ -196,6 +196,17 @@ export function VideoGrabber({ onExtracting }: { onExtracting?: (isExtracting: b
   const [cookieModalOpen, setCookieModalOpen] = useState(false)
   const { toast } = useToast()
 
+  // Auto-focus URL input on page load
+  useEffect(() => {
+    const urlInput = document.getElementById('video-url') as HTMLInputElement
+    if (urlInput) {
+      // Small delay to ensure component is fully rendered
+      setTimeout(() => {
+        urlInput.focus()
+      }, 100)
+    }
+  }, [])
+
   // Notify parent when extracting state changes
   useEffect(() => {
     onExtracting?.(videoInfo !== null || loading)
