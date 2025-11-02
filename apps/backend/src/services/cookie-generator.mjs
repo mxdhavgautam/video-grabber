@@ -156,9 +156,10 @@ class CookieGenerator {
       const useTorForCookies = process.env.USE_TOR_PROXY !== 'false';
       
       if (useTorForCookies) {
-        const torProxyUrl = process.env.TOR_PROXY_URL || 'socks5://tor-proxy:9050';
         // Chrome uses --proxy-server flag for SOCKS5 proxy
-        // Format: socks5://host:port (Chrome supports SOCKS5 natively)
+        // Chrome ONLY supports socks5:// format (not socks5h:// - that's for yt-dlp/curl)
+        // Use socks5:// for Chrome (DNS resolution happens at proxy level)
+        const torProxyUrl = 'socks5://tor-proxy:9050';
         chromeArgs.push(`--proxy-server=${torProxyUrl}`);
         console.log('[CookieGenerator] Routing browser through Tor proxy:', torProxyUrl);
         console.log('[CookieGenerator] Cookies will be generated from Tor exit node IP (matches yt-dlp requests)');
