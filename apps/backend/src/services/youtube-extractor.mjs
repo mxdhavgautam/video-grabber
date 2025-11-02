@@ -47,28 +47,43 @@ class YouTubeExtractor {
       // Intercept network responses to capture YouTube API calls
       const responseHandler = async (response) => {
         const url = response.url();
+        const status = response.status();
         
         // Intercept YouTube player API response (contains video formats)
+        // This is the POST request that YouTube makes to get streaming data
         if (url.includes('/youtubei/v1/player') || url.includes('/get_video_info')) {
           try {
-            const text = await response.text();
-            if (text) {
-              try {
-                const json = JSON.parse(text);
-                if (json.videoDetails || json.streamingData || json.playabilityStatus) {
-                  playerResponse = json;
-                  console.log('[BrowserIntercept] ✓ Captured YouTube player API response');
-                }
-              } catch (e) {
-                // Try to extract from responseText if not JSON
-                if (text.includes('player_response') || text.includes('adaptiveFormats')) {
-                  playerResponse = text;
-                  console.log('[BrowserIntercept] ✓ Captured YouTube player API response (text format)');
+            // Only process successful responses
+            if (status >= 200 && status < 300) {
+              const text = await response.text();
+              if (text) {
+                try {
+                  const json = JSON.parse(text);
+                  // Prioritize responses with streamingData
+                  if (json.streamingData && (json.streamingData.formats || json.streamingData.adaptiveFormats)) {
+                    playerResponse = json;
+                    console.log('[BrowserIntercept] ✓ Captured YouTube player API response with streamingData');
+                    console.log(`[BrowserIntercept] StreamingData has ${json.streamingData.formats?.length || 0} formats and ${json.streamingData.adaptiveFormats?.length || 0} adaptive formats`);
+                  } else if (json.videoDetails || json.playabilityStatus) {
+                    // Store even without streamingData for debugging
+                    if (!playerResponse || !playerResponse.streamingData) {
+                      playerResponse = json;
+                      console.log('[BrowserIntercept] ✓ Captured YouTube player API response (no streamingData yet)');
+                    }
+                  }
+                } catch (e) {
+                  // Try to extract from responseText if not JSON
+                  if (text.includes('player_response') || text.includes('adaptiveFormats')) {
+                    playerResponse = text;
+                    console.log('[BrowserIntercept] ✓ Captured YouTube player API response (text format)');
+                  }
                 }
               }
+            } else {
+              console.warn(`[BrowserIntercept] YouTube API response failed: ${status} ${url}`);
             }
           } catch (error) {
-            // Ignore errors reading response
+            console.warn(`[BrowserIntercept] Error reading response ${url}:`, error.message);
           }
         }
         
@@ -134,6 +149,28 @@ class YouTubeExtractor {
         }
         
         console.log(`[BrowserIntercept] ✓ Successfully navigated to video page: ${currentUrl}`);
+        
+        // Wait for YouTube player to initialize - this is critical for getting streamingData
+        console.log('[BrowserIntercept] Waiting for YouTube player to initialize...');
+        try {
+          // Wait for player element to appear
+          await page.waitForSelector('#movie_player, ytd-player, #player', { timeout: 30000 }).catch(() => {
+            console.warn('[BrowserIntercept] Player element not found, continuing anyway...');
+          });
+          
+          // Wait a bit more for player to initialize and fetch streaming data
+          await new Promise(resolve => setTimeout(resolve, useTor ? 10000 : 5000)); // Longer wait for Tor
+          
+          // Try to scroll to trigger video loading
+          await page.evaluate(() => {
+            window.scrollTo(0, 300);
+          });
+          
+          // Wait a bit more after scroll
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        } catch (error) {
+          console.warn('[BrowserIntercept] Error waiting for player:', error.message);
+        }
 
         // Also try to extract ytInitialPlayerResponse from page JavaScript
         console.log('[BrowserIntercept] Attempting to extract video data from page JavaScript...');
@@ -189,12 +226,27 @@ class YouTubeExtractor {
             }
           }
           
+          // Check playability status
+          let playabilityStatus = null;
+          if (playerResponse && playerResponse.playabilityStatus) {
+            playabilityStatus = {
+              status: playerResponse.playabilityStatus.status,
+              reason: playerResponse.playabilityStatus.reason,
+              errorScreen: playerResponse.playabilityStatus.errorScreen
+            };
+          }
+          
           // Debug info
           const debugInfo = {
             hasWindowResponse: !!window.ytInitialPlayerResponse,
             hasYtplayerConfig: !!(window.ytplayer && window.ytplayer.config),
             playerResponseKeys: playerResponse ? Object.keys(playerResponse) : [],
-            streamingDataKeys: playerResponse?.streamingData ? Object.keys(playerResponse.streamingData) : []
+            streamingDataKeys: playerResponse?.streamingData ? Object.keys(playerResponse.streamingData) : [],
+            hasVideoDetails: !!(playerResponse && playerResponse.videoDetails),
+            hasStreamingData: !!(playerResponse && playerResponse.streamingData),
+            formatsCount: playerResponse?.streamingData?.formats?.length || 0,
+            adaptiveFormatsCount: playerResponse?.streamingData?.adaptiveFormats?.length || 0,
+            playabilityStatus: playabilityStatus
           };
           
           return {
@@ -206,10 +258,18 @@ class YouTubeExtractor {
         });
 
         // Wait longer for network responses (Tor is slow)
-        const networkWaitTime = useTor ? 5000 : 2000; // 5s for Tor, 2s for direct
+        // YouTube makes the player API call after the page loads, so wait for it
+        const networkWaitTime = useTor ? 15000 : 8000; // 15s for Tor, 8s for direct - need time for API call
+        console.log(`[BrowserIntercept] Waiting ${networkWaitTime/1000}s for YouTube player API response...`);
         await new Promise(resolve => setTimeout(resolve, networkWaitTime));
         
         console.log('[BrowserIntercept] Page extraction debug:', pageData.debugInfo);
+        console.log('[BrowserIntercept] Intercepted playerResponse:', {
+          hasResponse: !!playerResponse,
+          hasStreamingData: !!(playerResponse && playerResponse.streamingData),
+          formatsCount: playerResponse?.streamingData?.formats?.length || 0,
+          adaptiveFormatsCount: playerResponse?.streamingData?.adaptiveFormats?.length || 0
+        });
 
         // Verify we actually reached YouTube (not error page) - reuse currentUrl from earlier check
         const finalUrl = page.url();
@@ -226,8 +286,41 @@ class YouTubeExtractor {
         // Remove response handler
         page.off('response', responseHandler);
 
-        // Use page data if we got it, otherwise use intercepted response
-        const finalPlayerResponse = pageData.playerResponse || playerResponse;
+        // Prioritize intercepted API response (has streamingData) over page JavaScript response
+        // The intercepted response from /youtubei/v1/player API call has the actual streaming data
+        // The page JavaScript response often doesn't have streamingData until player fully loads
+        let finalPlayerResponse = null;
+        
+        if (playerResponse && playerResponse.streamingData) {
+          // Intercepted API response has streamingData - use it
+          finalPlayerResponse = playerResponse;
+          console.log('[BrowserIntercept] Using intercepted API response (has streamingData)');
+        } else if (pageData.playerResponse && pageData.playerResponse.streamingData) {
+          // Page JavaScript response has streamingData - use it
+          finalPlayerResponse = pageData.playerResponse;
+          console.log('[BrowserIntercept] Using page JavaScript response (has streamingData)');
+        } else if (playerResponse) {
+          // Intercepted response exists but no streamingData - might be initial load
+          finalPlayerResponse = playerResponse;
+          console.warn('[BrowserIntercept] Using intercepted response (no streamingData) - YouTube may not have loaded formats yet');
+        } else if (pageData.playerResponse) {
+          // Only page JavaScript response available
+          finalPlayerResponse = pageData.playerResponse;
+          console.warn('[BrowserIntercept] Using page JavaScript response (no streamingData) - YouTube may be blocking or video requires authentication');
+        }
+        
+        // Check playability status first
+        if (finalPlayerResponse && finalPlayerResponse.playabilityStatus) {
+          const status = finalPlayerResponse.playabilityStatus.status;
+          if (status !== 'OK') {
+            const reason = finalPlayerResponse.playabilityStatus.reason || 'Unknown reason';
+            console.error(`[BrowserIntercept] Video not playable! Status: ${status}, Reason: ${reason}`);
+            page.off('response', responseHandler);
+            if (extractionTimeout) clearTimeout(extractionTimeout);
+            reject(new Error(`Video not playable: ${status} - ${reason}. YouTube may be blocking access or the video requires authentication.`));
+            return;
+          }
+        }
         
         // Validate that we got the correct video (check videoId matches)
         if (finalPlayerResponse && finalPlayerResponse.videoDetails) {
@@ -240,6 +333,13 @@ class YouTubeExtractor {
             return;
           }
           console.log(`[BrowserIntercept] ✓ Verified video ID matches: ${videoId}`);
+        }
+        
+        // Check if we have streaming data
+        if (!finalPlayerResponse || !finalPlayerResponse.streamingData) {
+          console.error(`[BrowserIntercept] No streamingData in player response. Playability status:`, 
+            finalPlayerResponse?.playabilityStatus?.status || 'unknown');
+          console.error(`[BrowserIntercept] This usually means YouTube is blocking access or video requires authentication.`);
         }
 
         if (!finalPlayerResponse) {
