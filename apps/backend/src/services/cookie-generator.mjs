@@ -451,6 +451,9 @@ class CookieGenerator {
   async performBrowsingSession() {
     try {
       console.log('[CookieGenerator] Starting strategic YouTube-focused browsing session...');
+      
+      // Mark as browsing to prevent browser interception from interrupting
+      this.isBrowsing = true;
 
       // Phase 1: Quick Google visit (builds Google auth cookies that support YouTube)
       await this.googleSearch('technology news', {
@@ -474,9 +477,15 @@ class CookieGenerator {
 
       // Continue light browsing periodically
       this.scheduleLightBrowsing();
+      
+      // Mark browsing as complete
+      this.isBrowsing = false;
+      console.log('[CookieGenerator] Browsing session complete - browser interception can now proceed');
 
     } catch (error) {
       console.error('[CookieGenerator] Error during browsing session:', error.message);
+      // Ensure isBrowsing is reset even on error
+      this.isBrowsing = false;
     }
   }
 
