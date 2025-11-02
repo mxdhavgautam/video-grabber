@@ -162,39 +162,54 @@ class CookieGenerator {
         
         try {
           const { execSync } = await import('child_process');
-          // Test if Tor proxy port is listening
-          execSync('timeout 3 bash -c "</dev/tcp/tor-proxy/9050"', { 
+          // Test Tor HTTP proxy (8118) - more reliable for Chrome than SOCKS5
+          // dperson/torproxy exposes HTTP proxy on port 8118
+          execSync('timeout 3 bash -c "</dev/tcp/tor-proxy/8118"', { 
             encoding: 'utf8',
             stdio: 'pipe'
           });
           torProxyAvailable = true;
-          console.log('[CookieGenerator] ✓ Tor proxy is reachable on tor-proxy:9050');
+          console.log('[CookieGenerator] ✓ Tor HTTP proxy is reachable on tor-proxy:8118');
         } catch (error) {
-          // Try alternative test method
+          // Try alternative test method for HTTP proxy
           try {
             const { execSync } = await import('child_process');
-            const result = execSync('nc -z -w 3 tor-proxy 9050 2>&1', { 
+            const result = execSync('nc -z -w 3 tor-proxy 8118 2>&1', { 
               encoding: 'utf8',
               timeout: 5000 
             });
             torProxyAvailable = true;
-            console.log('[CookieGenerator] ✓ Tor proxy connectivity confirmed');
+            console.log('[CookieGenerator] ✓ Tor HTTP proxy connectivity confirmed');
           } catch (testError) {
-            console.warn('[CookieGenerator] ⚠️  Tor proxy connectivity test failed');
-            console.warn('[CookieGenerator] Tor proxy may not be ready or not accessible');
-            console.warn('[CookieGenerator] Falling back to direct connection for cookie generation');
-            torProxyAvailable = false;
+            // Also check SOCKS5 as fallback indicator
+            try {
+              const { execSync } = await import('child_process');
+              execSync('nc -z -w 2 tor-proxy 9050 2>&1', { 
+                encoding: 'utf8',
+                timeout: 3000 
+              });
+              // SOCKS5 is up, HTTP proxy should be too
+              torProxyAvailable = true;
+              console.log('[CookieGenerator] ✓ Tor SOCKS5 proxy reachable (HTTP proxy should also be available)');
+            } catch (socksError) {
+              console.warn('[CookieGenerator] ⚠️  Tor proxy connectivity test failed (both HTTP and SOCKS5)');
+              console.warn('[CookieGenerator] Tor proxy may not be ready or not accessible');
+              console.warn('[CookieGenerator] Falling back to direct connection for cookie generation');
+              torProxyAvailable = false;
+            }
           }
         }
         
         if (torProxyAvailable) {
-          // Chrome uses --proxy-server flag for SOCKS5 proxy
-          // Chrome ONLY supports socks5:// format (not socks5h:// - that's for yt-dlp/curl)
-          // Use socks5:// for Chrome (DNS resolution happens at proxy level)
-          const torProxyUrl = 'socks5://tor-proxy:9050';
-          chromeArgs.push(`--proxy-server=${torProxyUrl}`);
+          // Chrome has known issues with SOCKS5 proxies in Puppeteer
+          // dperson/torproxy exposes BOTH SOCKS5 (9050) and HTTP proxy (8118)
+          // Use HTTP proxy for Chrome - much more reliable than SOCKS5
+          // HTTP proxy is better supported by Chrome/Puppeteer
+          const torHttpProxyUrl = 'http://tor-proxy:8118';
+          chromeArgs.push(`--proxy-server=${torHttpProxyUrl}`);
           
-          console.log('[CookieGenerator] Routing browser through Tor proxy:', torProxyUrl);
+          console.log('[CookieGenerator] Routing browser through Tor HTTP proxy:', torHttpProxyUrl);
+          console.log('[CookieGenerator] Using HTTP proxy (more reliable than SOCKS5 for Chrome)');
           console.log('[CookieGenerator] Cookies will be generated from Tor exit node IP (matches yt-dlp requests)');
         } else {
           console.log('[CookieGenerator] Using direct connection (Tor proxy not available)');
@@ -319,17 +334,27 @@ class CookieGenerator {
         console.log(`[CookieGenerator] Testing connectivity to ${testUrl}...`);
         
         try {
-          await this.page.goto(testUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+          // Use longer timeout for Tor connections (slower than direct)
+          const testTimeout = useTorForCookies ? 30000 : 15000; // 30s for Tor, 15s for direct
+          await this.page.goto(testUrl, { waitUntil: 'domcontentloaded', timeout: testTimeout });
           const currentUrl = this.page.url();
           if (currentUrl.includes('google.com') || currentUrl.includes('about:blank')) {
             console.log('[CookieGenerator] ✓ Browser network connectivity confirmed');
+            if (useTorForCookies) {
+              console.log('[CookieGenerator] ✓ Chrome successfully routed through Tor HTTP proxy');
+            }
           } else {
             console.warn(`[CookieGenerator] ⚠️  Unexpected URL after connectivity test: ${currentUrl}`);
           }
         } catch (connectError) {
           console.error(`[CookieGenerator] ✗ Browser network connectivity test failed: ${connectError.message}`);
-          console.error('[CookieGenerator] Chrome may not be able to access the internet');
-          console.error('[CookieGenerator] If using Tor, verify Tor proxy is working');
+          if (useTorForCookies) {
+            console.error('[CookieGenerator] Chrome may not be able to route through Tor HTTP proxy');
+            console.error('[CookieGenerator] Verify Tor HTTP proxy is running on tor-proxy:8118');
+            console.error('[CookieGenerator] You can test: curl --proxy http://tor-proxy:8118 https://www.google.com');
+          } else {
+            console.error('[CookieGenerator] Chrome may not be able to access the internet');
+          }
           // Continue anyway - might still work for some sites
         }
       } catch (error) {
