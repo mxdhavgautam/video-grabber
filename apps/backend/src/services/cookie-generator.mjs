@@ -44,9 +44,13 @@ class CookieGenerator {
     this.browser = null;
     this.page = null;
     this.isRunning = false;
+    this.isBrowsing = false; // Track if currently browsing to prevent concurrent operations
     this.cookieUpdateInterval = null;
+    this.lightBrowsingInterval = null;
     this.restartTimeout12h = null;
     this.restartTimeout24h = null;
+    this.lastCookieExport = 0; // Track last export time to throttle
+    this.cookieExportThrottle = 60000; // Minimum 1 minute between exports
     this.sessionDuration12h = 12 * 60 * 60 * 1000; // 12 hours in milliseconds
     this.sessionDuration24h = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
     this.botDetectionFailures = 0; // Track consecutive bot detection failures
@@ -158,7 +162,7 @@ class CookieGenerator {
 
       this.page = await this.browser.newPage();
       
-      // Enhanced stealth: Hide automation indicators
+      // Enhanced stealth: Hide automation indicators and improve fingerprinting
       await this.page.evaluateOnNewDocument(() => {
         // Remove webdriver property
         Object.defineProperty(navigator, 'webdriver', { get: () => false });
@@ -172,15 +176,68 @@ class CookieGenerator {
             originalQuery(parameters)
         );
         
-        // Override plugins
+        // Override plugins (more realistic)
         Object.defineProperty(navigator, 'plugins', {
-          get: () => [1, 2, 3, 4, 5]
+          get: () => {
+            const plugins = [];
+            plugins.push({
+              0: { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+              description: 'Portable Document Format',
+              filename: 'internal-pdf-viewer',
+              length: 1,
+              name: 'Chrome PDF Plugin'
+            });
+            plugins.push({
+              0: { type: 'application/pdf', suffixes: 'pdf', description: '' },
+              description: '',
+              filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai',
+              length: 1,
+              name: 'Chrome PDF Viewer'
+            });
+            return plugins;
+          }
         });
         
         // Override languages
         Object.defineProperty(navigator, 'languages', {
           get: () => ['en-US', 'en']
         });
+        
+        // Override platform to be consistent
+        Object.defineProperty(navigator, 'platform', {
+          get: () => 'Win32'
+        });
+        
+        // Add realistic hardware concurrency
+        Object.defineProperty(navigator, 'hardwareConcurrency', {
+          get: () => 8
+        });
+        
+        // Add realistic device memory
+        Object.defineProperty(navigator, 'deviceMemory', {
+          get: () => 8
+        });
+        
+        // Override Chrome runtime
+        window.chrome = {
+          runtime: {}
+        };
+        
+        // Override outerWidth/outerHeight to match viewport
+        Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth });
+        Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight });
+        
+        // Make WebGL fingerprint less detectable
+        const getParameter = WebGLRenderingContext.prototype.getParameter;
+        WebGLRenderingContext.prototype.getParameter = function(parameter) {
+          if (parameter === 37445) {
+            return 'Intel Inc.';
+          }
+          if (parameter === 37446) {
+            return 'Intel Iris OpenGL Engine';
+          }
+          return getParameter.call(this, parameter);
+        };
       });
 
       // Set realistic viewport
@@ -205,10 +262,13 @@ class CookieGenerator {
       // Start the browsing session
       await this.performBrowsingSession();
 
-      // Set up periodic cookie export (every 5 minutes)
+      // Set up periodic cookie export (every 15 minutes - reduced frequency to avoid spam)
+      // Only export if cookies have changed or critical cookies are missing
       this.cookieUpdateInterval = setInterval(async () => {
-        await this.exportCookies();
-      }, 5 * 60 * 1000); // 5 minutes
+        if (this.isRunning && this.page) {
+          await this.exportCookies();
+        }
+      }, 15 * 60 * 1000); // 15 minutes (reduced from 5 to avoid excessive exports)
 
       // Schedule 12-hour browser instance restart (primary renewal)
       this.restartTimeout12h = setTimeout(() => {
@@ -298,7 +358,8 @@ class CookieGenerator {
 
       // Phase 3: Export cookies immediately after YouTube activity
       // This captures fresh session cookies from video watching
-      await this.exportCookies();
+      // Force export to bypass throttling since this is important
+      await this.exportCookies(true);
       
       console.log('[CookieGenerator] ✓ YouTube-focused browsing session completed, cookies exported');
       
@@ -380,7 +441,8 @@ class CookieGenerator {
           });
           
           // Export cookies after watching (capture session cookies)
-          await this.exportCookies();
+          // Force export to bypass throttling since this is important
+          await this.exportCookies(true);
           
           // Wait between searches
           if (i < searchQueries.length - 1) {
@@ -389,7 +451,8 @@ class CookieGenerator {
         }
       } else {
         // If we watched from feed, export cookies
-        await this.exportCookies();
+        // Force export to bypass throttling since this is important
+        await this.exportCookies(true);
       }
 
       console.log('[CookieGenerator] ✓ YouTube session warmup completed');
@@ -506,6 +569,7 @@ class CookieGenerator {
       
       // Strategy 2: Accept cookies/consent if dialog appears (do this early, before any navigation)
       // CRITICAL: CONSENT cookie is required by YouTube for API access
+      let consentHandled = false;
       try {
         // Try multiple methods to find and click consent button
         const consentMethods = [
@@ -572,13 +636,14 @@ class CookieGenerator {
               if (element) {
                 console.log('[CookieGenerator] Found consent dialog, accepting...');
                 await element.click();
-                await this.sleep(4000); // Wait longer for cookie to be set
+                await this.sleep(6000); // Wait longer for cookie to be set
                 
                 // Verify CONSENT cookie was set
                 const cookiesAfter = await this.page.cookies();
                 const hasConsent = cookiesAfter.some(c => c.name === 'CONSENT' || c.name.includes('CONSENT'));
                 if (hasConsent) {
                   console.log('[CookieGenerator] ✓ Consent accepted - CONSENT cookie verified');
+                  consentHandled = true;
                 } else {
                   console.warn('[CookieGenerator] ⚠️  Consent clicked but CONSENT cookie not found yet');
                 }
@@ -595,9 +660,110 @@ class CookieGenerator {
         
         if (!consentClicked) {
           console.log('[CookieGenerator] No consent dialog found (may have been accepted already)');
+          
+          // Check if CONSENT cookie already exists
+          const currentCookies = await this.page.cookies();
+          const hasConsent = currentCookies.some(c => c.name === 'CONSENT' || c.name.includes('CONSENT'));
+          if (hasConsent) {
+            console.log('[CookieGenerator] ✓ CONSENT cookie already present');
+            consentHandled = true;
+          }
         }
       } catch (error) {
         console.log('[CookieGenerator] Error handling consent:', error.message);
+      }
+      
+      // CRITICAL: If CONSENT cookie is still missing, manually inject it
+      // YouTube requires this cookie for API access. Format: CONSENT=PENDING+[number]
+      // Recent format (2024-2025): CONSENT=YES+[timestamp] or CONSENT=YES+
+      if (!consentHandled) {
+        try {
+          console.log('[CookieGenerator] CONSENT cookie missing - manually injecting...');
+          
+          // Try to set CONSENT cookie with current format (2024-2025)
+          // Format: CONSENT=YES+[number] or CONSENT=YES+cb.[date]+[number]
+          // Latest format (2024-2025): YES+cb.20250101+en-US+[number]
+          const now = new Date();
+          const dateStr = now.toISOString().split('T')[0].replace(/-/g, '');
+          const timestamp = Math.floor(now.getTime() / 1000);
+          // Try multiple formats that YouTube accepts
+          const consentFormats = [
+            `YES+cb.${dateStr}+en-US+${timestamp}`,
+            `YES+cb+en-US+${timestamp}`,
+            `YES+${timestamp}`,
+            `YES+cb.${dateStr}`
+          ];
+          
+          // Try setting CONSENT cookie with different formats
+          let consentSet = false;
+          for (const consentValue of consentFormats) {
+            try {
+              // Set cookie for .youtube.com domain (works for all subdomains)
+              await this.page.setCookie({
+                name: 'CONSENT',
+                value: consentValue,
+                domain: '.youtube.com',
+                path: '/',
+                secure: true,
+                httpOnly: false,
+                sameSite: 'None',
+                expires: Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60) // 1 year
+              });
+              
+              // Wait and verify
+              await this.sleep(500);
+              const cookiesAfter = await this.page.cookies();
+              const hasConsent = cookiesAfter.some(c => c.name === 'CONSENT');
+              
+              if (hasConsent) {
+                console.log(`[CookieGenerator] ✓ CONSENT cookie set with format: ${consentValue.substring(0, 30)}...`);
+                consentSet = true;
+                break;
+              }
+            } catch (e) {
+              // Try next format
+              continue;
+            }
+          }
+          
+          if (!consentSet) {
+            // Fallback: Try setting on youtube.com domain without dot
+            try {
+              await this.page.setCookie({
+                name: 'CONSENT',
+                value: consentFormats[0],
+                domain: 'youtube.com',
+                path: '/',
+                secure: true,
+                httpOnly: false,
+                sameSite: 'None',
+                expires: Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60)
+              });
+              
+              // Verify it was set
+              await this.sleep(500);
+              const cookiesAfter = await this.page.cookies();
+              const hasConsent = cookiesAfter.some(c => c.name === 'CONSENT');
+              
+              if (hasConsent) {
+                console.log('[CookieGenerator] ✓ CONSENT cookie set on youtube.com domain');
+                consentSet = true;
+              }
+            } catch (e) {
+              console.warn('[CookieGenerator] Failed to set CONSENT cookie on youtube.com domain:', e.message);
+            }
+          }
+          
+          // Final verification
+          if (consentSet) {
+            console.log('[CookieGenerator] ✓ CONSENT cookie manually injected and verified');
+            consentHandled = true;
+          } else {
+            console.warn('[CookieGenerator] ⚠️  Failed to manually inject CONSENT cookie - YouTube may still require it');
+          }
+        } catch (injectError) {
+          console.warn('[CookieGenerator] Error manually injecting CONSENT cookie:', injectError.message);
+        }
       }
       
       // Strategy 3: DO NOT click sign-in buttons (they navigate to login page)
@@ -1703,14 +1869,23 @@ class CookieGenerator {
 
   /**
    * Export cookies to Netscape format for yt-dlp
+   * Throttled to avoid excessive exports
    */
-  async exportCookies() {
+  async exportCookies(force = false) {
     try {
       if (!this.page) {
         console.warn('[CookieGenerator] No page available for cookie export');
         return;
       }
 
+      // Throttle exports - don't export more than once per minute unless forced
+      const now = Date.now();
+      if (!force && (now - this.lastCookieExport) < this.cookieExportThrottle) {
+        // Skip export - too recent
+        return;
+      }
+
+      this.lastCookieExport = now;
       console.log('[CookieGenerator] Collecting cookies from browser...');
       const cookies = await this.page.cookies();
       console.log(`[CookieGenerator] Found ${cookies.length} total cookies in browser`);
@@ -1842,36 +2017,47 @@ class CookieGenerator {
 
   /**
    * Schedule light browsing to maintain session
-   * Strategic: Quick YouTube activity every 2-3 minutes keeps session alive
+   * Strategic: Quick YouTube activity every 5-8 minutes keeps session alive
+   * Reduced frequency to avoid excessive activity and detection
    */
   scheduleLightBrowsing() {
-    // Every 2-3 minutes, do quick YouTube activity (homepage or search)
-    setInterval(async () => {
-      if (this.isRunning && this.page) {
+    // Store interval ID to allow cleanup
+    this.lightBrowsingInterval = setInterval(async () => {
+      if (this.isRunning && this.page && !this.isBrowsing) {
         try {
+          this.isBrowsing = true; // Prevent concurrent browsing
+          
+          // Less frequent activity - every 5-8 minutes
           // Alternate between homepage visit and quick search
           if (Math.random() > 0.5) {
-            // Option 1: Visit homepage and scroll feed
+            // Option 1: Visit homepage and scroll feed (faster)
             await this.humanVisit('https://www.youtube.com', {
               waitTime: [2000, 3000],
               scroll: true,
               randomDelay: false
             });
           } else {
-            // Option 2: Quick search (faster but still generates cookies)
-            await this.youtubeSearchAndWatch('latest', {
-              watchDuration: [3000, 5000], // Short watch (3-5s)
-              scrollFeed: false
+            // Option 2: Quick search (but don't watch video - too much activity)
+            await this.humanVisit('https://www.youtube.com', {
+              waitTime: [2000, 3000],
+              scroll: true,
+              randomDelay: false
             });
           }
           
-          // Export cookies after light browsing
-          await this.exportCookies();
+          // Only export cookies if critical cookies might have changed
+          // Don't export on every light browsing cycle - too frequent
+          const shouldExport = Math.random() > 0.7; // 30% chance to export
+          if (shouldExport) {
+            await this.exportCookies();
+          }
         } catch (error) {
           console.warn('[CookieGenerator] Light browsing failed:', error.message);
+        } finally {
+          this.isBrowsing = false;
         }
       }
-    }, this.randomBetween(2 * 60 * 1000, 3 * 60 * 1000)); // 2-3 minutes
+    }, this.randomBetween(5 * 60 * 1000, 8 * 60 * 1000)); // 5-8 minutes (increased from 2-3)
   }
 
   /**
@@ -1945,6 +2131,10 @@ class CookieGenerator {
       if (this.cookieUpdateInterval) {
         clearInterval(this.cookieUpdateInterval);
         this.cookieUpdateInterval = null;
+      }
+      if (this.lightBrowsingInterval) {
+        clearInterval(this.lightBrowsingInterval);
+        this.lightBrowsingInterval = null;
       }
       if (this.restartTimeout12h) {
         clearTimeout(this.restartTimeout12h);
