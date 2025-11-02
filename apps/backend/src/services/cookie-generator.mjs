@@ -58,6 +58,7 @@ class CookieGenerator {
     this.lastFailureTime = null;
     this.restartCooldown = 30 * 60 * 1000; // Don't restart more than once every 30 minutes
     this.lastRestartTime = null;
+    this.lastBrowsingCompleteTime = 0; // Track when browsing session completes
     this.captchaSolver = null; // CAPTCHA solver service (optional)
     
     // Initialize CAPTCHA solver asynchronously (optional dependency)
@@ -480,6 +481,7 @@ class CookieGenerator {
       
       // Mark browsing as complete
       this.isBrowsing = false;
+      this.lastBrowsingCompleteTime = Date.now();
       console.log('[CookieGenerator] Browsing session complete - browser interception can now proceed');
 
     } catch (error) {

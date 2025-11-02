@@ -41,6 +41,15 @@ class YouTubeExtractor {
       throw new Error('Browser interception skipped - CookieGenerator is currently browsing (would interrupt cookie generation)');
     }
 
+    // Wait a bit after cookie generation completes to avoid triggering Google bot detection
+    // Rapid navigation right after cookie generation can look suspicious
+    const timeSinceBrowsingComplete = Date.now() - (this.cookieGenerator.lastBrowsingCompleteTime || 0);
+    if (timeSinceBrowsingComplete < 10000 && timeSinceBrowsingComplete > 0) {
+      const waitTime = 10000 - timeSinceBrowsingComplete;
+      console.log(`[BrowserIntercept] Waiting ${Math.round(waitTime/1000)}s after cookie generation to avoid bot detection...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+
     const page = this.cookieGenerator.page;
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
     
@@ -118,37 +127,59 @@ class YouTubeExtractor {
       page.on('response', responseHandler);
 
       try {
-        // Clear any previous navigation state by going to about:blank first
-        await page.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 5000 }).catch(() => {});
+        // Check current URL - if already on the target video, use it
+        const currentPageUrl = page.url();
+        const isAlreadyOnVideo = currentPageUrl.includes(`youtube.com/watch`) && currentPageUrl.includes(videoId);
         
-        console.log(`[BrowserIntercept] Navigating to: ${videoUrl} (videoId: ${videoId})`);
-        // Use lenient timeout (Tor is slow) and less strict wait strategy
-        // Add cache-control headers to prevent caching
-        await page.setExtraHTTPHeaders({
-          'Cache-Control': 'no-cache, no-store, must-revalidate',
-          'Pragma': 'no-cache',
-          'Expires': '0'
-        });
-        
-        try {
-          await page.goto(videoUrl, { 
-            waitUntil: 'domcontentloaded', 
-            timeout: 60000, // 60s for Tor
-            referer: undefined // Don't use referer to avoid cache issues
-          }); // 60s for Tor
-        } catch (timeoutError) {
-          // If domcontentloaded times out, try even simpler load
-          console.warn('[BrowserIntercept] domcontentloaded timeout, trying load...');
-          await page.goto(videoUrl, { 
-            waitUntil: 'load', 
-            timeout: 45000,
-            referer: undefined
+        if (!isAlreadyOnVideo) {
+          // Only navigate if not already on the correct video page
+          // Don't navigate to about:blank - it can trigger Google bot detection
+          // Navigate directly to YouTube URL
+          console.log(`[BrowserIntercept] Navigating to: ${videoUrl} (videoId: ${videoId})`);
+          console.log(`[BrowserIntercept] Current page URL: ${currentPageUrl}`);
+          
+          // Use lenient timeout (Tor is slow) and less strict wait strategy
+          // Add cache-control headers to prevent caching
+          await page.setExtraHTTPHeaders({
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0'
           });
+          
+          try {
+            await page.goto(videoUrl, { 
+              waitUntil: 'domcontentloaded', 
+              timeout: 60000, // 60s for Tor
+              referer: 'https://www.youtube.com/' // Use YouTube referer to avoid bot detection
+            });
+          } catch (timeoutError) {
+            // If domcontentloaded times out, try even simpler load
+            console.warn('[BrowserIntercept] domcontentloaded timeout, trying load...');
+            await page.goto(videoUrl, { 
+              waitUntil: 'load', 
+              timeout: 45000,
+              referer: 'https://www.youtube.com/'
+            });
+          }
+        } else {
+          console.log(`[BrowserIntercept] Already on target video page, using existing page`);
         }
         
-        // Verify we're on the correct page
+        // Verify we're on the correct page and NOT on Google CAPTCHA
         const currentUrl = page.url();
-        if (!currentUrl.includes(videoId)) {
+        
+        // Check for Google CAPTCHA page (google.com/sorry)
+        if (currentUrl.includes('google.com/sorry') || currentUrl.includes('accounts.google.com')) {
+          console.error(`[BrowserIntercept] Navigation redirected to Google CAPTCHA: ${currentUrl}`);
+          console.error(`[BrowserIntercept] Google is blocking access - browser interception may trigger bot detection`);
+          page.off('response', responseHandler);
+          if (extractionTimeout) clearTimeout(extractionTimeout);
+          reject(new Error(`Google CAPTCHA block - browser interception failed. Current URL: ${currentUrl}`));
+          return;
+        }
+        
+        // Verify we're actually on YouTube video page
+        if (!currentUrl.includes('youtube.com/watch') || !currentUrl.includes(videoId)) {
           console.error(`[BrowserIntercept] Navigation failed - URL mismatch. Expected videoId ${videoId}, current URL: ${currentUrl}`);
           page.off('response', responseHandler);
           if (extractionTimeout) clearTimeout(extractionTimeout);
@@ -281,6 +312,16 @@ class YouTubeExtractor {
 
         // Verify we actually reached YouTube (not error page) - reuse currentUrl from earlier check
         const finalUrl = page.url();
+        
+        // Check for Google CAPTCHA redirect
+        if (finalUrl.includes('google.com/sorry') || finalUrl.includes('accounts.google.com')) {
+          console.error(`[BrowserIntercept] Final check: Redirected to Google CAPTCHA - ${finalUrl}`);
+          page.off('response', responseHandler);
+          if (extractionTimeout) clearTimeout(extractionTimeout);
+          reject(new Error(`Google CAPTCHA block detected - browser interception cannot proceed. URL: ${finalUrl}`));
+          return;
+        }
+        
         if (!finalUrl.includes('youtube.com/watch')) {
           page.off('response', responseHandler);
           if (extractionTimeout) clearTimeout(extractionTimeout);
