@@ -53,10 +53,75 @@ class YouTubeExtractor {
     const page = this.cookieGenerator.page;
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
     
-    // CRITICAL: Verify cookies are present in browser BEFORE attempting interception
+    // CRITICAL: Load cookies from file into browser BEFORE attempting interception
+    // This ensures cookies are properly synced and have correct domain/path attributes
     // YouTube requires valid cookies to be in the browser context when making API requests
     try {
-      console.log('[BrowserIntercept] Verifying cookies in browser context before extraction...');
+      console.log('[BrowserIntercept] Loading and syncing cookies from file into browser context...');
+      
+      // First, refresh cookies from browser to file to ensure file is up-to-date
+      await this.cookieGenerator.exportCookies(true);
+      
+      // Load cookies from file and set them in browser context
+      // This ensures cookies have proper attributes (domain, path, secure, etc.)
+      if (fs.existsSync(this.cookiesPath)) {
+        try {
+          const cookiesContent = fs.readFileSync(this.cookiesPath, 'utf8');
+          const cookieLines = cookiesContent.split('\n').filter(line => line.trim() && !line.startsWith('#'));
+          
+          console.log(`[BrowserIntercept] Loading ${cookieLines.length} cookies from file into browser...`);
+          
+          let cookiesSet = 0;
+          // Parse Netscape format cookies and set them in browser
+          for (const line of cookieLines) {
+            const parts = line.split('\t');
+            if (parts.length >= 7) {
+              const domain = parts[0].trim();
+              const flag = parts[1] === 'TRUE';
+              const path = parts[2].trim();
+              const secure = parts[3] === 'TRUE';
+              const expiration = parseInt(parts[4], 10);
+              const name = parts[5].trim();
+              const value = parts.slice(6).join('\t').trim();
+              
+              // Only set YouTube/Google cookies
+              if (domain && name && (domain.includes('youtube.com') || domain.includes('google.com'))) {
+                try {
+                  // Format domain correctly for browser cookies
+                  let cookieDomain = domain;
+                  if (!cookieDomain.startsWith('.')) {
+                    // Add leading dot for domain cookies
+                    cookieDomain = `.${cookieDomain}`;
+                  }
+                  
+                  await page.setCookie({
+                    name,
+                    value,
+                    domain: cookieDomain,
+                    path: path || '/',
+                    secure: secure || true, // Default to secure for YouTube
+                    httpOnly: false, // Not httpOnly so JavaScript can access
+                    sameSite: 'None',
+                    expires: expiration > 0 ? expiration : undefined
+                  });
+                  cookiesSet++;
+                } catch (cookieSetError) {
+                  // Some cookies might fail to set (domain mismatch, etc.) - continue
+                  console.warn(`[BrowserIntercept] Could not set cookie ${name}: ${cookieSetError.message}`);
+                }
+              }
+            }
+          }
+          
+          console.log(`[BrowserIntercept] ✓ Set ${cookiesSet} cookies in browser context`);
+        } catch (fileError) {
+          console.warn(`[BrowserIntercept] Failed to load cookies from file: ${fileError.message}`);
+        }
+      } else {
+        console.warn(`[BrowserIntercept] ⚠️ Cookie file not found: ${this.cookiesPath}`);
+      }
+      
+      // Verify cookies are now in browser
       const browserCookies = await page.cookies();
       const youtubeCookies = browserCookies.filter(c => 
         c.domain.includes('youtube.com') || c.domain.includes('google.com')
@@ -67,30 +132,13 @@ class YouTubeExtractor {
       );
       
       if (foundCritical.length < 3) {
-        console.warn(`[BrowserIntercept] ⚠️ Missing critical cookies (found: ${foundCritical.join(', ')}) - refreshing from browser...`);
-        // Force cookie refresh from current browser state
-        await this.cookieGenerator.exportCookies(true);
-        
-        // Re-check after refresh
-        const refreshedCookies = await page.cookies();
-        const refreshedYoutubeCookies = refreshedCookies.filter(c => 
-          c.domain.includes('youtube.com') || c.domain.includes('google.com')
-        );
-        const refreshedCritical = criticalCookies.filter(name => 
-          refreshedYoutubeCookies.some(c => c.name === name)
-        );
-        
-        if (refreshedCritical.length < 3) {
-          console.error(`[BrowserIntercept] ❌ Still missing critical cookies after refresh (found: ${refreshedCritical.join(', ')})`);
-          console.error(`[BrowserIntercept] YouTube will likely block access - browser interception may fail`);
-        } else {
-          console.log(`[BrowserIntercept] ✓ Critical cookies refreshed (found: ${refreshedCritical.join(', ')})`);
-        }
+        console.error(`[BrowserIntercept] ❌ Missing critical cookies after sync (found: ${foundCritical.join(', ')})`);
+        console.error(`[BrowserIntercept] YouTube will likely block access - browser interception may fail`);
       } else {
         console.log(`[BrowserIntercept] ✓ Critical cookies verified in browser (found: ${foundCritical.join(', ')})`);
       }
     } catch (cookieError) {
-      console.warn(`[BrowserIntercept] Failed to verify cookies: ${cookieError.message}`);
+      console.warn(`[BrowserIntercept] Failed to sync cookies: ${cookieError.message}`);
       console.warn(`[BrowserIntercept] Proceeding anyway - cookies may still be valid`);
     }
     

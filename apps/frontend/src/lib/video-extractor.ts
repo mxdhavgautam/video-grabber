@@ -37,7 +37,9 @@ export async function extractVideoInfo(url: string): Promise<VideoInfo | null> {
     
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
-      throw new Error(errorData.error || errorData.message || 'Failed to extract video info')
+      // Prefer message over error as message usually contains the full user-friendly text
+      const errorText = errorData.message || errorData.error || 'Failed to extract video info'
+      throw new Error(errorText)
     }
 
     const data = await response.json()
