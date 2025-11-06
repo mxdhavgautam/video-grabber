@@ -7,15 +7,29 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { EventEmitter } from 'events';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-class SQLiteSessionStore {
+class SQLiteSessionStore extends EventEmitter {
   constructor(options = {}) {
-    const dbPath = options.dbPath || process.env.SESSION_DB_PATH || 
-                   path.join(process.env.DATABASE_PATH ? path.dirname(process.env.DATABASE_PATH) : process.cwd(), 'database', 'sessions.db');
+    super(); // Call EventEmitter constructor
+    
+    // Determine session database path
+    let dbPath;
+    if (options.dbPath) {
+      dbPath = options.dbPath;
+    } else if (process.env.SESSION_DB_PATH) {
+      dbPath = process.env.SESSION_DB_PATH;
+    } else if (process.env.DATABASE_PATH) {
+      // Use same directory as main database
+      const mainDbDir = path.dirname(process.env.DATABASE_PATH);
+      dbPath = path.join(mainDbDir, 'sessions.db');
+    } else {
+      dbPath = path.join(process.cwd(), 'database', 'sessions.db');
+    }
     
     // Ensure directory exists
     const dbDir = path.dirname(dbPath);
