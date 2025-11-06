@@ -404,8 +404,15 @@ class UserBrowserService {
    */
   async loadCookiesIntoBrowser(cookies) {
     try {
+      let loadedCount = 0;
       for (const cookie of cookies) {
         try {
+          // Skip __Host- prefixed cookies - they have strict requirements and often fail
+          // These cookies are set by the browser automatically when visiting the site
+          if (cookie.name && cookie.name.startsWith('__Host-')) {
+            continue;
+          }
+
           // Convert cookie format if needed
           const browserCookie = {
             name: cookie.name,
@@ -423,11 +430,13 @@ class UserBrowserService {
           }
 
           await this.page.setCookie(browserCookie);
+          loadedCount++;
         } catch (cookieError) {
-          console.warn(`[UserBrowserService:${this.userId}] Failed to set cookie ${cookie.name}:`, cookieError.message);
+          // Silently skip cookies that can't be set (like __Host- cookies)
+          // They'll be set automatically when visiting the site
         }
       }
-      console.log(`[UserBrowserService:${this.userId}] Loaded initial cookies into browser`);
+      console.log(`[UserBrowserService:${this.userId}] Loaded ${loadedCount} initial cookies into browser`);
     } catch (error) {
       console.warn(`[UserBrowserService:${this.userId}] Error loading cookies:`, error.message);
     }

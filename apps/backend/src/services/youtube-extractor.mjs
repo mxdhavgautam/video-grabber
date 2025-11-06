@@ -34,11 +34,11 @@ class YouTubeExtractor {
       await this.init();
       console.log(`[Extract] Starting extraction for video: ${videoId}`);
 
-      // Try browser interception first if we have an active browser
+      // Try browser interception first if we have an active browser (like old version)
       if (userId && this.browserManager && this.browserManager.hasActiveBrowser(userId)) {
         console.log('[Extract] Attempting browser interception (extract from Chrome network responses)...');
         try {
-          const videoInfo = await this.extractWithBrowserInterception(videoId, userId);
+          const videoInfo = await this.extractWithBrowserInterception(videoId, userId, cookieFilePath);
           console.log('[Extract] ✓ Browser interception succeeded - extracted from Chrome network responses!');
           return videoInfo;
         } catch (browserError) {
@@ -62,12 +62,13 @@ class YouTubeExtractor {
   /**
    * Extract video data by intercepting Chrome's network requests
    * This bypasses yt-dlp entirely by using the responses Chrome receives
-   * Chrome successfully loads YouTube, so we intercept those working responses
+   * Aligned with old version's approach - sync cookies from file first, then intercept
    * @param {string} videoId - YouTube video ID
    * @param {string} userId - User ID for browser access
+   * @param {string} cookieFilePath - Path to cookie file (for syncing into browser)
    * @returns {Promise<Object>} - Parsed video information
    */
-  async extractWithBrowserInterception(videoId, userId) {
+  async extractWithBrowserInterception(videoId, userId, cookieFilePath = null) {
     if (!this.browserManager || !this.browserManager.hasActiveBrowser(userId)) {
       throw new Error('Browser interception requires active browser instance');
     }
@@ -82,11 +83,66 @@ class YouTubeExtractor {
 
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
+    // CRITICAL: Load cookies from file into browser BEFORE attempting interception (like old version)
+    // This ensures cookies are properly synced and have correct domain/path attributes
+    if (cookieFilePath && fs.existsSync(cookieFilePath)) {
+      try {
+        console.log('[BrowserIntercept] Loading and syncing cookies from file into browser context...');
+        const cookiesContent = fs.readFileSync(cookieFilePath, 'utf8');
+        const cookieLines = cookiesContent.split('\n').filter(line => line.trim() && !line.startsWith('#'));
+        
+        let cookiesSet = 0;
+        // Parse Netscape format cookies and set them in browser
+        for (const line of cookieLines) {
+          const parts = line.split('\t');
+          if (parts.length >= 7) {
+            const domain = parts[0].trim();
+            const path = parts[2].trim();
+            const secure = parts[3] === 'TRUE';
+            const expiration = parseInt(parts[4], 10);
+            const name = parts[5].trim();
+            const value = parts.slice(6).join('\t').trim();
+            
+            // Skip __Host- cookies (they have strict requirements)
+            if (name.startsWith('__Host-')) {
+              continue;
+            }
+            
+            // Only set YouTube/Google cookies
+            if (domain && name && (domain.includes('youtube.com') || domain.includes('google.com'))) {
+              try {
+                let cookieDomain = domain;
+                if (!cookieDomain.startsWith('.')) {
+                  cookieDomain = `.${cookieDomain}`;
+                }
+                
+                await page.setCookie({
+                  name,
+                  value,
+                  domain: cookieDomain,
+                  path: path || '/',
+                  secure: secure || true,
+                  httpOnly: false,
+                  sameSite: 'None',
+                  expires: expiration > 0 ? expiration : undefined
+                });
+                cookiesSet++;
+              } catch (cookieSetError) {
+                // Some cookies might fail to set - continue
+              }
+            }
+          }
+        }
+        console.log(`[BrowserIntercept] ✓ Set ${cookiesSet} cookies in browser context`);
+      } catch (fileError) {
+        console.warn(`[BrowserIntercept] Failed to load cookies from file: ${fileError.message}`);
+      }
+    }
+
     return new Promise(async (resolve, reject) => {
       let playerResponse = null;
-      let ytInitialData = null;
       let extractionTimeout = null;
-      const timeout = 30000; // 30s timeout
+      const timeout = 30000;
 
       // Intercept network responses to capture YouTube API calls
       const responseHandler = async (response) => {
@@ -124,18 +180,6 @@ class YouTubeExtractor {
             console.warn(`[BrowserIntercept] Error reading response ${url}:`, error.message);
           }
         }
-        
-        // Also check for ytInitialData in HTML response
-        if (url === videoUrl || url === `${videoUrl}/` || url.includes('/watch')) {
-          try {
-            const text = await response.text();
-            if (text && text.includes('ytInitialData')) {
-              ytInitialData = text;
-            }
-          } catch (error) {
-            // Ignore errors
-          }
-        }
       };
 
       // Set timeout
@@ -144,16 +188,20 @@ class YouTubeExtractor {
         reject(new Error('Browser interception timeout - video data not captured'));
       }, timeout);
 
-      // Listen for responses
+      // Listen for responses BEFORE navigating/refreshing
       page.on('response', responseHandler);
 
       try {
-        // Check if already on video page (we just navigated there)
+        // Verify we're on the video page (should already be there from navigateToVideoAndExtractCookies)
         const currentPageUrl = page.url();
-        const isAlreadyOnVideo = currentPageUrl.includes(`youtube.com/watch`) && currentPageUrl.includes(videoId);
+        const isOnVideo = currentPageUrl.includes(`youtube.com/watch`) && currentPageUrl.includes(videoId);
         
-        if (!isAlreadyOnVideo) {
-          // Navigate to video (should already be there from navigateToVideoAndExtractCookies, but just in case)
+        if (isOnVideo) {
+          // Refresh page to trigger new API calls with synced cookies
+          console.log('[BrowserIntercept] Refreshing video page to trigger API calls with synced cookies...');
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+        } else {
+          // Navigate to video if not already there
           console.log(`[BrowserIntercept] Navigating to video: ${videoUrl}`);
           await page.goto(videoUrl, { 
             waitUntil: 'domcontentloaded', 
@@ -165,12 +213,10 @@ class YouTubeExtractor {
         // Wait for YouTube player to initialize
         console.log('[BrowserIntercept] Waiting for YouTube player to initialize...');
         try {
-          await page.waitForSelector('#movie_player, ytd-player, #player', { timeout: 15000 }).catch(() => {
-            console.warn('[BrowserIntercept] Player element not found, continuing anyway...');
-          });
+          await page.waitForSelector('#movie_player, ytd-player, #player', { timeout: 15000 }).catch(() => {});
           await new Promise(resolve => setTimeout(resolve, 5000));
         } catch (error) {
-          console.warn('[BrowserIntercept] Error waiting for player:', error.message);
+          // Continue anyway
         }
 
         // Extract from page JavaScript
@@ -178,38 +224,26 @@ class YouTubeExtractor {
         const pageData = await page.evaluate(() => {
           let playerResponse = null;
           
-          // Method 1: ytInitialPlayerResponse
           if (window.ytInitialPlayerResponse) {
             playerResponse = window.ytInitialPlayerResponse;
-          }
-          
-          // Method 2: ytplayer.config
-          if (!playerResponse && window.ytplayer && window.ytplayer.config) {
-            const config = window.ytplayer.config;
-            if (config.args && config.args.player_response) {
-              try {
-                playerResponse = typeof config.args.player_response === 'string' 
-                  ? JSON.parse(config.args.player_response) 
-                  : config.args.player_response;
-              } catch (e) {
-                playerResponse = config.args.player_response;
-              }
+          } else if (window.ytplayer && window.ytplayer.config && window.ytplayer.config.args && window.ytplayer.config.args.player_response) {
+            try {
+              playerResponse = typeof window.ytplayer.config.args.player_response === 'string' 
+                ? JSON.parse(window.ytplayer.config.args.player_response) 
+                : window.ytplayer.config.args.player_response;
+            } catch (e) {
+              playerResponse = window.ytplayer.config.args.player_response;
             }
           }
           
           return {
             playerResponse,
             title: document.title,
-            videoId: new URL(window.location.href).searchParams.get('v'),
-            debugInfo: {
-              hasWindowResponse: !!window.ytInitialPlayerResponse,
-              hasYtplayerConfig: !!(window.ytplayer && window.ytplayer.config),
-              hasStreamingData: !!(playerResponse && playerResponse.streamingData)
-            }
+            videoId: new URL(window.location.href).searchParams.get('v')
           };
         });
 
-        // Wait for network responses
+        // Wait for network responses (YouTube makes API call after page loads)
         console.log('[BrowserIntercept] Waiting 8s for YouTube player API response...');
         await new Promise(resolve => setTimeout(resolve, 8000));
 
