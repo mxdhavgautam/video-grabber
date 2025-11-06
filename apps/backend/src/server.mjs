@@ -34,12 +34,13 @@ const BACKEND_URL = process.env.BACKEND_URL || `http://localhost:${PORT}`;
 const db = getDatabase();
 const authService = getAuthService();
 const cookieExtractor = new CookieExtractor();
+const browserManager = getBrowserManager();
 let youtubeExtractor = null;
 
-// Initialize YouTube extractor (no cookie generator needed)
+// Initialize YouTube extractor with browser manager for interception
 (async () => {
   try {
-    youtubeExtractor = new YouTubeExtractor();
+    youtubeExtractor = new YouTubeExtractor(browserManager);
     await youtubeExtractor.init();
     console.log('[Server] YouTube extractor initialized');
   } catch (error) {
@@ -1097,7 +1098,8 @@ app.post('/api/extract', authService.requireAuth.bind(authService), async (req, 
     }
     
     // Extract video info with user's cookies (fresh or existing)
-    const videoInfo = await youtubeExtractor.extract(videoId, tempCookieFilePath);
+    // Pass userId for browser interception (preferred method)
+    const videoInfo = await youtubeExtractor.extract(videoId, tempCookieFilePath, user.id);
     
     // Log successful extraction
     db.logAuditEvent({
