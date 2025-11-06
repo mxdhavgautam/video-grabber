@@ -74,6 +74,16 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
+// Debug middleware to log all cookies
+app.use((req, res, next) => {
+  if (req.path === '/api/user' || req.path === '/auth/google/callback') {
+    console.log(`[Debug] ${req.method} ${req.path} - All cookies:`, req.headers.cookie);
+    console.log(`[Debug] ${req.method} ${req.path} - Origin:`, req.headers.origin);
+    console.log(`[Debug] ${req.method} ${req.path} - Referer:`, req.headers.referer);
+  }
+  next();
+});
+
 // CORS middleware
 app.use((req, res, next) => {
   const origin = req.headers.origin;
@@ -129,6 +139,10 @@ app.get('/auth/google/callback',
         return res.redirect(`${FRONTEND_URL}/?auth=error`);
       }
       console.log('[Server] Session saved, redirecting to frontend');
+      console.log('[Server] Set-Cookie header:', res.getHeader('Set-Cookie'));
+      
+      // Ensure cookie is set by explicitly calling regenerate if needed
+      // The cookie should already be set by express-session, but let's verify
       res.redirect(`${FRONTEND_URL}/?auth=success`);
     });
   }
