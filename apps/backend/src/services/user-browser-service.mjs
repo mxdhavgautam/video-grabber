@@ -62,11 +62,11 @@ class UserBrowserService {
       }
 
       // Strategy 1: Read lock file to get exact PID (if available)
-      const singletonLock = path.join(this.profileDir, 'SingletonLock');
-      if (fs.existsSync(singletonLock)) {
+      const singletonLockPath = path.join(this.profileDir, 'SingletonLock');
+      if (fs.existsSync(singletonLockPath)) {
         try {
           // Try to read PID from lock file (format varies, but often contains PID)
-          const lockContent = fs.readFileSync(singletonLock, 'utf-8');
+          const lockContent = fs.readFileSync(singletonLockPath, 'utf-8');
           // Extract any numeric PID from lock file content
           const pidMatch = lockContent.match(/\b(\d+)\b/);
           if (pidMatch) {
