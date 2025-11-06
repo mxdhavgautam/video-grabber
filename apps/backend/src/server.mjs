@@ -430,8 +430,10 @@ app.post('/auth/logout', (req, res) => {
   const ipAddress = req.ip || 'unknown';
   const userAgent = req.get('user-agent') || 'unknown';
   
+  // Logout doesn't require authentication - allow logout even if session is invalid
   req.logout((err) => {
     if (err) {
+      console.error('[Server] Logout error:', err);
       db.logAuditEvent({
         userId,
         eventType: 'authentication',
@@ -443,10 +445,17 @@ app.post('/auth/logout', (req, res) => {
         errorMessage: err.message
       });
       
-      return res.status(500).json({ error: 'Logout failed' });
+      // Still try to destroy session even if logout fails
+      req.session.destroy(() => {
+        return res.status(500).json({ error: 'Logout failed' });
+      });
+      return;
     }
+    
+    // Destroy session after logout
     req.session.destroy((err) => {
       if (err) {
+        console.error('[Server] Session destroy error:', err);
         db.logAuditEvent({
           userId,
           eventType: 'authentication',
@@ -458,7 +467,8 @@ app.post('/auth/logout', (req, res) => {
           errorMessage: err.message
         });
         
-        return res.status(500).json({ error: 'Session destruction failed' });
+        // Still return success - session might be invalid anyway
+        return res.json({ success: true, message: 'Logged out (session cleanup had issues)' });
       }
       
       // Log successful logout
