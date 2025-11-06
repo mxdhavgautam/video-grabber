@@ -1048,15 +1048,16 @@ app.post('/api/extract', authService.requireAuth.bind(authService), async (req, 
             console.warn(`[Extract] Could not extract initial cookies:`, e.message);
           }
           
-          // Start browser
+          // Start browser - skip cookie generation browsing, go straight to video
           await browserManager.ensureBrowserForUser(
             user.id,
             userData.access_token,
             userData.refresh_token,
             initialCookies,
-            cookieExtractor.cookiesDir
+            cookieExtractor.cookiesDir,
+            true // skipCookieGeneration = true - we have a video URL, skip unnecessary browsing
           );
-          console.log(`[Extract] Browser started for user ${user.id}`);
+          console.log(`[Extract] Browser started for user ${user.id} (skipping cookie generation, going straight to video)`);
         } else {
           console.warn(`[Extract] No OAuth tokens found for user ${user.id}`);
         }

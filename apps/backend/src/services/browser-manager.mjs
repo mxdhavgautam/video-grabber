@@ -97,9 +97,10 @@ class BrowserManager {
    * @param {string} refreshToken - OAuth refresh token
    * @param {Array} initialCookies - Initial cookies from OAuth
    * @param {string} cookiesDir - Cookies directory
+   * @param {boolean} skipCookieGeneration - If true, skip browsing to generate cookies (go straight to video)
    * @returns {Promise<UserBrowserService>} - Browser service instance
    */
-  async startBrowserForUser(userId, accessToken, refreshToken, initialCookies = [], cookiesDir = null) {
+  async startBrowserForUser(userId, accessToken, refreshToken, initialCookies = [], cookiesDir = null, skipCookieGeneration = false) {
     // If browser already exists and is running, return it
     const existingData = this.browserInstances.get(userId);
     if (existingData && existingData.browserService && existingData.browserService.isRunning) {
@@ -112,8 +113,8 @@ class BrowserManager {
     console.log(`[BrowserManager] Starting browser instance for user: ${userId}`);
     const browserService = new UserBrowserService(userId, cookiesDir, null);
     
-    // Start and authenticate
-    await browserService.startAndAuthenticate(accessToken, refreshToken, initialCookies);
+    // Start and authenticate (skip cookie generation if we have a video URL to extract)
+    await browserService.startAndAuthenticate(accessToken, refreshToken, initialCookies, skipCookieGeneration);
     
     // Keep browser alive with timeout tracking
     const now = Date.now();
@@ -223,9 +224,10 @@ class BrowserManager {
    * @param {string} refreshToken - OAuth refresh token
    * @param {Array} initialCookies - Initial cookies from OAuth
    * @param {string} cookiesDir - Cookies directory
+   * @param {boolean} skipCookieGeneration - If true, skip browsing to generate cookies (go straight to video)
    * @returns {Promise<UserBrowserService>} - Browser service instance
    */
-  async ensureBrowserForUser(userId, accessToken, refreshToken, initialCookies = [], cookiesDir = null) {
+  async ensureBrowserForUser(userId, accessToken, refreshToken, initialCookies = [], cookiesDir = null, skipCookieGeneration = false) {
     const instanceData = this.browserInstances.get(userId);
     
     // If browser exists and is running, just update last used
@@ -236,7 +238,7 @@ class BrowserManager {
     
     // Browser doesn't exist or is not running, start a new one
     console.log(`[BrowserManager] Browser not active for user ${userId}, starting new instance...`);
-    return await this.startBrowserForUser(userId, accessToken, refreshToken, initialCookies, cookiesDir);
+    return await this.startBrowserForUser(userId, accessToken, refreshToken, initialCookies, cookiesDir, skipCookieGeneration);
   }
 }
 

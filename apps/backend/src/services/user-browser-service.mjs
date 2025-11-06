@@ -137,9 +137,10 @@ class UserBrowserService {
    * @param {string} accessToken - OAuth access token
    * @param {string} refreshToken - OAuth refresh token (optional)
    * @param {Array} initialCookies - Initial cookies from OAuth extraction (optional)
+   * @param {boolean} skipCookieGeneration - If true, skip browsing YouTube to generate cookies (go straight to video)
    * @returns {Promise<Array>} - Extracted cookies in Netscape format
    */
-  async startAndAuthenticate(accessToken, refreshToken = null, initialCookies = []) {
+  async startAndAuthenticate(accessToken, refreshToken = null, initialCookies = [], skipCookieGeneration = false) {
     let retryCount = 0;
     const maxRetries = 2;
     
@@ -335,11 +336,17 @@ class UserBrowserService {
 
       // Step 2: Authenticate with OAuth token by navigating to Google account
       console.log(`[UserBrowserService:${this.userId}] Authenticating with OAuth token...`);
-      await this.authenticateWithOAuth(accessToken);
+      await this.authenticateWithOAuth(accessToken, skipCookieGeneration);
 
-      // Step 3: Browse YouTube to generate session cookies
-      console.log(`[UserBrowserService:${this.userId}] Browsing YouTube to generate session cookies...`);
-      await this.browseYouTube();
+      // Step 3: Browse YouTube to generate session cookies (skip if we have a video URL to extract)
+      if (!skipCookieGeneration) {
+        console.log(`[UserBrowserService:${this.userId}] Browsing YouTube to generate session cookies...`);
+        await this.browseYouTube();
+      } else {
+        console.log(`[UserBrowserService:${this.userId}] Skipping cookie generation browsing - will go directly to video URL`);
+        // Just wait a moment for any cookies to be set from authentication
+        await this.sleep(2000);
+      }
 
         // Step 4: Export cookies
         console.log(`[UserBrowserService:${this.userId}] Exporting cookies...`);
@@ -431,8 +438,11 @@ class UserBrowserService {
    * 
    * Strategy: Navigate to Google Account page with OAuth token to establish session,
    * then navigate to YouTube which will recognize the authenticated session
+   * 
+   * @param {string} accessToken - OAuth access token
+   * @param {boolean} skipFeedCheck - If true, skip feed population check (going straight to video)
    */
-  async authenticateWithOAuth(accessToken) {
+  async authenticateWithOAuth(accessToken, skipFeedCheck = false) {
     try {
       console.log(`[UserBrowserService:${this.userId}] Signing in to Google/YouTube with OAuth token...`);
       
@@ -566,32 +576,36 @@ class UserBrowserService {
         console.warn(`[UserBrowserService:${this.userId}] Will continue browsing - session cookies may be set during interaction`);
       }
 
-      // Step 9: Check if feed is populated (indicates successful sign-in)
-      const feedPopulated = await this.page.evaluate(() => {
-        // Check if YouTube feed has videos
-        const videoSelectors = [
-          'a[href*="/watch?v="]',
-          'ytd-rich-item-renderer',
-          'ytd-video-renderer',
-          'ytd-grid-video-renderer',
-          '#dismissible',
-          '#contents ytd-rich-item-renderer'
-        ];
-        
-        for (const selector of videoSelectors) {
-          const elements = document.querySelectorAll(selector);
-          if (elements.length > 0) {
-            return true;
+      // Step 9: Check if feed is populated (indicates successful sign-in) - skip if going straight to video
+      if (!skipFeedCheck) {
+        const feedPopulated = await this.page.evaluate(() => {
+          // Check if YouTube feed has videos
+          const videoSelectors = [
+            'a[href*="/watch?v="]',
+            'ytd-rich-item-renderer',
+            'ytd-video-renderer',
+            'ytd-grid-video-renderer',
+            '#dismissible',
+            '#contents ytd-rich-item-renderer'
+          ];
+          
+          for (const selector of videoSelectors) {
+            const elements = document.querySelectorAll(selector);
+            if (elements.length > 0) {
+              return true;
+            }
           }
-        }
-        return false;
-      });
+          return false;
+        });
 
-      if (feedPopulated) {
-        console.log(`[UserBrowserService:${this.userId}] ✓ YouTube feed is populated - authentication successful`);
+        if (feedPopulated) {
+          console.log(`[UserBrowserService:${this.userId}] ✓ YouTube feed is populated - authentication successful`);
+        } else {
+          console.warn(`[UserBrowserService:${this.userId}] ⚠️ YouTube feed is empty - may indicate bot detection or incomplete sign-in`);
+          console.warn(`[UserBrowserService:${this.userId}] Will continue - browsing may trigger feed population`);
+        }
       } else {
-        console.warn(`[UserBrowserService:${this.userId}] ⚠️ YouTube feed is empty - may indicate bot detection or incomplete sign-in`);
-        console.warn(`[UserBrowserService:${this.userId}] Will continue - browsing may trigger feed population`);
+        console.log(`[UserBrowserService:${this.userId}] Skipping feed check - going straight to video URL`);
       }
 
       // Remove Authorization header (no longer needed, cookies should be set)
