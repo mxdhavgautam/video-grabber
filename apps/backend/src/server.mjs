@@ -60,10 +60,10 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: process.env.NODE_ENV === 'production', // HTTPS only in production
+    secure: process.env.NODE_ENV === 'production', // HTTPS only in production (required for sameSite: 'none')
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    sameSite: 'lax',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // 'none' required for cross-subdomain cookies
     domain: process.env.NODE_ENV === 'production' ? '.mxdhavgautam.com' : undefined // Allow cross-subdomain cookies in production
   },
   name: process.env.SESSION_COOKIE_NAME || 'video-grabber-session'
