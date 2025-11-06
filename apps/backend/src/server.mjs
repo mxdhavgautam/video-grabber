@@ -64,7 +64,8 @@ app.use(session({
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
     sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // 'none' required for cross-subdomain cookies
-    domain: process.env.NODE_ENV === 'production' ? '.mxdhavgautam.com' : undefined // Allow cross-subdomain cookies in production
+    domain: process.env.NODE_ENV === 'production' ? '.mxdhavgautam.com' : undefined, // Allow cross-subdomain cookies in production
+    path: '/' // Explicitly set path to root to ensure cookie is accessible from all paths
   },
   name: process.env.SESSION_COOKIE_NAME || 'video-grabber-session'
 }));
@@ -106,6 +107,9 @@ app.get('/auth/google/callback',
   (req, res) => {
     // Successful authentication
     console.log('[Server] OAuth callback successful for user:', req.user.id);
+    console.log('[Server] Session ID:', req.sessionID);
+    console.log('[Server] Session cookie:', req.session.cookie);
+    console.log('[Server] Is authenticated:', req.isAuthenticated());
     
     // Log successful authentication
     db.logAuditEvent({
@@ -118,7 +122,15 @@ app.get('/auth/google/callback',
       success: true
     });
     
-    res.redirect(`${FRONTEND_URL}/?auth=success`);
+    // Explicitly save session before redirecting to ensure cookie is set
+    req.session.save((err) => {
+      if (err) {
+        console.error('[Server] Error saving session before redirect:', err);
+        return res.redirect(`${FRONTEND_URL}/?auth=error`);
+      }
+      console.log('[Server] Session saved, redirecting to frontend');
+      res.redirect(`${FRONTEND_URL}/?auth=success`);
+    });
   }
 );
 
@@ -177,12 +189,19 @@ app.post('/auth/logout', (req, res) => {
 
 // Get current user endpoint
 app.get('/api/user', (req, res) => {
+  console.log('[Server] /api/user request - Session ID:', req.sessionID);
+  console.log('[Server] /api/user request - Is authenticated:', req.isAuthenticated());
+  console.log('[Server] /api/user request - User:', req.user);
+  console.log('[Server] /api/user request - Cookies:', req.headers.cookie);
+  
   if (!authService.isAuthenticated(req)) {
+    console.log('[Server] /api/user - Not authenticated, returning 401');
     return res.status(401).json({ error: 'Not authenticated' });
-    }
+  }
 
   const user = authService.getUserFromSession(req);
-    res.json({ 
+  console.log('[Server] /api/user - Returning user:', user);
+  res.json({ 
     id: user.id,
     email: user.email,
     name: user.name,
