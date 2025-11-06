@@ -44,6 +44,9 @@ let youtubeExtractor = null;
   }
 })();
 
+// Trust proxy - required for proper cookie handling behind reverse proxy (Caddy)
+app.set('trust proxy', 1);
+
 // Middleware
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.text({ limit: '10mb' }));
@@ -141,35 +144,28 @@ app.get('/auth/google/callback',
         return res.redirect(`${FRONTEND_URL}/?auth=error`);
       }
       
-      // Check if Set-Cookie header will be sent
-      // express-session sets the cookie automatically when session is saved
-      const setCookieHeader = res.getHeader('Set-Cookie');
-      console.log('[Server] Session saved, redirecting to frontend');
+      console.log('[Server] Session saved, sending redirect page');
       console.log('[Server] Session ID:', req.sessionID);
-      console.log('[Server] Set-Cookie header before redirect:', setCookieHeader);
       
-      // If Set-Cookie header is not set, manually set it using express-session's cookie format
-      if (!setCookieHeader || (Array.isArray(setCookieHeader) && setCookieHeader.length === 0)) {
-        console.log('[Server] WARNING: Set-Cookie header not set by express-session, manually setting...');
-        const cookieName = process.env.SESSION_COOKIE_NAME || 'video-grabber-session';
-        const cookieValue = req.sessionID;
-        const cookieOptions = {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-          maxAge: 24 * 60 * 60 * 1000,
-          path: '/'
-        };
-        
-        if (process.env.NODE_ENV === 'production') {
-          cookieOptions.domain = '.mxdhavgautam.com';
-        }
-        
-        res.cookie(cookieName, cookieValue, cookieOptions);
-        console.log('[Server] Cookie manually set:', cookieName, '=', cookieValue);
-      }
-      
-      res.redirect(`${FRONTEND_URL}/?auth=success`);
+      // Send an HTML page that redirects after a short delay
+      // This ensures express-session has time to set the cookie in the response
+      // before the browser navigates away
+      const redirectUrl = `${FRONTEND_URL}/?auth=success`;
+      res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta http-equiv="refresh" content="0;url=${redirectUrl}">
+          <script>
+            window.location.href = "${redirectUrl}";
+          </script>
+        </head>
+        <body>
+          <p>Redirecting...</p>
+          <p>If you are not redirected, <a href="${redirectUrl}">click here</a>.</p>
+        </body>
+        </html>
+      `);
     });
   }
 );
