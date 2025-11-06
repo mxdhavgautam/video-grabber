@@ -18,6 +18,7 @@ import { getAuthService } from './services/auth.mjs';
 import YouTubeExtractor from './services/youtube-extractor.mjs';
 import CookieExtractor from './services/cookie-extractor.mjs';
 import SQLiteSessionStore from './services/session-store.mjs';
+import { getBrowserManager } from './services/browser-manager.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -323,34 +324,28 @@ app.get('/api/auth/ready', (req, res) => {
     return res.json({ ready: false, message: 'Not authenticated' });
   }
   
-  // Check if user has cookies set up
-  const userData = db.getUserById(user.id);
-  const cookieExtractor = new CookieExtractor();
-  const cookieFilePath = cookieExtractor.getCookieFilePath(user.id);
+  // Check if browser instance is ready
+  const browserManager = getBrowserManager();
+  const hasBrowser = browserManager.hasActiveBrowser(user.id);
   
-  // Check if cookie file exists (even if some critical cookies are missing)
-  if (cookieFilePath && fs.existsSync(cookieFilePath)) {
-    // Check if file has content
-    try {
-      const stats = fs.statSync(cookieFilePath);
-      if (stats.size > 0) {
-        // Cookie file exists and has content - setup is complete
-        // Even if some critical cookies are missing, we can proceed
-        // The user can try extraction and we'll handle errors gracefully
-        console.log(`[Server] /api/auth/ready - Cookie file exists for user ${user.id}, marking as ready`);
-        return res.json({ ready: true, message: 'Setup complete!' });
+  if (hasBrowser) {
+    // Browser is ready, check if cookies are available
+    const cookieFilePath = cookieExtractor.getCookieFilePath(user.id);
+    if (cookieFilePath && fs.existsSync(cookieFilePath)) {
+      try {
+        const stats = fs.statSync(cookieFilePath);
+        if (stats.size > 0) {
+          console.log(`[Server] /api/auth/ready - Browser and cookies ready for user ${user.id}`);
+          return res.json({ ready: true, message: 'Setup complete!' });
+        }
+      } catch (error) {
+        console.error(`[Server] /api/auth/ready - Error checking cookie file:`, error.message);
       }
-    } catch (error) {
-      console.error(`[Server] /api/auth/ready - Error checking cookie file:`, error.message);
     }
-  }
-  
-  // Check if cookie_file_path is set in database (browser automation might have just finished)
-  if (userData && userData.cookie_file_path) {
-    if (fs.existsSync(userData.cookie_file_path)) {
-      console.log(`[Server] /api/auth/ready - Cookie file path in DB exists for user ${user.id}, marking as ready`);
-      return res.json({ ready: true, message: 'Setup complete!' });
-    }
+    
+    // Browser is ready even if cookies file check fails
+    console.log(`[Server] /api/auth/ready - Browser ready for user ${user.id}`);
+    return res.json({ ready: true, message: 'Browser ready' });
   }
   
   // Still setting up
@@ -425,10 +420,31 @@ app.post('/api/admin/reset-database', async (req, res) => {
 });
 
 // Logout endpoint
-app.post('/auth/logout', (req, res) => {
+app.post('/auth/logout', async (req, res) => {
   const userId = req.user?.id;
   const ipAddress = req.ip || 'unknown';
   const userAgent = req.get('user-agent') || 'unknown';
+  
+  // Stop browser instance for user
+  if (userId) {
+    try {
+      const browserManager = getBrowserManager();
+      await browserManager.stopBrowserForUser(userId);
+      console.log(`[Server] Stopped browser instance for user: ${userId}`);
+    } catch (browserError) {
+      console.error(`[Server] Error stopping browser for user ${userId}:`, browserError.message);
+    }
+  }
+  
+  // Clear session cookie explicitly
+  const clearSessionCookie = () => {
+    res.clearCookie('video-grabber-session', {
+      path: '/',
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax'
+    });
+  };
   
   // Logout doesn't require authentication - allow logout even if session is invalid
   req.logout((err) => {
@@ -444,16 +460,13 @@ app.post('/auth/logout', (req, res) => {
         success: false,
         errorMessage: err.message
       });
-      
-      // Still try to destroy session even if logout fails
-      req.session.destroy(() => {
-        return res.status(500).json({ error: 'Logout failed' });
-      });
-      return;
     }
     
     // Destroy session after logout
     req.session.destroy((err) => {
+      // Clear session cookie regardless of errors
+      clearSessionCookie();
+      
       if (err) {
         console.error('[Server] Session destroy error:', err);
         db.logAuditEvent({
@@ -466,22 +479,20 @@ app.post('/auth/logout', (req, res) => {
           success: false,
           errorMessage: err.message
         });
-        
-        // Still return success - session might be invalid anyway
-        return res.json({ success: true, message: 'Logged out (session cleanup had issues)' });
+      } else {
+        // Log successful logout
+        db.logAuditEvent({
+          userId,
+          eventType: 'authentication',
+          eventAction: 'logout_success',
+          eventDetails: {},
+          ipAddress,
+          userAgent,
+          success: true
+        });
       }
       
-      // Log successful logout
-      db.logAuditEvent({
-        userId,
-        eventType: 'authentication',
-        eventAction: 'logout_success',
-        eventDetails: {},
-        ipAddress,
-        userAgent,
-        success: true
-      });
-      
+      // Always return success and clear cookie
       res.json({ success: true, message: 'Logged out successfully' });
     });
   });
@@ -816,7 +827,37 @@ app.post('/api/extract', authService.requireAuth.bind(authService), async (req, 
 
     console.log(`[Extract] Processing video: ${videoId} for user: ${user.id}`);
     
-    // Extract video info with user's cookies
+    // Use browser manager to navigate to video URL and extract fresh cookies
+    const browserManager = getBrowserManager();
+    let freshCookies = null;
+    
+    try {
+      // Navigate to video URL in browser and extract fresh cookies
+      freshCookies = await browserManager.navigateToVideoAndExtractCookies(user.id, url);
+      
+      if (freshCookies && freshCookies.length > 0) {
+        // Save fresh cookies to file
+        const freshCookieFilePath = cookieExtractor.saveCookiesToFile(user.id, freshCookies);
+        const cookieExpiresAt = Date.now() + (30 * 24 * 60 * 60 * 1000);
+        db.updateUserCookies(user.id, freshCookieFilePath, cookieExpiresAt);
+        
+        // Get temporary decrypted cookie file with fresh cookies
+        if (tempCookieFilePath) {
+          cookieExtractor.cleanupTemporaryCookieFile(tempCookieFilePath);
+        }
+        tempCookieFilePath = cookieExtractor.getTemporaryDecryptedCookieFile(user.id);
+        
+        console.log(`[Extract] Extracted ${freshCookies.length} fresh cookies from browser for video: ${videoId}`);
+      } else {
+        console.warn(`[Extract] No fresh cookies extracted, using existing cookies`);
+      }
+    } catch (browserError) {
+      console.error(`[Extract] Error navigating to video in browser:`, browserError.message);
+      console.log(`[Extract] Falling back to existing cookies`);
+      // Continue with existing cookies if browser navigation fails
+    }
+    
+    // Extract video info with user's cookies (fresh or existing)
     const videoInfo = await youtubeExtractor.extract(videoId, tempCookieFilePath);
     
     // Log successful extraction

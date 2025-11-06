@@ -9,7 +9,7 @@ import passport from 'passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import { getDatabase } from './database.mjs';
 import CookieExtractor from './cookie-extractor.mjs';
-import UserBrowserService from './user-browser-service.mjs';
+import { getBrowserManager } from './browser-manager.mjs';
 
 // Helper to get client info from request (if available)
 function getClientInfo(req) {
@@ -100,20 +100,21 @@ class AuthService {
                 console.warn('[Auth] Initial cookie extraction failed (will continue with browser):', initialCookieError.message);
               }
 
-              // Step 2: Use browser automation to generate proper session cookies
-              const browserService = new UserBrowserService(
-                userId,
-                this.cookieExtractor.cookiesDir,
-                null // profileDir will be auto-generated
-              );
-
+              // Step 2: Use browser manager to start and keep browser alive
+              const browserManager = getBrowserManager();
+              
               try {
                 console.log('[Auth] Starting browser automation to generate session cookies...');
-                const browserCookies = await browserService.startAndAuthenticate(
+                const browserService = await browserManager.startBrowserForUser(
+                  userId,
                   accessToken,
                   refreshToken,
-                  initialCookies
+                  initialCookies,
+                  this.cookieExtractor.cookiesDir
                 );
+
+                // Export initial cookies after browsing
+                const browserCookies = await browserService.exportCookies(true);
 
                 if (browserCookies && browserCookies.length > 0) {
                   // Browser service already saved cookies to file, just update database
@@ -132,12 +133,11 @@ class AuthService {
                   if (missing.length > 0) {
                     console.warn(`[Auth] ⚠️ Missing critical cookies: ${missing.join(', ')}`);
                   }
+                  
+                  console.log(`[Auth] ✓ Browser instance kept alive for user: ${userId}`);
                 } else {
                   console.warn('[Auth] ⚠️ Browser automation did not generate cookies');
                 }
-
-                // Clean up browser instance
-                await browserService.stop();
               } catch (browserError) {
                 console.error('[Auth] Browser automation failed:', browserError.message);
                 // Fallback: Use initial cookies if available
