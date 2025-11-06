@@ -762,9 +762,42 @@ class CookieExtractor {
       const flag = 'TRUE'; // Domain cookie flag
       const cookiePath = cookie.path || '/';
       const secure = cookie.secure ? 'TRUE' : 'FALSE';
-      const expiration = cookie.expires 
-        ? Math.floor(cookie.expires / 1000) // Convert to Unix timestamp
-        : (cookie.expiresAt ? Math.floor(cookie.expiresAt / 1000) : 0);
+      
+      // Handle expiration: yt-dlp requires 0 for session cookies, not -1
+      // Netscape format: 0 = session cookie, > 0 = expiration timestamp (Unix seconds)
+      let expiration = 0; // Default to session cookie
+      
+      if (cookie.expires !== undefined && cookie.expires !== null) {
+        if (cookie.expires > 0) {
+          // Cookie has expiration
+          if (cookie.expires > 1000000000000) {
+            // Already in milliseconds, convert to seconds
+            expiration = Math.floor(cookie.expires / 1000);
+          } else if (cookie.expires > 1000000000) {
+            // Already in seconds
+            expiration = Math.floor(cookie.expires);
+          } else {
+            // Very small number, treat as session cookie
+            expiration = 0;
+          }
+        } else {
+          // expires is 0, -1, or negative - treat as session cookie
+          expiration = 0;
+        }
+      } else if (cookie.expiresAt !== undefined && cookie.expiresAt !== null && cookie.expiresAt > 0) {
+        // Use expiresAt if available
+        if (cookie.expiresAt > 1000000000000) {
+          expiration = Math.floor(cookie.expiresAt / 1000);
+        } else {
+          expiration = Math.floor(cookie.expiresAt);
+        }
+      }
+      
+      // Ensure expiration is never negative
+      if (expiration < 0) {
+        expiration = 0;
+      }
+      
       const name = cookie.name || cookie.key;
       const value = cookie.value || '';
 
