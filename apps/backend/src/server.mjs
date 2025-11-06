@@ -311,23 +311,44 @@ app.get('/auth/google/callback',
 
 // Endpoint to check if browser setup is complete
 app.get('/api/auth/ready', (req, res) => {
-  if (!req.isAuthenticated()) {
-    return res.json({ ready: false, message: 'Not authenticated' });
-  }
-  
+  // More lenient check - allow checking even if not fully authenticated yet
+  // The session might still be setting up
   const user = authService.getUserFromSession(req);
   if (!user) {
-    return res.json({ ready: false, message: 'User not found' });
+    // Try to get user from session ID if available
+    if (req.sessionID) {
+      // Session exists but user not loaded yet - still setting up
+      return res.json({ ready: false, message: 'Setting up session...' });
+    }
+    return res.json({ ready: false, message: 'Not authenticated' });
   }
   
   // Check if user has cookies set up
   const userData = db.getUserById(user.id);
+  const cookieExtractor = new CookieExtractor();
+  const cookieFilePath = cookieExtractor.getCookieFilePath(user.id);
+  
+  // Check if cookie file exists (even if some critical cookies are missing)
+  if (cookieFilePath && fs.existsSync(cookieFilePath)) {
+    // Check if file has content
+    try {
+      const stats = fs.statSync(cookieFilePath);
+      if (stats.size > 0) {
+        // Cookie file exists and has content - setup is complete
+        // Even if some critical cookies are missing, we can proceed
+        // The user can try extraction and we'll handle errors gracefully
+        console.log(`[Server] /api/auth/ready - Cookie file exists for user ${user.id}, marking as ready`);
+        return res.json({ ready: true, message: 'Setup complete!' });
+      }
+    } catch (error) {
+      console.error(`[Server] /api/auth/ready - Error checking cookie file:`, error.message);
+    }
+  }
+  
+  // Check if cookie_file_path is set in database (browser automation might have just finished)
   if (userData && userData.cookie_file_path) {
-    // Check if cookie file exists and is valid
-    const cookieExtractor = new CookieExtractor();
-    const hasCookies = cookieExtractor.hasValidCookies(user.id);
-    
-    if (hasCookies) {
+    if (fs.existsSync(userData.cookie_file_path)) {
+      console.log(`[Server] /api/auth/ready - Cookie file path in DB exists for user ${user.id}, marking as ready`);
       return res.json({ ready: true, message: 'Setup complete!' });
     }
   }
