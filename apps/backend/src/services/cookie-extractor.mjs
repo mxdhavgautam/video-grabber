@@ -6,7 +6,7 @@
  * Encrypts cookie files at rest for security.
  */
 
-import { Innertube } from '@distube/youtubei';
+import { Innertube } from 'youtubei.js';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
