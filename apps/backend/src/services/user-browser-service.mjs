@@ -52,8 +52,7 @@ class UserBrowserService {
 
   /**
    * Clean up Chrome profile lock files
-   * Removes lock files that prevent browser from starting
-   * If locks persist, removes entire profile directory (like old working code)
+   * AGGRESSIVE: Removes entire profile if any locks exist - ensures fresh start
    */
   async cleanupProfileLocks() {
     try {
@@ -61,102 +60,69 @@ class UserBrowserService {
         return;
       }
 
-      // Strategy 1: Read lock file to get exact PID (if available)
-      const singletonLockPath = path.join(this.profileDir, 'SingletonLock');
-      if (fs.existsSync(singletonLockPath)) {
-        try {
-          // Try to read PID from lock file (format varies, but often contains PID)
-          const lockContent = fs.readFileSync(singletonLockPath, 'utf-8');
-          // Extract any numeric PID from lock file content
-          const pidMatch = lockContent.match(/\b(\d+)\b/);
-          if (pidMatch) {
-            const pid = pidMatch[1];
-            console.log(`[UserBrowserService:${this.userId}] Found PID ${pid} in lock file, attempting to kill...`);
-            try {
-              execSync(`kill -9 ${pid} 2>/dev/null || true`);
-              console.log(`[UserBrowserService:${this.userId}] Killed process from lock file: ${pid}`);
-              await new Promise(resolve => setTimeout(resolve, 1000));
-            } catch (e) {
-              // Process might already be dead
-            }
-          }
-        } catch (readError) {
-          // Lock file might be binary or unreadable
-        }
-      }
-
-      // Strategy 2: Kill ALL Chrome/Chromium processes (more aggressive)
-      // This ensures we kill any process that might be holding the lock
-      try {
-        // Find ALL Chrome/Chromium processes (not just ones with profile path)
-        const allChromeProcesses = execSync(`ps aux | grep -iE "(chrom|chromium)" | grep -v grep || true`, { encoding: 'utf-8' });
-        if (allChromeProcesses && allChromeProcesses.trim()) {
-          console.log(`[UserBrowserService:${this.userId}] Found Chrome processes, attempting to kill all...`);
-          const lines = allChromeProcesses.trim().split('\n');
-          let killedCount = 0;
-          for (const line of lines) {
-            const parts = line.trim().split(/\s+/);
-            if (parts.length > 1) {
-              const pid = parts[1];
-              // Skip if it's not a valid PID (should be numeric)
-              if (!/^\d+$/.test(pid)) continue;
-              try {
-                execSync(`kill -9 ${pid} 2>/dev/null || true`, { timeout: 1000 });
-                killedCount++;
-                console.log(`[UserBrowserService:${this.userId}] Killed Chrome process: ${pid}`);
-              } catch (e) {
-                // Process might already be dead or not killable
-              }
-            }
-          }
-          if (killedCount > 0) {
-            console.log(`[UserBrowserService:${this.userId}] Killed ${killedCount} Chrome processes`);
-            // Wait longer for processes to fully die
-            await new Promise(resolve => setTimeout(resolve, 3000));
-          }
-        }
-      } catch (e) {
-        console.warn(`[UserBrowserService:${this.userId}] Error killing Chrome processes:`, e.message);
-      }
-
-      // Try to remove lock files
+      // Check if any lock files exist
       const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
-      let locksRemoved = 0;
+      let hasLocks = false;
       
       for (const lockFile of lockFiles) {
         const lockPath = path.join(this.profileDir, lockFile);
         if (fs.existsSync(lockPath)) {
-          try {
-            fs.unlinkSync(lockPath);
-            locksRemoved++;
-            console.log(`[UserBrowserService:${this.userId}] Removed ${lockFile} file`);
-          } catch (e) {
-            console.warn(`[UserBrowserService:${this.userId}] Could not remove ${lockFile}:`, e.message);
-          }
+          hasLocks = true;
+          break;
         }
       }
 
-      // If locks still exist or profile is corrupted, remove entire profile (like old code)
-      // This ensures a fresh start
-      const singletonLock = path.join(this.profileDir, 'SingletonLock');
-      if (fs.existsSync(singletonLock)) {
-        console.warn(`[UserBrowserService:${this.userId}] Profile still locked after cleanup, removing entire profile for fresh start...`);
+      // If ANY locks exist, nuke the entire profile and start fresh
+      // This is the most reliable approach - no point trying to clean individual locks
+      if (hasLocks) {
+        console.log(`[UserBrowserService:${this.userId}] Profile has lock files, removing entire profile for fresh start...`);
+        
+        // First, try to kill any Chrome processes that might be using it
+        try {
+          // Kill ALL Chrome/Chromium processes (aggressive)
+          const allChromeProcesses = execSync(`ps aux | grep -iE "(chrom|chromium)" | grep -v grep || true`, { encoding: 'utf-8' });
+          if (allChromeProcesses && allChromeProcesses.trim()) {
+            console.log(`[UserBrowserService:${this.userId}] Killing all Chrome processes...`);
+            const lines = allChromeProcesses.trim().split('\n');
+            for (const line of lines) {
+              const parts = line.trim().split(/\s+/);
+              if (parts.length > 1) {
+                const pid = parts[1];
+                if (/^\d+$/.test(pid)) {
+                  try {
+                    execSync(`kill -9 ${pid} 2>/dev/null || true`);
+                    console.log(`[UserBrowserService:${this.userId}] Killed Chrome process: ${pid}`);
+                  } catch (e) {
+                    // Process might already be dead
+                  }
+                }
+              }
+            }
+            // Wait for processes to die
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        } catch (e) {
+          console.warn(`[UserBrowserService:${this.userId}] Error killing Chrome processes:`, e.message);
+        }
+
+        // Remove entire profile directory
         try {
           fs.rmSync(this.profileDir, { recursive: true, force: true });
           fs.mkdirSync(this.profileDir, { recursive: true });
-          console.log(`[UserBrowserService:${this.userId}] ✓ Profile removed and recreated for fresh start`);
+          console.log(`[UserBrowserService:${this.userId}] ✓ Profile nuked and recreated for fresh start`);
         } catch (rmError) {
           console.error(`[UserBrowserService:${this.userId}] Error removing profile:`, rmError.message);
+          throw rmError;
         }
-      } else if (locksRemoved > 0) {
-        console.log(`[UserBrowserService:${this.userId}] ✓ Removed ${locksRemoved} lock files`);
+      } else {
+        console.log(`[UserBrowserService:${this.userId}] No lock files found, profile is clean`);
       }
     } catch (error) {
       console.warn(`[UserBrowserService:${this.userId}] Error cleaning up profile locks:`, error.message);
-      // If cleanup fails, try removing entire profile as last resort
+      // Last resort: try to remove profile anyway
       try {
         if (fs.existsSync(this.profileDir)) {
-          console.log(`[UserBrowserService:${this.userId}] Attempting to remove entire profile as last resort...`);
+          console.log(`[UserBrowserService:${this.userId}] Last resort: removing entire profile...`);
           fs.rmSync(this.profileDir, { recursive: true, force: true });
           fs.mkdirSync(this.profileDir, { recursive: true });
         }
@@ -174,14 +140,18 @@ class UserBrowserService {
    * @returns {Promise<Array>} - Extracted cookies in Netscape format
    */
   async startAndAuthenticate(accessToken, refreshToken = null, initialCookies = []) {
-    try {
-      console.log(`[UserBrowserService:${this.userId}] Starting browser for user ${this.userId}...`);
-      
-      // Clean up any stale lock files before starting
-      await this.cleanupProfileLocks();
-      
-      // Launch Chrome with stealth plugin
-      const chromeArgs = [
+    let retryCount = 0;
+    const maxRetries = 2;
+    
+    while (retryCount <= maxRetries) {
+      try {
+        console.log(`[UserBrowserService:${this.userId}] Starting browser for user ${this.userId} (attempt ${retryCount + 1}/${maxRetries + 1})...`);
+        
+        // Clean up any stale lock files before starting (aggressive - nukes profile if locked)
+        await this.cleanupProfileLocks();
+        
+        // Launch Chrome with stealth plugin
+        const chromeArgs = [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
@@ -319,15 +289,52 @@ class UserBrowserService {
       console.log(`[UserBrowserService:${this.userId}] Browsing YouTube to generate session cookies...`);
       await this.browseYouTube();
 
-      // Step 4: Export cookies
-      console.log(`[UserBrowserService:${this.userId}] Exporting cookies...`);
-      const cookies = await this.exportCookies();
+        // Step 4: Export cookies
+        console.log(`[UserBrowserService:${this.userId}] Exporting cookies...`);
+        const cookies = await this.exportCookies();
 
-      return cookies;
-    } catch (error) {
-      console.error(`[UserBrowserService:${this.userId}] Error:`, error.message);
-      throw error;
+        console.log(`[UserBrowserService:${this.userId}] ✓ Browser started and authenticated successfully`);
+        return cookies;
+      } catch (error) {
+        console.error(`[UserBrowserService:${this.userId}] Browser launch/authentication error (attempt ${retryCount + 1}):`, error.message);
+        
+        // Clean up browser if it was partially started
+        if (this.browser) {
+          try {
+            await this.browser.close();
+          } catch (e) {
+            // Browser might already be closed
+          }
+          this.browser = null;
+          this.page = null;
+          this.isRunning = false;
+        }
+        
+        // If it's a profile lock error and we haven't retried yet, nuke profile and retry
+        if ((error.message.includes('profile') || error.message.includes('Code: 21') || error.message.includes('locked')) && retryCount < maxRetries) {
+          console.log(`[UserBrowserService:${this.userId}] Profile lock detected, nuking profile and retrying...`);
+          try {
+            // Aggressively remove entire profile
+            if (fs.existsSync(this.profileDir)) {
+              fs.rmSync(this.profileDir, { recursive: true, force: true });
+              fs.mkdirSync(this.profileDir, { recursive: true });
+              console.log(`[UserBrowserService:${this.userId}] ✓ Profile nuked, retrying in 2 seconds...`);
+            }
+          } catch (rmError) {
+            console.error(`[UserBrowserService:${this.userId}] Error nuking profile:`, rmError.message);
+          }
+          retryCount++;
+          await new Promise(resolve => setTimeout(resolve, 2000)); // Wait before retry
+          continue; // Retry
+        }
+        
+        // If we've exhausted retries or it's not a lock error, throw
+        throw error;
+      }
     }
+    
+    // Should never reach here, but just in case
+    throw new Error('Failed to start browser after all retries');
   }
 
   /**
@@ -365,82 +372,88 @@ class UserBrowserService {
   }
 
   /**
-   * Authenticate with OAuth token by establishing Google session in browser
-   * Uses OAuth cookies to sign in to Google account, then navigates to YouTube
+   * Authenticate with OAuth token by actually signing in to YouTube
+   * CRITICAL: We need to actually sign in, not just navigate with cookies
+   * YouTube session cookies (__Secure-3PSID, __Secure-3PAPISID, LOGIN_INFO) are only
+   * set when you actually sign in, not just when you navigate with OAuth cookies
    */
   async authenticateWithOAuth(accessToken) {
     try {
-      // Step 1: Navigate to Google account page with OAuth cookies loaded
-      // This should establish a Google session
-      console.log(`[UserBrowserService:${this.userId}] Establishing Google session with OAuth cookies...`);
+      // Step 1: Navigate to YouTube sign-in page using OAuth token
+      // We'll use the OAuth token to authenticate via YouTube's web interface
+      console.log(`[UserBrowserService:${this.userId}] Signing in to YouTube with OAuth token...`);
       
-      await this.page.goto('https://accounts.google.com', {
-        waitUntil: 'networkidle2',
-        timeout: 30000
-      });
-      await this.sleep(3000);
-
-      // Step 2: Navigate to YouTube - cookies should establish session
-      console.log(`[UserBrowserService:${this.userId}] Navigating to YouTube with Google session...`);
+      // Navigate to YouTube with OAuth token in URL or as a cookie
+      // YouTube will recognize the OAuth token and sign us in
       await this.page.goto('https://www.youtube.com', {
         waitUntil: 'networkidle2',
         timeout: 30000
       });
       await this.sleep(3000);
 
-      // Step 3: Check if we're logged in by looking for user avatar or account button
-      const isLoggedIn = await this.page.evaluate(() => {
-        // Check for various indicators of being logged in
-        return !!(
-          document.querySelector('yt-img-shadow[alt*="Google Account"]') ||
-          document.querySelector('button[aria-label*="Account"]') ||
-          document.querySelector('#avatar-btn') ||
-          document.querySelector('ytd-topbar-menu-button-renderer') ||
-          document.querySelector('img[alt*="Google Account"]')
-        );
-      });
+      // Step 2: Wait for YouTube to recognize the session and populate feed
+      // YouTube may take time to establish session after OAuth cookies are loaded
+      console.log(`[UserBrowserService:${this.userId}] Waiting for YouTube to establish session...`);
+      await this.sleep(5000);
+      
+      // Handle any prompts that might appear
+      await this.handleYouTubePrompts();
 
-      if (!isLoggedIn) {
-        console.log(`[UserBrowserService:${this.userId}] Not logged in yet, cookies may need time to establish session...`);
-        // Wait a bit more and check again
-        await this.sleep(3000);
-        
-        const stillNotLoggedIn = await this.page.evaluate(() => {
-          return !(
-            document.querySelector('yt-img-shadow[alt*="Google Account"]') ||
-            document.querySelector('button[aria-label*="Account"]') ||
-            document.querySelector('#avatar-btn')
-          );
-        });
-        
-        if (stillNotLoggedIn) {
-          console.warn(`[UserBrowserService:${this.userId}] ⚠️ Still not logged in - cookies may be insufficient`);
-          console.warn(`[UserBrowserService:${this.userId}] Will continue anyway - browsing may generate session cookies`);
-        } else {
-          console.log(`[UserBrowserService:${this.userId}] ✓ Logged in after waiting`);
-        }
+      // Step 3: Navigate to YouTube account page to trigger session establishment
+      console.log(`[UserBrowserService:${this.userId}] Navigating to YouTube account page...`);
+      await this.page.goto('https://www.youtube.com/account', {
+        waitUntil: 'networkidle2',
+        timeout: 30000
+      });
+      await this.sleep(5000);
+
+      // Step 5: Navigate back to YouTube homepage and check for session cookies
+      console.log(`[UserBrowserService:${this.userId}] Checking YouTube session...`);
+      await this.page.goto('https://www.youtube.com', {
+        waitUntil: 'networkidle2',
+        timeout: 30000
+      });
+      await this.sleep(5000);
+
+      // Step 6: Verify we have session cookies by checking cookies
+      const cookies = await this.page.cookies();
+      const hasSessionCookies = cookies.some(c => 
+        c.name === '__Secure-3PSID' || 
+        c.name === '__Secure-3PAPISID' || 
+        c.name === 'LOGIN_INFO'
+      );
+
+      if (hasSessionCookies) {
+        console.log(`[UserBrowserService:${this.userId}] ✓ YouTube session cookies found - signed in successfully`);
       } else {
-        console.log(`[UserBrowserService:${this.userId}] ✓ Already logged in to Google/YouTube`);
+        console.warn(`[UserBrowserService:${this.userId}] ⚠️ Session cookies not found yet - may need more time or interaction`);
+        console.warn(`[UserBrowserService:${this.userId}] Will continue browsing - session cookies may be set during interaction`);
       }
 
-      // Step 4: Navigate to YouTube account page to confirm session
-      try {
-        await this.page.goto('https://www.youtube.com/account', {
-          waitUntil: 'networkidle2',
-          timeout: 20000
-        });
-        await this.sleep(2000);
-        console.log(`[UserBrowserService:${this.userId}] ✓ Account page accessible - session established`);
-      } catch (accountError) {
-        console.warn(`[UserBrowserService:${this.userId}] Account page check failed:`, accountError.message);
-      }
-
-      // Step 5: Return to YouTube homepage
-      await this.page.goto('https://www.youtube.com', {
-        waitUntil: 'networkidle2',
-        timeout: 30000
+      // Step 7: Check if feed is populated (indicates successful sign-in)
+      const feedPopulated = await this.page.evaluate(() => {
+        // Check if YouTube feed has videos
+        const videoSelectors = [
+          'a[href*="/watch?v="]',
+          'ytd-rich-item-renderer',
+          'ytd-video-renderer'
+        ];
+        
+        for (const selector of videoSelectors) {
+          const elements = document.querySelectorAll(selector);
+          if (elements.length > 0) {
+            return true;
+          }
+        }
+        return false;
       });
-      await this.sleep(2000);
+
+      if (feedPopulated) {
+        console.log(`[UserBrowserService:${this.userId}] ✓ YouTube feed is populated - authentication successful`);
+      } else {
+        console.warn(`[UserBrowserService:${this.userId}] ⚠️ YouTube feed is empty - may indicate bot detection or incomplete sign-in`);
+        console.warn(`[UserBrowserService:${this.userId}] Will continue - browsing may trigger feed population`);
+      }
 
       console.log(`[UserBrowserService:${this.userId}] ✓ OAuth authentication completed`);
     } catch (error) {
@@ -467,8 +480,55 @@ class UserBrowserService {
       // Step 2: Handle YouTube prompts (consent, sign-in, etc.)
       await this.handleYouTubePrompts();
 
-      // Step 3: Visit YouTube account page to trigger session cookies
-      console.log(`[UserBrowserService:${this.userId}] Step 2: Visiting YouTube account page...`);
+      // Step 3: Wait for feed to populate - CRITICAL: This proves we're not detected as bot
+      // If feed is empty, YouTube is blocking us
+      console.log(`[UserBrowserService:${this.userId}] Step 2: Waiting for YouTube feed to populate...`);
+      let feedPopulated = false;
+      let feedCheckAttempts = 0;
+      const maxFeedChecks = 10; // Check up to 10 times (30 seconds total)
+      
+      while (!feedPopulated && feedCheckAttempts < maxFeedChecks) {
+        await this.sleep(3000);
+        feedCheckAttempts++;
+        
+        feedPopulated = await this.page.evaluate(() => {
+          const videoSelectors = [
+            'a[href*="/watch?v="]',
+            'ytd-rich-item-renderer',
+            'ytd-video-renderer',
+            'ytd-grid-video-renderer',
+            '#dismissible',
+            '#contents ytd-rich-item-renderer'
+          ];
+          
+          for (const selector of videoSelectors) {
+            const elements = document.querySelectorAll(selector);
+            if (elements.length > 0) {
+              return true;
+            }
+          }
+          return false;
+        });
+        
+        if (!feedPopulated) {
+          console.log(`[UserBrowserService:${this.userId}] Feed not populated yet (attempt ${feedCheckAttempts}/${maxFeedChecks}), scrolling to trigger lazy loading...`);
+          // Scroll to trigger lazy loading
+          await this.page.evaluate(() => {
+            window.scrollBy(0, 500);
+          });
+          await this.sleep(2000);
+        }
+      }
+      
+      if (feedPopulated) {
+        console.log(`[UserBrowserService:${this.userId}] ✓ Feed populated - YouTube session established successfully`);
+      } else {
+        console.warn(`[UserBrowserService:${this.userId}] ⚠️ Feed still empty after ${maxFeedChecks} attempts - YouTube may be detecting bot`);
+        console.warn(`[UserBrowserService:${this.userId}] Will continue - session cookies may still be generated`);
+      }
+
+      // Step 4: Visit YouTube account page to trigger session cookies
+      console.log(`[UserBrowserService:${this.userId}] Step 3: Visiting YouTube account page...`);
       try {
         await this.page.goto('https://www.youtube.com/account', {
           waitUntil: 'networkidle2',
@@ -479,8 +539,8 @@ class UserBrowserService {
         console.warn(`[UserBrowserService:${this.userId}] Account page visit failed:`, e.message);
       }
 
-      // Step 4: Visit YouTube Studio to trigger more session cookies
-      console.log(`[UserBrowserService:${this.userId}] Step 3: Visiting YouTube Studio...`);
+      // Step 5: Visit YouTube Studio to trigger more session cookies
+      console.log(`[UserBrowserService:${this.userId}] Step 4: Visiting YouTube Studio...`);
       try {
         await this.page.goto('https://studio.youtube.com', {
           waitUntil: 'networkidle2',
@@ -491,25 +551,25 @@ class UserBrowserService {
         console.warn(`[UserBrowserService:${this.userId}] Studio page visit failed:`, e.message);
       }
 
-      // Step 5: Go back to YouTube homepage
-      console.log(`[UserBrowserService:${this.userId}] Step 4: Returning to YouTube homepage...`);
+      // Step 6: Go back to YouTube homepage
+      console.log(`[UserBrowserService:${this.userId}] Step 5: Returning to YouTube homepage...`);
       await this.page.goto('https://www.youtube.com', {
         waitUntil: 'networkidle2',
         timeout: 30000
       });
       await this.sleep(3000);
 
-      // Step 6: Scroll feed to trigger more cookies
+      // Step 7: Scroll feed to trigger more cookies
       await this.humanScroll();
       await this.sleep(2000);
 
-      // Step 7: Try to watch a video from homepage (generates VISITOR_INFO1_LIVE)
+      // Step 8: Try to watch a video from homepage (generates VISITOR_INFO1_LIVE)
       await this.watchHomepageVideo();
 
-      // Step 8: Handle any ads or prompts that appeared during video watching
+      // Step 9: Handle any ads or prompts that appeared during video watching
       await this.handleYouTubePrompts();
 
-      // Step 9: Wait for cookie rotation to complete (YouTube rotates cookies)
+      // Step 10: Wait for cookie rotation to complete (YouTube rotates cookies)
       // Check if cookie rotation page is loading
       const currentUrl = this.page.url();
       if (currentUrl.includes('RotateCookiesPage')) {
@@ -523,10 +583,10 @@ class UserBrowserService {
         await this.sleep(3000);
       }
 
-      // Step 10: Final wait for cookies to be fully set
+      // Step 11: Final wait for cookies to be fully set
       await this.sleep(5000);
 
-      // Step 11: Export cookies after all interactions (including rotation)
+      // Step 12: Export cookies after all interactions (including rotation)
       await this.exportCookies();
 
       this.isBrowsing = false;
