@@ -17,6 +17,7 @@ import { getDatabase } from './services/database.mjs';
 import { getAuthService } from './services/auth.mjs';
 import YouTubeExtractor from './services/youtube-extractor.mjs';
 import CookieExtractor from './services/cookie-extractor.mjs';
+import SQLiteSessionStore from './services/session-store.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,13 +53,19 @@ app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.text({ limit: '10mb' }));
 app.use(cookieParser());
 
-// Session configuration
+// Session configuration with SQLite store for persistence
 const sessionSecret = process.env.SESSION_SECRET;
 if (!sessionSecret) {
   console.error('[Server] WARNING: SESSION_SECRET not set, using default (NOT SECURE FOR PRODUCTION)');
 }
 
+// Initialize SQLite session store
+const sessionStore = new SQLiteSessionStore({
+  dbPath: process.env.SESSION_DB_PATH
+});
+
 app.use(session({
+  store: sessionStore,
   secret: sessionSecret || 'change-this-secret-in-production',
   resave: false,
   saveUninitialized: false,
@@ -117,7 +124,7 @@ app.get('/auth/google', passport.authenticate('google', {
 
 app.get('/auth/google/callback',
   passport.authenticate('google', { failureRedirect: `${FRONTEND_URL}/login?error=auth_failed` }),
-  (req, res) => {
+  async (req, res) => {
     // Successful authentication
     console.log('[Server] OAuth callback successful for user:', req.user.id);
     console.log('[Server] Session ID:', req.sessionID);
@@ -136,39 +143,227 @@ app.get('/auth/google/callback',
     });
     
     // Mark session as modified to ensure express-session sets the cookie
-    // Then save the session - express-session will automatically set the cookie
     req.session.touch();
-    req.session.save((err) => {
+    req.session.save(async (err) => {
       if (err) {
         console.error('[Server] Error saving session before redirect:', err);
         return res.redirect(`${FRONTEND_URL}/?auth=error`);
       }
       
-      console.log('[Server] Session saved, sending redirect page');
-      console.log('[Server] Session ID:', req.sessionID);
+      console.log('[Server] Session saved, showing loading page while setting up browser...');
       
-      // Send an HTML page that redirects after a short delay
-      // This ensures express-session has time to set the cookie in the response
-      // before the browser navigates away
-      const redirectUrl = `${FRONTEND_URL}/?auth=success`;
-      res.send(`
+      // Send loading page that polls for completion
+      // The browser automation happens in the auth service OAuth callback
+      // We'll poll an endpoint to check when it's done
+      const loadingPage = `
         <!DOCTYPE html>
         <html>
         <head>
-          <meta http-equiv="refresh" content="0;url=${redirectUrl}">
-          <script>
-            window.location.href = "${redirectUrl}";
-          </script>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Setting up your account...</title>
+          <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body {
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+              display: flex;
+              justify-content: center;
+              align-items: center;
+              min-height: 100vh;
+              color: #fff;
+            }
+            .container {
+              text-align: center;
+              padding: 2rem;
+              max-width: 500px;
+            }
+            .spinner {
+              width: 50px;
+              height: 50px;
+              border: 4px solid rgba(255, 255, 255, 0.3);
+              border-top-color: #fff;
+              border-radius: 50%;
+              animation: spin 1s linear infinite;
+              margin: 0 auto 2rem;
+            }
+            @keyframes spin {
+              to { transform: rotate(360deg); }
+            }
+            h1 {
+              font-size: 1.5rem;
+              margin-bottom: 1rem;
+              font-weight: 600;
+            }
+            .message {
+              font-size: 1rem;
+              opacity: 0.9;
+              line-height: 1.6;
+            }
+            .status {
+              margin-top: 1.5rem;
+              font-size: 0.9rem;
+              opacity: 0.8;
+            }
+          </style>
         </head>
         <body>
-          <p>Redirecting...</p>
-          <p>If you are not redirected, <a href="${redirectUrl}">click here</a>.</p>
+          <div class="container">
+            <div class="spinner"></div>
+            <h1>Setting up your account...</h1>
+            <div class="message">
+              We're preparing your server and extracting cookies from your browser session.
+              <br>This may take a minute. Please wait...
+            </div>
+            <div class="status" id="status">Initializing...</div>
+          </div>
+          <script>
+            let pollCount = 0;
+            const maxPolls = 120; // 2 minutes max (1 second intervals)
+            
+            function updateStatus(message) {
+              document.getElementById('status').textContent = message;
+            }
+            
+            function checkReady() {
+              pollCount++;
+              
+              if (pollCount > maxPolls) {
+                updateStatus('Taking longer than expected. Redirecting anyway...');
+                setTimeout(() => {
+                  window.location.href = '${FRONTEND_URL}/?auth=success';
+                }, 2000);
+                return;
+              }
+              
+              fetch('/api/auth/ready', {
+                method: 'GET',
+                credentials: 'include'
+              })
+              .then(res => res.json())
+              .then(data => {
+                if (data.ready) {
+                  updateStatus('All set! Redirecting...');
+                  setTimeout(() => {
+                    window.location.href = '${FRONTEND_URL}/?auth=success';
+                  }, 1000);
+                } else {
+                  updateStatus(data.message || 'Still setting up...');
+                  setTimeout(checkReady, 1000);
+                }
+              })
+              .catch(err => {
+                console.error('Poll error:', err);
+                updateStatus('Checking status...');
+                setTimeout(checkReady, 1000);
+              });
+            }
+            
+            // Start polling after a short delay
+            setTimeout(checkReady, 2000);
+          </script>
         </body>
         </html>
-      `);
+      `;
+      
+      res.send(loadingPage);
     });
   }
 );
+
+// Endpoint to check if browser setup is complete
+app.get('/api/auth/ready', (req, res) => {
+  if (!req.isAuthenticated()) {
+    return res.json({ ready: false, message: 'Not authenticated' });
+  }
+  
+  const user = authService.getUserFromSession(req);
+  if (!user) {
+    return res.json({ ready: false, message: 'User not found' });
+  }
+  
+  // Check if user has cookies set up
+  const userData = db.getUserById(user.id);
+  if (userData && userData.cookie_file_path) {
+    // Check if cookie file exists and is valid
+    const cookieExtractor = new CookieExtractor();
+    const hasCookies = cookieExtractor.hasValidCookies(user.id);
+    
+    if (hasCookies) {
+      return res.json({ ready: true, message: 'Setup complete!' });
+    }
+  }
+  
+  // Still setting up
+  return res.json({ ready: false, message: 'Setting up browser and extracting cookies...' });
+});
+
+// Database reset endpoint (for fresh start)
+app.post('/api/admin/reset-database', async (req, res) => {
+  try {
+    console.log('[Server] Database reset requested');
+    
+    // Close current database connection
+    db.close();
+    
+    // Delete database file
+    const dbPath = process.env.DATABASE_PATH || path.join(process.cwd(), 'database', 'video-grabber.db');
+    if (fs.existsSync(dbPath)) {
+      fs.unlinkSync(dbPath);
+      console.log('[Server] Deleted database file:', dbPath);
+    }
+    
+    // Delete session database
+    const sessionDbPath = process.env.SESSION_DB_PATH || 
+                          path.join(process.env.DATABASE_PATH ? path.dirname(process.env.DATABASE_PATH) : process.cwd(), 'database', 'sessions.db');
+    if (fs.existsSync(sessionDbPath)) {
+      fs.unlinkSync(sessionDbPath);
+      console.log('[Server] Deleted session database file:', sessionDbPath);
+    }
+    
+    // Delete all cookie files
+    const cookiesDir = process.env.COOKIES_DIR || path.join(process.cwd(), 'cookies');
+    if (fs.existsSync(cookiesDir)) {
+      const files = fs.readdirSync(cookiesDir);
+      for (const file of files) {
+        if (file.endsWith('.txt')) {
+          fs.unlinkSync(path.join(cookiesDir, file));
+        }
+      }
+      console.log('[Server] Deleted cookie files');
+    }
+    
+    // Delete Chrome profiles
+    const chromeProfileDir = process.env.CHROME_PROFILE_DIR || '/var/lib/video-grabber/chrome-profiles';
+    if (fs.existsSync(chromeProfileDir)) {
+      const profiles = fs.readdirSync(chromeProfileDir);
+      for (const profile of profiles) {
+        const profilePath = path.join(chromeProfileDir, profile);
+        if (fs.statSync(profilePath).isDirectory()) {
+          fs.rmSync(profilePath, { recursive: true, force: true });
+        }
+      }
+      console.log('[Server] Deleted Chrome profiles');
+    }
+    
+    // Reinitialize database (will create new schema)
+    const { getDatabase: getDb } = await import('./services/database.mjs');
+    const newDb = getDb();
+    
+    res.json({ 
+      success: true, 
+      message: 'Database reset successfully. Please restart the server.',
+      note: 'The database will be reinitialized on next request'
+    });
+  } catch (error) {
+    console.error('[Server] Database reset error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to reset database',
+      message: error.message
+    });
+  }
+});
 
 // Logout endpoint
 app.post('/auth/logout', (req, res) => {
