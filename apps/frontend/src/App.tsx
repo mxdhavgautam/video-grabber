@@ -14,6 +14,7 @@ import {
 } from './components/ui/dropdown-menu'
 import { Moon, Sun, Monitor, LogOut, User } from 'lucide-react'
 import { useAuth } from './hooks/useAuth'
+import { triggerCookieExtraction } from './lib/auth'
 import './index.css'
 
 function App() {
@@ -82,14 +83,28 @@ function App() {
     return () => mediaQuery.removeEventListener('change', handleChange)
   }, [theme])
 
-  // Check for auth success in URL params
+  // Check for auth success in URL params and trigger cookie extraction
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     if (params.get('auth') === 'success') {
       // Remove auth param from URL
       window.history.replaceState({}, '', window.location.pathname)
-      // Refresh auth state
-      window.location.reload()
+      
+      // Trigger cookie extraction from browser
+      // This will try to extract cookies from the user's browser and send to backend
+      triggerCookieExtraction().then((success) => {
+        if (success) {
+          console.log('[App] Cookie extraction successful')
+        } else {
+          console.warn('[App] Cookie extraction failed, will retry on next extraction')
+        }
+        // Refresh auth state after cookie extraction attempt
+        window.location.reload()
+      }).catch((error) => {
+        console.error('[App] Error during cookie extraction:', error)
+        // Still reload even if cookie extraction fails
+        window.location.reload()
+      })
     }
   }, [])
 

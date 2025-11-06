@@ -653,10 +653,12 @@ app.post('/auth/extract-cookies', authService.requireAuth.bind(authService), asy
     }
 
     // Extract cookies using OAuth token
+    // Pass userId so cookie extractor can use saved cookies with youtubei.js if available
     try {
       const { cookies } = await cookieExtractor.extractCookiesFromOAuth(
         userData.access_token,
-        userData.refresh_token
+        userData.refresh_token,
+        user.id // Pass userId for saved cookies workaround
       );
 
       if (cookies && cookies.length > 0) {
@@ -727,6 +729,84 @@ app.post('/auth/extract-cookies', authService.requireAuth.bind(authService), asy
     }
   } catch (error) {
     console.error('[Server] Cookie extraction endpoint error:', error);
+    return res.status(500).json({ 
+      success: false,
+      error: 'Internal server error' 
+    });
+  }
+});
+
+// Import cookies from client browser
+app.post('/auth/import-cookies', authService.requireAuth.bind(authService), async (req, res) => {
+  try {
+    const user = authService.getUserFromSession(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Not authenticated' });
+    }
+
+    const { cookies } = req.body;
+    if (!cookies || typeof cookies !== 'string') {
+      return res.status(400).json({ error: 'Invalid cookies format' });
+    }
+
+    console.log(`[Server] Importing cookies from browser for user: ${user.id}`);
+
+    // Parse Netscape format cookies
+    const cookieLines = cookies.split('\n').filter(line => {
+      const trimmed = line.trim();
+      return trimmed && !trimmed.startsWith('#');
+    });
+
+    const cookieObjects = [];
+    for (const line of cookieLines) {
+      const parts = line.split('\t');
+      if (parts.length >= 7) {
+        const [domain, flag, path, secure, expiration, name, value] = parts;
+        cookieObjects.push({
+          name: name.trim(),
+          value: value.trim(),
+          domain: domain.trim() || '.youtube.com',
+          path: path.trim() || '/',
+          secure: secure === 'TRUE',
+          httpOnly: false, // Netscape format doesn't include httpOnly
+          expires: expiration && expiration !== '0' ? parseInt(expiration, 10) : null
+        });
+      }
+    }
+
+    if (cookieObjects.length === 0) {
+      return res.status(400).json({ error: 'No valid cookies found' });
+    }
+
+    // Save cookies to file
+    const cookieFilePath = cookieExtractor.saveCookiesToFile(user.id, cookieObjects);
+    
+    // Calculate cookie expiration (30 days default)
+    const cookieExpiresAt = Date.now() + (30 * 24 * 60 * 60 * 1000);
+    
+    // Update database with cookie file path
+    db.updateUserCookies(user.id, cookieFilePath, cookieExpiresAt);
+    
+    // Log successful import
+    db.logAuditEvent({
+      userId: user.id,
+      eventType: 'cookie',
+      eventAction: 'import_cookies_success',
+      eventDetails: { cookieCount: cookieObjects.length },
+      ipAddress: req.ip || 'unknown',
+      userAgent: req.get('user-agent') || 'unknown',
+      success: true
+    });
+    
+    console.log(`[Server] ✓ Imported and saved ${cookieObjects.length} cookies from browser for user ${user.id}`);
+    
+    return res.json({ 
+      success: true, 
+      message: `Imported ${cookieObjects.length} cookies`,
+      cookieCount: cookieObjects.length
+    });
+  } catch (error) {
+    console.error('[Server] Cookie import error:', error);
     return res.status(500).json({ 
       success: false,
       error: 'Internal server error' 
