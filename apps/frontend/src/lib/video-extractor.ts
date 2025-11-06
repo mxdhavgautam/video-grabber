@@ -32,6 +32,7 @@ export async function extractVideoInfo(url: string): Promise<VideoInfo | null> {
       headers: {
         'Content-Type': 'application/json',
       },
+      credentials: 'include',
       body: JSON.stringify({ url }),
     })
     
@@ -98,12 +99,9 @@ export async function downloadVideo(
     }
     
     // Start download
-    const downloadPromise = fetch(proxyUrl)
-    
-    // Wait a bit for progress connection to establish
-    await new Promise(r => setTimeout(r, 100))
-    
-    const response = await downloadPromise
+    const response = await fetch(proxyUrl, {
+      credentials: 'include',
+    })
     
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({ error: 'Unknown error' }))
