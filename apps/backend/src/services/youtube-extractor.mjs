@@ -89,13 +89,16 @@ class YouTubeExtractor {
       }
 
       // Use curl_cffi impersonation to mimic real browser (latest technique)
-      // Try chrome120 or chrome131 for better compatibility
-      let impersonateTarget = 'chrome131'; // Latest Chrome version for best compatibility
+      // Try multiple Chrome versions with fallback
+      // Common available targets: chrome, chrome120, chrome119, chrome118, chrome117
+      // Use 'chrome' as default (most compatible) and let yt-dlp handle version selection
+      let impersonateTarget = 'chrome'; // Use generic 'chrome' for best compatibility
       args.push('--impersonate', impersonateTarget);
       console.log(`[yt-dlp] Using curl_cffi with ${impersonateTarget} impersonation`);
 
       // Set user agent (must match impersonate target)
-      const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+      // Use a generic Chrome user agent that matches the 'chrome' impersonation target
+      const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
       args.push('--user-agent', userAgent);
 
       // Add headers to mimic real browser requests

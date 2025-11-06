@@ -167,10 +167,13 @@ class CookieExtractor {
     try {
       console.log('[CookieExtractor] Creating Innertube session...');
       
-      // Create Innertube instance (without OAuth for now - youtubei.js doesn't support OAuth directly)
+      // Create Innertube instance with explicit client configuration
+      // Use WEB client to avoid signature decipher issues and ensure proper API version
       const yt = await Innertube.create({
+        client: 'WEB', // Explicitly set client to avoid vnull API version
         cache: false,
-        generate_session_data: true
+        // Don't use generate_session_data as it can cause signature decipher errors
+        // The library will handle session data automatically
       });
 
       // Make requests to YouTube to trigger cookie generation
@@ -201,7 +204,8 @@ class CookieExtractor {
       return cookies;
     } catch (error) {
       console.error('[CookieExtractor] Error with youtubei.js method:', error.message);
-      throw error;
+      // Don't throw - return empty array so OAuth method can still work
+      return [];
     }
   }
 
@@ -218,68 +222,124 @@ class CookieExtractor {
       // We need to access the cookie jar from the session
       const session = yt.session;
       
+      if (!session) {
+        console.warn('[CookieExtractor] No session found in Innertube instance');
+        return cookies;
+      }
+      
       // Try to get cookies from different locations in the session
-      if (session && session.context && session.context.client) {
+      // youtubei.js v7 stores cookies in session.context.client.cookie_jar
+      if (session.context && session.context.client) {
         const client = session.context.client;
         
-        // Check for cookie jar
+        // Check for cookie jar in client
         if (client.cookie_jar) {
-          const cookieJar = client.cookie_jar;
-          // Extract cookies from jar
-          const jarCookies = cookieJar.getCookiesSync('https://www.youtube.com');
-          for (const cookie of jarCookies) {
-            cookies.push({
-              name: cookie.key,
-              value: cookie.value,
-              domain: cookie.domain || '.youtube.com',
-              path: cookie.path || '/',
-              secure: cookie.secure || false,
-              httpOnly: cookie.httpOnly || false,
-              expires: cookie.expires ? Math.floor(cookie.expires.getTime() / 1000) : null
-            });
-          }
-        }
-        
-        // Also check HTTP client for cookies
-        if (client.http && client.http.cookie_jar) {
-          const httpCookieJar = client.http.cookie_jar;
-          const httpCookies = httpCookieJar.getCookiesSync('https://www.youtube.com');
-          for (const cookie of httpCookies) {
-            // Avoid duplicates
-            if (!cookies.find(c => c.name === cookie.key)) {
+          try {
+            const cookieJar = client.cookie_jar;
+            // Extract cookies from jar - use async method if available
+            let jarCookies = [];
+            if (typeof cookieJar.getCookiesSync === 'function') {
+              jarCookies = cookieJar.getCookiesSync('https://www.youtube.com');
+            } else if (typeof cookieJar.getCookies === 'function') {
+              jarCookies = await cookieJar.getCookies('https://www.youtube.com');
+            } else if (cookieJar.toJSON && typeof cookieJar.toJSON === 'function') {
+              // Some versions store cookies as an object
+              const jarData = cookieJar.toJSON();
+              if (Array.isArray(jarData)) {
+                jarCookies = jarData;
+              }
+            }
+            
+            for (const cookie of jarCookies) {
               cookies.push({
-                name: cookie.key,
+                name: cookie.key || cookie.name,
                 value: cookie.value,
                 domain: cookie.domain || '.youtube.com',
                 path: cookie.path || '/',
                 secure: cookie.secure || false,
                 httpOnly: cookie.httpOnly || false,
-                expires: cookie.expires ? Math.floor(cookie.expires.getTime() / 1000) : null
+                expires: cookie.expires ? (cookie.expires instanceof Date ? Math.floor(cookie.expires.getTime() / 1000) : cookie.expires) : null
               });
             }
+          } catch (jarError) {
+            console.warn('[CookieExtractor] Error accessing cookie jar:', jarError.message);
+          }
+        }
+        
+        // Also check HTTP client for cookies (different location in some versions)
+        if (client.http) {
+          try {
+            // Check if http has a cookie jar
+            if (client.http.cookie_jar) {
+              const httpCookieJar = client.http.cookie_jar;
+              let httpCookies = [];
+              if (typeof httpCookieJar.getCookiesSync === 'function') {
+                httpCookies = httpCookieJar.getCookiesSync('https://www.youtube.com');
+              } else if (typeof httpCookieJar.getCookies === 'function') {
+                httpCookies = await httpCookieJar.getCookies('https://www.youtube.com');
+              }
+              
+              for (const cookie of httpCookies) {
+                // Avoid duplicates
+                if (!cookies.find(c => c.name === (cookie.key || cookie.name))) {
+                  cookies.push({
+                    name: cookie.key || cookie.name,
+                    value: cookie.value,
+                    domain: cookie.domain || '.youtube.com',
+                    path: cookie.path || '/',
+                    secure: cookie.secure || false,
+                    httpOnly: cookie.httpOnly || false,
+                    expires: cookie.expires ? (cookie.expires instanceof Date ? Math.floor(cookie.expires.getTime() / 1000) : cookie.expires) : null
+                  });
+                }
+              }
+            }
+            
+            // Try to access cookies directly from http client if available
+            if (client.http.cookies && Array.isArray(client.http.cookies)) {
+              for (const cookie of client.http.cookies) {
+                if (!cookies.find(c => c.name === (cookie.key || cookie.name))) {
+                  cookies.push({
+                    name: cookie.key || cookie.name,
+                    value: cookie.value,
+                    domain: cookie.domain || '.youtube.com',
+                    path: cookie.path || '/',
+                    secure: cookie.secure || false,
+                    httpOnly: cookie.httpOnly || false,
+                    expires: cookie.expires ? (cookie.expires instanceof Date ? Math.floor(cookie.expires.getTime() / 1000) : cookie.expires) : null
+                  });
+                }
+              }
+            }
+          } catch (httpError) {
+            console.warn('[CookieExtractor] Error accessing HTTP client cookies:', httpError.message);
           }
         }
       }
 
-      // If we didn't get cookies from the session, try to extract from HTTP client directly
-      if (cookies.length === 0 && yt.session && yt.session.http) {
-        // Make a request and capture cookies from response
+      // Alternative: Try to access cookies from session directly
+      if (cookies.length === 0 && session.cookie_jar) {
         try {
-          const response = await yt.session.http.request({
-            url: 'https://www.youtube.com/',
-            method: 'GET'
-          });
-          
-          // Extract cookies from response headers
-          const setCookies = response.headers['set-cookie'] || [];
-          for (const cookieHeader of setCookies) {
-            const cookie = this.parseSetCookieHeader(cookieHeader);
-            if (cookie && !cookies.find(c => c.name === cookie.name)) {
-              cookies.push(cookie);
-            }
+          let jarCookies = [];
+          if (typeof session.cookie_jar.getCookiesSync === 'function') {
+            jarCookies = session.cookie_jar.getCookiesSync('https://www.youtube.com');
+          } else if (typeof session.cookie_jar.getCookies === 'function') {
+            jarCookies = await session.cookie_jar.getCookies('https://www.youtube.com');
           }
-        } catch (requestError) {
-          console.warn('[CookieExtractor] Failed to extract cookies from HTTP response:', requestError.message);
+          
+          for (const cookie of jarCookies) {
+            cookies.push({
+              name: cookie.key || cookie.name,
+              value: cookie.value,
+              domain: cookie.domain || '.youtube.com',
+              path: cookie.path || '/',
+              secure: cookie.secure || false,
+              httpOnly: cookie.httpOnly || false,
+              expires: cookie.expires ? (cookie.expires instanceof Date ? Math.floor(cookie.expires.getTime() / 1000) : cookie.expires) : null
+            });
+          }
+        } catch (sessionJarError) {
+          console.warn('[CookieExtractor] Error accessing session cookie jar:', sessionJarError.message);
         }
       }
 
