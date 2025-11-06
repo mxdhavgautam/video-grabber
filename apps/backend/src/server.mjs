@@ -76,9 +76,18 @@ app.use(session({
     maxAge: 24 * 60 * 60 * 1000, // 24 hours
     sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // 'none' required for cross-subdomain cookies
     domain: process.env.NODE_ENV === 'production' ? '.mxdhavgautam.com' : undefined, // Allow cross-subdomain cookies in production
-    path: '/' // Explicitly set path to root to ensure cookie is accessible from all paths
+    path: '/', // Explicitly set path to root to ensure cookie is accessible from all paths
+    overwrite: true // Overwrite existing cookies with same name to prevent duplicates
   },
-  name: process.env.SESSION_COOKIE_NAME || 'video-grabber-session'
+  name: process.env.SESSION_COOKIE_NAME || 'video-grabber-session',
+  genid: (req) => {
+    // Generate session ID - if session already exists, reuse it
+    if (req.sessionID) {
+      return req.sessionID;
+    }
+    // Otherwise generate new one
+    return crypto.randomBytes(24).toString('hex');
+  }
 }));
 
 // Initialize Passport
@@ -937,25 +946,67 @@ app.post('/api/extract', authService.requireAuth.bind(authService), async (req, 
     const browserManager = getBrowserManager();
     let freshCookies = null;
     
+    // Check if browser is active, if not, try to start it
+    if (!browserManager.hasActiveBrowser(user.id)) {
+      console.log(`[Extract] Browser not active for user ${user.id}, attempting to start...`);
+      try {
+        // Get user's OAuth tokens
+        const userData = db.getUserById(user.id);
+        if (userData && userData.access_token) {
+          // Extract initial cookies
+          let initialCookies = [];
+          try {
+            const { cookies } = await cookieExtractor.extractCookiesFromOAuth(
+              userData.access_token,
+              userData.refresh_token
+            );
+            if (cookies && cookies.length > 0) {
+              initialCookies = cookies;
+            }
+          } catch (e) {
+            console.warn(`[Extract] Could not extract initial cookies:`, e.message);
+          }
+          
+          // Start browser
+          await browserManager.ensureBrowserForUser(
+            user.id,
+            userData.access_token,
+            userData.refresh_token,
+            initialCookies,
+            cookieExtractor.cookiesDir
+          );
+          console.log(`[Extract] Browser started for user ${user.id}`);
+        } else {
+          console.warn(`[Extract] No OAuth tokens found for user ${user.id}`);
+        }
+      } catch (startError) {
+        console.error(`[Extract] Error starting browser:`, startError.message);
+      }
+    }
+    
     try {
       // Navigate to video URL in browser and extract fresh cookies
-      freshCookies = await browserManager.navigateToVideoAndExtractCookies(user.id, url);
-      
-      if (freshCookies && freshCookies.length > 0) {
-        // Save fresh cookies to file
-        const freshCookieFilePath = cookieExtractor.saveCookiesToFile(user.id, freshCookies);
-        const cookieExpiresAt = Date.now() + (30 * 24 * 60 * 60 * 1000);
-        db.updateUserCookies(user.id, freshCookieFilePath, cookieExpiresAt);
+      if (browserManager.hasActiveBrowser(user.id)) {
+        freshCookies = await browserManager.navigateToVideoAndExtractCookies(user.id, url);
         
-        // Get temporary decrypted cookie file with fresh cookies
-        if (tempCookieFilePath) {
-          cookieExtractor.cleanupTemporaryCookieFile(tempCookieFilePath);
+        if (freshCookies && freshCookies.length > 0) {
+          // Save fresh cookies to file
+          const freshCookieFilePath = cookieExtractor.saveCookiesToFile(user.id, freshCookies);
+          const cookieExpiresAt = Date.now() + (30 * 24 * 60 * 60 * 1000);
+          db.updateUserCookies(user.id, freshCookieFilePath, cookieExpiresAt);
+          
+          // Get temporary decrypted cookie file with fresh cookies
+          if (tempCookieFilePath) {
+            cookieExtractor.cleanupTemporaryCookieFile(tempCookieFilePath);
+          }
+          tempCookieFilePath = cookieExtractor.getTemporaryDecryptedCookieFile(user.id);
+          
+          console.log(`[Extract] Extracted ${freshCookies.length} fresh cookies from browser for video: ${videoId}`);
+        } else {
+          console.warn(`[Extract] No fresh cookies extracted, using existing cookies`);
         }
-        tempCookieFilePath = cookieExtractor.getTemporaryDecryptedCookieFile(user.id);
-        
-        console.log(`[Extract] Extracted ${freshCookies.length} fresh cookies from browser for video: ${videoId}`);
       } else {
-        console.warn(`[Extract] No fresh cookies extracted, using existing cookies`);
+        console.warn(`[Extract] Browser not available, using existing cookies`);
       }
     } catch (browserError) {
       console.error(`[Extract] Error navigating to video in browser:`, browserError.message);
