@@ -2,16 +2,14 @@ FROM node:20-bookworm AS builder
 
 WORKDIR /app
 
-COPY package.json ./
-COPY apps/frontend/package.json apps/frontend/package.json
-COPY apps/backend/package.json apps/backend/package.json
+# Copy frontend package.json first for better layer caching
+COPY apps/frontend/package.json ./package.json
 
-# Install all dependencies without package-lock to avoid optional deps bug
+# Install only frontend dependencies (no workspace, no backend deps)
 RUN npm install --no-package-lock
 
-COPY apps/frontend ./apps/frontend
-
-WORKDIR /app/apps/frontend
+# Copy all frontend source files
+COPY apps/frontend/ ./
 
 ARG VITE_API_URL=https://video-grabber-api.mxdhavgautam.com/api
 ENV VITE_API_URL=${VITE_API_URL}
@@ -20,7 +18,7 @@ RUN npm run build
 
 FROM nginx:1.27-alpine
 
-COPY --from=builder /app/apps/frontend/dist /usr/share/nginx/html
+COPY --from=builder /app/dist /usr/share/nginx/html
 COPY apps/frontend/nginx.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
