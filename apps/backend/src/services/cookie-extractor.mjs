@@ -463,6 +463,56 @@ class CookieExtractor {
       } catch (apiError) {
         console.warn('[CookieExtractor] InnerTube API request failed:', apiError.message);
       }
+      
+      // Step 5: Try visiting YouTube with OAuth token in a way that might set session cookies
+      // This attempts to use the OAuth token to authenticate with YouTube's web interface
+      console.log('[CookieExtractor] Step 5: Attempting YouTube web authentication...');
+      try {
+        // Try visiting YouTube's authenticated endpoint
+        const authResponse = await fetch('https://www.youtube.com/?authuser=0&feature=youtu.be', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Cookie': buildCookieHeader(),
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin',
+            'Sec-Fetch-User': '?1',
+            'Upgrade-Insecure-Requests': '1'
+          },
+          redirect: 'follow'
+        });
+        addCookiesToJar(authResponse, 'https://www.youtube.com/?authuser=0');
+      } catch (authError) {
+        console.warn('[CookieExtractor] YouTube web authentication request failed:', authError.message);
+      }
+      
+      // Step 6: Try making a request to YouTube's account page which might trigger session cookies
+      console.log('[CookieExtractor] Step 6: Visiting YouTube account settings...');
+      try {
+        const settingsResponse = await fetch('https://www.youtube.com/account_advanced', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Cookie': buildCookieHeader(),
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/account',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin'
+          },
+          redirect: 'follow'
+        });
+        addCookiesToJar(settingsResponse, 'https://www.youtube.com/account_advanced');
+      } catch (settingsError) {
+        console.warn('[CookieExtractor] Account settings request failed:', settingsError.message);
+      }
 
       // Convert Map to Array
       const finalCookies = Array.from(cookieMap.values());
@@ -482,8 +532,11 @@ class CookieExtractor {
       
       if (missingCriticalCookies.length > 0) {
         console.warn(`[CookieExtractor] ⚠️ Missing critical cookies: ${missingCriticalCookies.join(', ')}`);
-        console.warn('[CookieExtractor] NOTE: OAuth tokens may not provide YouTube session cookies.');
-        console.warn('[CookieExtractor] These cookies are typically only set when browsing YouTube in a browser.');
+        console.warn('[CookieExtractor] NOTE: OAuth tokens do not provide YouTube session cookies.');
+        console.warn('[CookieExtractor] These cookies (__Secure-3PSID, __Secure-3PAPISID, LOGIN_INFO, VISITOR_INFO1_LIVE)');
+        console.warn('[CookieExtractor] are only set when browsing YouTube in a browser.');
+        console.warn('[CookieExtractor] The extracted cookies may not be sufficient for bypassing bot detection.');
+        console.warn('[CookieExtractor] Users may need to export cookies from their browser manually.');
       }
 
       return finalCookies;
