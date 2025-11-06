@@ -10,6 +10,7 @@ import path from 'path';
 import { EventEmitter } from 'events';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
+import sessionModule from 'express-session';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -239,13 +240,21 @@ class SQLiteSessionStore extends EventEmitter {
       req.sessionID = this.generateSessionId();
     }
     
-    // Set session data on request
-    // express-session will wrap this in a Session instance
-    req.session = sess;
+    // Create a Session instance using express-session's Session class
+    // Session is exported from express-session
+    const Session = sessionModule.Session;
     
-    // Ensure cookie exists
-    if (!sess.cookie) {
-      sess.cookie = {
+    if (!Session) {
+      throw new Error('Session class not found in express-session');
+    }
+    
+    // Create Session instance with the stored data
+    // Session constructor: Session(req, data)
+    req.session = new Session(req, sess);
+    
+    // Ensure cookie exists and is properly formatted
+    if (!req.session.cookie) {
+      req.session.cookie = {
         originalMaxAge: 24 * 60 * 60 * 1000,
         expires: Date.now() + (24 * 60 * 60 * 1000),
         secure: false,
