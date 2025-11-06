@@ -22,6 +22,7 @@ import puppeteerExtra from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
 import CookieExtractor from './cookie-extractor.mjs';
 
 // Configure puppeteer-extra with stealth plugin
@@ -50,6 +51,78 @@ class UserBrowserService {
   }
 
   /**
+   * Clean up Chrome profile lock files
+   * Removes lock files that prevent browser from starting
+   */
+  cleanupProfileLocks() {
+    try {
+      if (!fs.existsSync(this.profileDir)) {
+        return;
+      }
+
+      // Remove SingletonLock file (most common lock file)
+      const singletonLock = path.join(this.profileDir, 'SingletonLock');
+      if (fs.existsSync(singletonLock)) {
+        try {
+          fs.unlinkSync(singletonLock);
+          console.log(`[UserBrowserService:${this.userId}] Removed SingletonLock file`);
+        } catch (e) {
+          console.warn(`[UserBrowserService:${this.userId}] Could not remove SingletonLock:`, e.message);
+        }
+      }
+
+      // Remove SingletonSocket file
+      const singletonSocket = path.join(this.profileDir, 'SingletonSocket');
+      if (fs.existsSync(singletonSocket)) {
+        try {
+          fs.unlinkSync(singletonSocket);
+          console.log(`[UserBrowserService:${this.userId}] Removed SingletonSocket file`);
+        } catch (e) {
+          console.warn(`[UserBrowserService:${this.userId}] Could not remove SingletonSocket:`, e.message);
+        }
+      }
+
+      // Remove SingletonCookie file
+      const singletonCookie = path.join(this.profileDir, 'SingletonCookie');
+      if (fs.existsSync(singletonCookie)) {
+        try {
+          fs.unlinkSync(singletonCookie);
+          console.log(`[UserBrowserService:${this.userId}] Removed SingletonCookie file`);
+        } catch (e) {
+          console.warn(`[UserBrowserService:${this.userId}] Could not remove SingletonCookie:`, e.message);
+        }
+      }
+
+      // Try to kill any stale Chrome processes that might be using this profile
+      try {
+        // Find Chrome/Chromium processes that might be using this profile
+        const processes = execSync(`ps aux | grep -i "chrom.*${this.profileDir}" | grep -v grep || true`, { encoding: 'utf-8' });
+        if (processes && processes.trim()) {
+          console.log(`[UserBrowserService:${this.userId}] Found stale Chrome processes, attempting to kill...`);
+          // Extract PIDs and kill them
+          const lines = processes.trim().split('\n');
+          for (const line of lines) {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length > 1) {
+              const pid = parts[1];
+              try {
+                execSync(`kill -9 ${pid} 2>/dev/null || true`);
+                console.log(`[UserBrowserService:${this.userId}] Killed stale Chrome process: ${pid}`);
+              } catch (e) {
+                // Process might already be dead
+              }
+            }
+          }
+        }
+      } catch (e) {
+        // No processes found or error checking - that's fine
+      }
+    } catch (error) {
+      console.warn(`[UserBrowserService:${this.userId}] Error cleaning up profile locks:`, error.message);
+    }
+  }
+
+  /**
    * Start browser instance and authenticate with OAuth tokens
    * @param {string} accessToken - OAuth access token
    * @param {string} refreshToken - OAuth refresh token (optional)
@@ -59,6 +132,9 @@ class UserBrowserService {
   async startAndAuthenticate(accessToken, refreshToken = null, initialCookies = []) {
     try {
       console.log(`[UserBrowserService:${this.userId}] Starting browser for user ${this.userId}...`);
+      
+      // Clean up any stale lock files before starting
+      this.cleanupProfileLocks();
       
       // Launch Chrome with stealth plugin
       const chromeArgs = [
@@ -578,7 +654,7 @@ class UserBrowserService {
    * Stop browser instance
    */
   async stop() {
-    if (!this.isRunning) return;
+    if (!this.isRunning && !this.browser) return;
 
     console.log(`[UserBrowserService:${this.userId}] Stopping browser...`);
     
@@ -587,16 +663,47 @@ class UserBrowserService {
 
     try {
       // Final cookie export
-      await this.exportCookies();
+      if (this.page) {
+        await this.exportCookies();
+      }
     } catch (e) {
       console.warn(`[UserBrowserService:${this.userId}] Final export failed:`, e.message);
     }
 
     if (this.browser) {
-      await this.browser.close();
+      try {
+        // Close all pages first
+        const pages = await this.browser.pages();
+        for (const page of pages) {
+          try {
+            await page.close();
+          } catch (e) {
+            // Page might already be closed
+          }
+        }
+        
+        // Close browser
+        await this.browser.close();
+      } catch (e) {
+        console.warn(`[UserBrowserService:${this.userId}] Error closing browser:`, e.message);
+        // Force kill if graceful close fails
+        try {
+          if (this.browser.process()) {
+            this.browser.process().kill('SIGKILL');
+          }
+        } catch (killError) {
+          // Process might already be dead
+        }
+      }
+      
       this.browser = null;
       this.page = null;
     }
+
+    // Clean up lock files after browser is closed
+    setTimeout(() => {
+      this.cleanupProfileLocks();
+    }, 1000); // Wait a bit for Chrome to release locks
 
     console.log(`[UserBrowserService:${this.userId}] Browser stopped`);
   }
