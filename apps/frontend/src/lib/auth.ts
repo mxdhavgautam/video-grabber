@@ -96,3 +96,28 @@ export async function isAuthenticated(): Promise<boolean> {
   return user !== null;
 }
 
+/**
+ * Trigger server-side cookie extraction after OAuth login
+ * The backend will use the OAuth token to visit YouTube pages
+ * and extract session cookies from the response headers
+ */
+export async function triggerCookieExtraction(): Promise<boolean> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/auth/extract-cookies`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+
+    if (!response.ok) {
+      console.error('Failed to extract cookies:', response.statusText);
+      return false;
+    }
+
+    const result = await response.json();
+    return result.success === true;
+  } catch (error) {
+    console.error('Error triggering cookie extraction:', error);
+    return false;
+  }
+}
+

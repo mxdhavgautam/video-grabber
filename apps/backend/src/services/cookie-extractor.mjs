@@ -113,100 +113,135 @@ class CookieExtractor {
 
   /**
    * Get cookies by making authenticated requests to YouTube with OAuth token
+   * Uses a cookie jar to maintain cookies across requests
    * @param {string} accessToken - OAuth access token
    * @returns {Promise<Array>} - Array of cookie objects
    */
   async getCookiesFromOAuthToken(accessToken) {
     try {
-      const cookies = [];
       const cookieMap = new Map(); // Use Map to avoid duplicates
+      const cookieJar = new Map(); // Simple cookie jar to maintain cookies across requests
       
-      // Step 1: Make request to YouTube homepage to get initial cookies
-      console.log('[CookieExtractor] Step 1: Requesting YouTube homepage...');
+      // Helper to add cookies from response to jar
+      const addCookiesToJar = (response, url) => {
+        const setCookies = response.headers.getSetCookie?.() || [];
+        for (const cookieHeader of setCookies) {
+          const cookie = this.parseSetCookieHeader(cookieHeader);
+          if (cookie) {
+            cookieJar.set(cookie.name, cookie);
+            cookieMap.set(cookie.name, cookie);
+          }
+        }
+      };
+      
+      // Helper to build cookie header from jar
+      const buildCookieHeader = () => {
+        return Array.from(cookieJar.values())
+          .map(c => `${c.name}=${c.value}`)
+          .join('; ');
+      };
+      
+      // Step 1: Visit YouTube homepage to get initial cookies
+      console.log('[CookieExtractor] Step 1: Visiting YouTube homepage...');
       const homeResponse = await fetch('https://www.youtube.com/', {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.9',
           'Accept-Encoding': 'gzip, deflate, br',
           'Connection': 'keep-alive',
           'Upgrade-Insecure-Requests': '1',
           'Sec-Fetch-Dest': 'document',
           'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'none'
+          'Sec-Fetch-Site': 'none',
+          'Sec-Fetch-User': '?1',
+          'Cache-Control': 'max-age=0'
         },
         redirect: 'follow'
       });
-
-      // Extract cookies from homepage response
-      const homeSetCookies = homeResponse.headers.getSetCookie?.() || [];
-      for (const cookieHeader of homeSetCookies) {
-        const cookie = this.parseSetCookieHeader(cookieHeader);
-        if (cookie) {
-          cookieMap.set(cookie.name, cookie);
-        }
-      }
-
-      // Step 2: Make authenticated request to YouTube API to get session cookies
-      console.log('[CookieExtractor] Step 2: Making authenticated API request...');
-      const apiResponse = await fetch('https://www.youtube.com/youtubei/v1/browse', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-          'X-YouTube-Client-Name': '1',
-          'X-YouTube-Client-Version': '2.20250106.00.00',
-          'Origin': 'https://www.youtube.com',
-          'Referer': 'https://www.youtube.com/'
-        },
-        body: JSON.stringify({
-          context: {
-            client: {
-              clientName: 'WEB',
-              clientVersion: '2.20250106.00.00',
-              hl: 'en',
-              gl: 'US'
-            }
+      addCookiesToJar(homeResponse, 'https://www.youtube.com/');
+      
+      // Step 2: Visit YouTube watch page (triggers more cookies)
+      console.log('[CookieExtractor] Step 2: Visiting YouTube watch page...');
+      try {
+        const watchResponse = await fetch('https://www.youtube.com/watch?v=dQw4w9WgXcQ', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Cookie': buildCookieHeader(),
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin'
           },
-          browseId: 'FEwhat_to_watch'
-        })
-      });
-
-      // Extract cookies from API response
-      const apiSetCookies = apiResponse.headers.getSetCookie?.() || [];
-      for (const cookieHeader of apiSetCookies) {
-        const cookie = this.parseSetCookieHeader(cookieHeader);
-        if (cookie) {
-          cookieMap.set(cookie.name, cookie);
-        }
+          redirect: 'follow'
+        });
+        addCookiesToJar(watchResponse, 'https://www.youtube.com/watch');
+      } catch (watchError) {
+        console.warn('[CookieExtractor] Watch page request failed:', watchError.message);
       }
-
-      // Step 3: Make request to account page to get account-specific cookies
-      console.log('[CookieExtractor] Step 3: Requesting account page...');
+      
+      // Step 3: Visit YouTube account page (triggers account-specific cookies)
+      console.log('[CookieExtractor] Step 3: Visiting YouTube account page...');
       try {
         const accountResponse = await fetch('https://www.youtube.com/account', {
           method: 'GET',
           headers: {
             'Authorization': `Bearer ${accessToken}`,
+            'Cookie': buildCookieHeader(),
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Referer': 'https://www.youtube.com/'
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin'
           },
           redirect: 'follow'
         });
-
-        const accountSetCookies = accountResponse.headers.getSetCookie?.() || [];
-        for (const cookieHeader of accountSetCookies) {
-          const cookie = this.parseSetCookieHeader(cookieHeader);
-          if (cookie) {
-            cookieMap.set(cookie.name, cookie);
-          }
-        }
+        addCookiesToJar(accountResponse, 'https://www.youtube.com/account');
       } catch (accountError) {
         console.warn('[CookieExtractor] Account page request failed:', accountError.message);
+      }
+      
+      // Step 4: Make authenticated InnerTube API request (may trigger additional cookies)
+      console.log('[CookieExtractor] Step 4: Making InnerTube API request...');
+      try {
+        const apiResponse = await fetch('https://www.youtube.com/youtubei/v1/browse', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Cookie': buildCookieHeader(),
+            'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'X-YouTube-Client-Name': '1',
+            'X-YouTube-Client-Version': '2.20250106.00.00',
+            'Origin': 'https://www.youtube.com',
+            'Referer': 'https://www.youtube.com/',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9'
+          },
+          body: JSON.stringify({
+            context: {
+              client: {
+                clientName: 'WEB',
+                clientVersion: '2.20250106.00.00',
+                hl: 'en',
+                gl: 'US',
+                utcOffsetMinutes: 0
+              }
+            },
+            browseId: 'FEwhat_to_watch'
+          })
+        });
+        addCookiesToJar(apiResponse, 'https://www.youtube.com/youtubei/v1/browse');
+      } catch (apiError) {
+        console.warn('[CookieExtractor] InnerTube API request failed:', apiError.message);
       }
 
       // Convert Map to Array
@@ -218,9 +253,17 @@ class CookieExtractor {
       
       // Check for critical cookies
       const criticalCookies = ['__Secure-3PSID', '__Secure-3PAPISID', 'LOGIN_INFO', 'VISITOR_INFO1_LIVE'];
-      const hasCriticalCookies = criticalCookies.some(name => cookieMap.has(name));
-      if (!hasCriticalCookies) {
-        console.warn('[CookieExtractor] WARNING: Missing critical session cookies. Extraction may fail.');
+      const foundCriticalCookies = criticalCookies.filter(name => cookieMap.has(name));
+      const missingCriticalCookies = criticalCookies.filter(name => !cookieMap.has(name));
+      
+      if (foundCriticalCookies.length > 0) {
+        console.log(`[CookieExtractor] ✓ Found critical cookies: ${foundCriticalCookies.join(', ')}`);
+      }
+      
+      if (missingCriticalCookies.length > 0) {
+        console.warn(`[CookieExtractor] ⚠️ Missing critical cookies: ${missingCriticalCookies.join(', ')}`);
+        console.warn('[CookieExtractor] NOTE: OAuth tokens may not provide YouTube session cookies.');
+        console.warn('[CookieExtractor] These cookies are typically only set when browsing YouTube in a browser.');
       }
 
       return finalCookies;
