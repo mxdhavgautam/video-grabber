@@ -55,7 +55,7 @@ class UserBrowserService {
    * Removes lock files that prevent browser from starting
    * If locks persist, removes entire profile directory (like old working code)
    */
-  cleanupProfileLocks() {
+  async cleanupProfileLocks() {
     try {
       if (!fs.existsSync(this.profileDir)) {
         return;
@@ -146,7 +146,7 @@ class UserBrowserService {
       console.log(`[UserBrowserService:${this.userId}] Starting browser for user ${this.userId}...`);
       
       // Clean up any stale lock files before starting
-      this.cleanupProfileLocks();
+      await this.cleanupProfileLocks();
       
       // Launch Chrome with stealth plugin
       const chromeArgs = [
@@ -820,8 +820,8 @@ class UserBrowserService {
     }
 
     // Clean up lock files after browser is closed
-    setTimeout(() => {
-      this.cleanupProfileLocks();
+    setTimeout(async () => {
+      await this.cleanupProfileLocks();
     }, 1000); // Wait a bit for Chrome to release locks
 
     console.log(`[UserBrowserService:${this.userId}] Browser stopped`);
