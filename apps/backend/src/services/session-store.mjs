@@ -228,6 +228,34 @@ class SQLiteSessionStore extends EventEmitter {
   }
 
   /**
+   * Create session (required by express-session for inflating sessions)
+   * Called by express-session when inflating a session from stored data
+   * @param {Object} req - Express request object
+   * @param {Object} sess - Session data object (plain object from store)
+   */
+  createSession(req, sess) {
+    // Generate new session ID if not already set
+    if (!req.sessionID) {
+      req.sessionID = this.generateSessionId();
+    }
+    
+    // Set session data on request
+    // express-session will wrap this in a Session instance
+    req.session = sess;
+    
+    // Ensure cookie exists
+    if (!sess.cookie) {
+      sess.cookie = {
+        originalMaxAge: 24 * 60 * 60 * 1000,
+        expires: Date.now() + (24 * 60 * 60 * 1000),
+        secure: false,
+        httpOnly: true,
+        path: '/'
+      };
+    }
+  }
+
+  /**
    * Cleanup expired sessions
    */
   cleanup() {
