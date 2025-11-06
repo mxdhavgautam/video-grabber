@@ -429,41 +429,45 @@ class UserBrowserService {
    * YouTube session cookies (__Secure-3PSID, __Secure-3PAPISID, LOGIN_INFO) are only
    * set when you actually sign in via Google's authentication flow
    * 
-   * Strategy: Use OAuth token to make authenticated requests that will set session cookies
+   * Strategy: Navigate to Google Account page with OAuth token to establish session,
+   * then navigate to YouTube which will recognize the authenticated session
    */
   async authenticateWithOAuth(accessToken) {
     try {
       console.log(`[UserBrowserService:${this.userId}] Signing in to Google/YouTube with OAuth token...`);
       
-      // Step 1: Make authenticated requests using OAuth token to establish session
-      // This will set the necessary cookies for Google/YouTube
-      console.log(`[UserBrowserService:${this.userId}] Step 1: Making authenticated requests to establish session...`);
+      // Step 1: Navigate to Google Account page with OAuth token in Authorization header
+      // This will establish the authenticated session in the browser
+      console.log(`[UserBrowserService:${this.userId}] Step 1: Navigating to Google Account to establish session...`);
       
-      // First, navigate to YouTube and inject OAuth token
-      await this.page.goto('https://www.youtube.com', {
-        waitUntil: 'domcontentloaded',
+      // Set extra headers with OAuth token
+      await this.page.setExtraHTTPHeaders({
+        'Authorization': `Bearer ${accessToken}`,
+        'Accept-Language': 'en-US,en;q=0.9'
+      });
+      
+      // Navigate to Google Account page - this should recognize the OAuth token
+      // and set session cookies
+      await this.page.goto('https://myaccount.google.com', {
+        waitUntil: 'networkidle2',
         timeout: 30000
       });
-      await this.sleep(2000);
-
-      // Step 2: Use OAuth token to make authenticated requests via page.evaluate
-      // This will trigger Google/YouTube to set session cookies
+      await this.sleep(3000);
+      
+      // Step 2: Navigate to YouTube - it should recognize the Google session
+      console.log(`[UserBrowserService:${this.userId}] Step 2: Navigating to YouTube with authenticated session...`);
+      await this.page.goto('https://www.youtube.com', {
+        waitUntil: 'networkidle2',
+        timeout: 30000
+      });
+      await this.sleep(5000);
+      
+      // Step 3: Make authenticated API requests to YouTube to trigger cookie generation
+      // This will help establish the YouTube session cookies
+      console.log(`[UserBrowserService:${this.userId}] Step 3: Making authenticated API requests to YouTube...`);
       try {
         await this.page.evaluate(async (token) => {
-          // Make authenticated request to Google OAuth userinfo endpoint
-          // This establishes the authenticated session
-          const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-            headers: {
-              'Authorization': `Bearer ${token}`
-            }
-          });
-          
-          if (userInfoResponse.ok) {
-            const userInfo = await userInfoResponse.json();
-            console.log('Authenticated as:', userInfo.email);
-          }
-
-          // Make authenticated request to YouTube API to establish YouTube session
+          // Make authenticated request to YouTube API
           const youtubeResponse = await fetch('https://www.youtube.com/youtubei/v1/browse', {
             method: 'POST',
             headers: {
@@ -474,7 +478,7 @@ class UserBrowserService {
               'Origin': 'https://www.youtube.com',
               'Referer': 'https://www.youtube.com/'
             },
-            credentials: 'include', // Important: include cookies
+            credentials: 'include', // Critical: include cookies
             body: JSON.stringify({
               context: {
                 client: {
@@ -495,12 +499,9 @@ class UserBrowserService {
       } catch (apiError) {
         console.warn(`[UserBrowserService:${this.userId}] API authentication failed:`, apiError.message);
       }
-
-      // Step 3: Wait for cookies to be set and navigate to trigger session establishment
-      await this.sleep(3000);
       
       // Step 4: Navigate to YouTube account page to trigger session cookies
-      console.log(`[UserBrowserService:${this.userId}] Step 2: Navigating to YouTube account page...`);
+      console.log(`[UserBrowserService:${this.userId}] Step 4: Navigating to YouTube account page...`);
       await this.page.goto('https://www.youtube.com/account', {
         waitUntil: 'networkidle2',
         timeout: 30000
@@ -511,7 +512,7 @@ class UserBrowserService {
       await this.handleYouTubePrompts();
 
       // Step 6: Navigate back to YouTube homepage
-      console.log(`[UserBrowserService:${this.userId}] Step 3: Returning to YouTube homepage...`);
+      console.log(`[UserBrowserService:${this.userId}] Step 5: Returning to YouTube homepage...`);
       await this.page.goto('https://www.youtube.com', {
         waitUntil: 'networkidle2',
         timeout: 30000
@@ -592,6 +593,11 @@ class UserBrowserService {
         console.warn(`[UserBrowserService:${this.userId}] ⚠️ YouTube feed is empty - may indicate bot detection or incomplete sign-in`);
         console.warn(`[UserBrowserService:${this.userId}] Will continue - browsing may trigger feed population`);
       }
+
+      // Remove Authorization header (no longer needed, cookies should be set)
+      await this.page.setExtraHTTPHeaders({
+        'Accept-Language': 'en-US,en;q=0.9'
+      });
 
       console.log(`[UserBrowserService:${this.userId}] ✓ OAuth authentication completed`);
     } catch (error) {
