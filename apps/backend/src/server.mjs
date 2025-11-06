@@ -245,6 +245,104 @@ app.get('/api/user', (req, res) => {
   });
 });
 
+// Extract cookies endpoint (triggered after OAuth login)
+app.post('/auth/extract-cookies', authService.requireAuth.bind(authService), async (req, res) => {
+  try {
+    const user = authService.getUserFromSession(req);
+    if (!user) {
+      return res.status(401).json({ error: 'Not authenticated' });
+    }
+
+    console.log(`[Server] Cookie extraction requested for user: ${user.id}`);
+
+    // Get user's OAuth tokens from database
+    const userData = db.getUserById(user.id);
+    if (!userData || !userData.access_token) {
+      return res.status(400).json({ error: 'No OAuth tokens found. Please sign in again.' });
+    }
+
+    // Extract cookies using OAuth token
+    try {
+      const { cookies } = await cookieExtractor.extractCookiesFromOAuth(
+        userData.access_token,
+        userData.refresh_token
+      );
+
+      if (cookies && cookies.length > 0) {
+        // Save cookies to file
+        const cookieFilePath = cookieExtractor.saveCookiesToFile(user.id, cookies);
+        
+        // Calculate cookie expiration (30 days default)
+        const cookieExpiresAt = Date.now() + (30 * 24 * 60 * 60 * 1000);
+        
+        // Update database with cookie file path
+        db.updateUserCookies(user.id, cookieFilePath, cookieExpiresAt);
+        
+        // Log successful extraction
+        db.logAuditEvent({
+          userId: user.id,
+          eventType: 'cookie',
+          eventAction: 'extract_cookies_success',
+          eventDetails: { cookieCount: cookies.length },
+          ipAddress: req.ip || 'unknown',
+          userAgent: req.get('user-agent') || 'unknown',
+          success: true
+        });
+        
+        console.log(`[Server] ✓ Extracted and saved ${cookies.length} cookies for user ${user.id}`);
+        
+        return res.json({ 
+          success: true, 
+          message: `Extracted ${cookies.length} cookies`,
+          cookieCount: cookies.length
+        });
+      } else {
+        console.warn(`[Server] ⚠️ No cookies extracted for user ${user.id}`);
+        
+        db.logAuditEvent({
+          userId: user.id,
+          eventType: 'cookie',
+          eventAction: 'extract_cookies_failed',
+          eventDetails: { reason: 'No cookies returned' },
+          ipAddress: req.ip || 'unknown',
+          userAgent: req.get('user-agent') || 'unknown',
+          success: false,
+          errorMessage: 'No cookies extracted from OAuth session'
+        });
+        
+        return res.status(400).json({ 
+          success: false,
+          error: 'No cookies extracted. This may be due to YouTube restrictions.' 
+        });
+      }
+    } catch (cookieError) {
+      console.error(`[Server] Cookie extraction error for user ${user.id}:`, cookieError.message);
+      
+      db.logAuditEvent({
+        userId: user.id,
+        eventType: 'cookie',
+        eventAction: 'extract_cookies_error',
+        eventDetails: { error: cookieError.message },
+        ipAddress: req.ip || 'unknown',
+        userAgent: req.get('user-agent') || 'unknown',
+        success: false,
+        errorMessage: cookieError.message
+      });
+      
+      return res.status(500).json({ 
+        success: false,
+        error: `Cookie extraction failed: ${cookieError.message}` 
+      });
+    }
+  } catch (error) {
+    console.error('[Server] Cookie extraction endpoint error:', error);
+    return res.status(500).json({ 
+      success: false,
+      error: 'Internal server error' 
+    });
+  }
+});
+
 // Get user's cookie status
 app.get('/api/cookies-status', authService.requireAuth.bind(authService), (req, res) => {
   try {
