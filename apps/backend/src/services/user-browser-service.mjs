@@ -1024,6 +1024,109 @@ class UserBrowserService {
   }
 
   /**
+   * Manually inject CONSENT cookie if missing (from old version approach)
+   * YouTube requires this cookie for API access
+   */
+  async injectConsentCookieIfMissing() {
+    try {
+      // Check if CONSENT cookie already exists
+      const currentCookies = await this.page.cookies();
+      const hasConsent = currentCookies.some(c => c.name === 'CONSENT' || c.name.includes('CONSENT'));
+      
+      if (hasConsent) {
+        console.log(`[UserBrowserService:${this.userId}] ✓ CONSENT cookie already present`);
+        return;
+      }
+
+      console.log(`[UserBrowserService:${this.userId}] CONSENT cookie missing - manually injecting...`);
+      
+      // Try to set CONSENT cookie with current format (2024-2025)
+      // Format: CONSENT=YES+[number] or CONSENT=YES+cb.[date]+[number]
+      // Latest format (2024-2025): YES+cb.20250101+en-US+[number]
+      const now = new Date();
+      const dateStr = now.toISOString().split('T')[0].replace(/-/g, '');
+      const timestamp = Math.floor(now.getTime() / 1000);
+      
+      // Try multiple formats that YouTube accepts
+      const consentFormats = [
+        `YES+cb.${dateStr}+en-US+${timestamp}`,
+        `YES+cb+en-US+${timestamp}`,
+        `YES+${timestamp}`,
+        `YES+cb.${dateStr}`
+      ];
+      
+      // Try setting CONSENT cookie with different formats
+      let consentSet = false;
+      for (const consentValue of consentFormats) {
+        try {
+          // Set cookie for .youtube.com domain (works for all subdomains)
+          await this.page.setCookie({
+            name: 'CONSENT',
+            value: consentValue,
+            domain: '.youtube.com',
+            path: '/',
+            secure: true,
+            httpOnly: false,
+            sameSite: 'None',
+            expires: Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60) // 1 year
+          });
+          
+          // Wait and verify
+          await this.sleep(500);
+          const cookiesAfter = await this.page.cookies();
+          const hasConsentAfter = cookiesAfter.some(c => c.name === 'CONSENT');
+          
+          if (hasConsentAfter) {
+            console.log(`[UserBrowserService:${this.userId}] ✓ CONSENT cookie set with format: ${consentValue.substring(0, 30)}...`);
+            consentSet = true;
+            break;
+          }
+        } catch (e) {
+          // Try next format
+          continue;
+        }
+      }
+      
+      if (!consentSet) {
+        // Fallback: Try setting on youtube.com domain without dot
+        try {
+          await this.page.setCookie({
+            name: 'CONSENT',
+            value: consentFormats[0],
+            domain: 'youtube.com',
+            path: '/',
+            secure: true,
+            httpOnly: false,
+            sameSite: 'None',
+            expires: Math.floor(Date.now() / 1000) + (365 * 24 * 60 * 60)
+          });
+          
+          // Verify it was set
+          await this.sleep(500);
+          const cookiesAfter = await this.page.cookies();
+          const hasConsentAfter = cookiesAfter.some(c => c.name === 'CONSENT');
+          
+          if (hasConsentAfter) {
+            console.log(`[UserBrowserService:${this.userId}] ✓ CONSENT cookie set on youtube.com domain`);
+            consentSet = true;
+          }
+        } catch (e) {
+          console.warn(`[UserBrowserService:${this.userId}] Failed to set CONSENT cookie on youtube.com domain:`, e.message);
+        }
+      }
+      
+      // Final verification
+      if (consentSet) {
+        console.log(`[UserBrowserService:${this.userId}] ✓ CONSENT cookie manually injected and verified`);
+      } else {
+        console.warn(`[UserBrowserService:${this.userId}] ⚠️  Failed to manually inject CONSENT cookie - YouTube may still require it`);
+      }
+    } catch (injectError) {
+      console.warn(`[UserBrowserService:${this.userId}] Error manually injecting CONSENT cookie:`, injectError.message);
+    }
+  }
+
+  /**
    * Watch a video from homepage feed
    * Based on old working code - watches videos for 8-12 seconds to generate VISITOR_INFO1_LIVE
    */

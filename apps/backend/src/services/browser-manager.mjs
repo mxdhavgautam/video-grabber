@@ -164,34 +164,91 @@ class BrowserManager {
       // Handle any prompts (consent, ads, etc.)
       await browserService.handleYouTubePrompts();
 
-      // Wait for video player to load - this is critical for cookie generation
-      console.log(`[BrowserManager] Waiting for video player to load and generate cookies...`);
-      await browserService.sleep(8000);
+      // Manually inject CONSENT cookie if missing (from old version approach)
+      await browserService.injectConsentCookieIfMissing();
 
-      // Try to interact with the video page to trigger cookie generation
-      // Scroll down to comments section to trigger more requests
-      await browserService.page.evaluate(() => {
-        window.scrollTo(0, 500);
-      });
-      await browserService.sleep(3000);
-
-      // Scroll back up
-      await browserService.page.evaluate(() => {
-        window.scrollTo(0, 0);
-      });
-      await browserService.sleep(2000);
-
-      // Try clicking on the page to simulate user interaction
+      // Wait for video player to load
+      console.log(`[BrowserManager] Waiting for video player to initialize...`);
       try {
-        await browserService.page.mouse.click(400, 300);
-        await browserService.sleep(1000);
+        await browserService.page.waitForSelector('#movie_player, ytd-player, #player', { timeout: 15000 });
+        console.log(`[BrowserManager] ✓ Video player element found`);
       } catch (e) {
-        // Ignore click errors
+        console.warn(`[BrowserManager] Player element not found, continuing anyway...`);
       }
 
-      // Wait longer for cookies to be fully set - YouTube needs time to set session cookies
-      console.log(`[BrowserManager] Waiting for YouTube to set session cookies...`);
+      // Wait for video to start playing
+      console.log(`[BrowserManager] Waiting for video to start playing...`);
       await browserService.sleep(5000);
+
+      // Check if video is playing
+      const isPlaying = await browserService.page.evaluate(() => {
+        const player = document.querySelector('#movie_player');
+        if (player) {
+          try {
+            // Try to access player state via YouTube's player API
+            if (window.ytplayer && window.ytplayer.config && window.ytplayer.config.args) {
+              return true; // Player is loaded
+            }
+            // Check if video element exists and has src
+            const video = player.querySelector('video');
+            if (video && (video.readyState >= 2 || video.currentTime > 0)) {
+              return true;
+            }
+          } catch (e) {
+            // Ignore errors
+          }
+        }
+        return false;
+      });
+
+      if (isPlaying) {
+        console.log(`[BrowserManager] ✓ Video is playing`);
+      } else {
+        console.warn(`[BrowserManager] ⚠️ Video may not be playing yet, continuing anyway...`);
+      }
+
+      // Watch video for 10-15 seconds while monitoring cookies
+      const watchDuration = browserService.randomBetween(10000, 15000);
+      console.log(`[BrowserManager] Watching video for ${Math.round(watchDuration/1000)}s while monitoring cookies...`);
+      
+      const checkInterval = 2000; // Check cookies every 2 seconds
+      const checks = Math.ceil(watchDuration / checkInterval);
+      let cookiesDuringWatch = [];
+      
+      for (let i = 0; i < checks; i++) {
+        await browserService.sleep(Math.min(checkInterval, watchDuration - (i * checkInterval)));
+        
+        // Check current cookies
+        const currentCookies = await browserService.page.cookies();
+        const youtubeCookies = currentCookies.filter(c => 
+          c.domain.includes('youtube.com') || c.domain.includes('google.com')
+        );
+        
+        // Log cookie status
+        const criticalCookies = ['__Secure-3PSID', '__Secure-3PAPISID', 'LOGIN_INFO', 'VISITOR_INFO1_LIVE', 'CONSENT'];
+        const found = criticalCookies.filter(name => youtubeCookies.some(c => c.name === name));
+        const missing = criticalCookies.filter(name => !youtubeCookies.some(c => c.name === name));
+        
+        if (i === 0 || found.length > cookiesDuringWatch.length) {
+          cookiesDuringWatch = found;
+          console.log(`[BrowserManager] [${Math.round((i+1) * checkInterval / 1000)}s] Cookies found: ${found.join(', ') || 'none'}`);
+          if (missing.length > 0) {
+            console.log(`[BrowserManager] [${Math.round((i+1) * checkInterval / 1000)}s] Still missing: ${missing.join(', ')}`);
+          }
+        }
+        
+        // Handle any ads or prompts during watching
+        await browserService.handleYouTubePrompts();
+        
+        // Scroll a bit to simulate watching
+        if (i % 2 === 0) {
+          await browserService.page.evaluate(() => {
+            window.scrollBy(0, 200);
+          });
+        }
+      }
+
+      console.log(`[BrowserManager] ✓ Finished watching video, extracting final cookies...`);
 
       // Extract fresh cookies (don't save to file yet - will be saved in extraction endpoint)
       const cookies = await browserService.exportCookies(false);
