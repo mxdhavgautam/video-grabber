@@ -85,12 +85,35 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
+// Middleware to ensure Passport deserializes user from session
+// This is needed because express-session might load the session before Passport deserializes
+app.use((req, res, next) => {
+  // If session exists but user is not deserialized, try to deserialize
+  if (req.session && req.session.passport && req.session.passport.user && !req.user) {
+    // Manually trigger Passport deserialization
+    passport.deserializeUser(req.session.passport.user, (err, user) => {
+      if (!err && user) {
+        req.user = user;
+        // Don't call req.login() here as it might cause issues - just set req.user
+        next();
+      } else {
+        console.error('[Server] Error deserializing user:', err);
+        next();
+      }
+    });
+  } else {
+    next();
+  }
+});
+
 // Debug middleware to log all cookies
 app.use((req, res, next) => {
   if (req.path === '/api/user' || req.path === '/auth/google/callback') {
     console.log(`[Debug] ${req.method} ${req.path} - All cookies:`, req.headers.cookie);
     console.log(`[Debug] ${req.method} ${req.path} - Origin:`, req.headers.origin);
     console.log(`[Debug] ${req.method} ${req.path} - Referer:`, req.headers.referer);
+    console.log(`[Debug] ${req.method} ${req.path} - Session passport:`, req.session?.passport);
+    console.log(`[Debug] ${req.method} ${req.path} - req.user:`, req.user);
   }
   next();
 });
@@ -311,45 +334,104 @@ app.get('/auth/google/callback',
 );
 
 // Endpoint to check if browser setup is complete
-app.get('/api/auth/ready', (req, res) => {
-  // More lenient check - allow checking even if not fully authenticated yet
-  // The session might still be setting up
-  const user = authService.getUserFromSession(req);
-  if (!user) {
-    // Try to get user from session ID if available
-    if (req.sessionID) {
-      // Session exists but user not loaded yet - still setting up
-      return res.json({ ready: false, message: 'Setting up session...' });
-    }
-    return res.json({ ready: false, message: 'Not authenticated' });
-  }
-  
-  // Check if browser instance is ready
-  const browserManager = getBrowserManager();
-  const hasBrowser = browserManager.hasActiveBrowser(user.id);
-  
-  if (hasBrowser) {
-    // Browser is ready, check if cookies are available
-    const cookieFilePath = cookieExtractor.getCookieFilePath(user.id);
-    if (cookieFilePath && fs.existsSync(cookieFilePath)) {
+app.get('/api/auth/ready', async (req, res) => {
+  try {
+    // Get user from session (try multiple methods)
+    let user = authService.getUserFromSession(req);
+    
+    // If user not found but session has passport.user, load from database
+    if (!user && req.session?.passport?.user) {
       try {
-        const stats = fs.statSync(cookieFilePath);
-        if (stats.size > 0) {
-          console.log(`[Server] /api/auth/ready - Browser and cookies ready for user ${user.id}`);
-          return res.json({ ready: true, message: 'Setup complete!' });
+        const userData = db.getUserById(req.session.passport.user);
+        if (userData) {
+          user = {
+            id: userData.id,
+            googleId: userData.google_id,
+            email: userData.email,
+            name: userData.name,
+            picture: userData.picture
+          };
         }
       } catch (error) {
-        console.error(`[Server] /api/auth/ready - Error checking cookie file:`, error.message);
+        console.error('[Server] /api/auth/ready - Error loading user:', error);
       }
     }
     
-    // Browser is ready even if cookies file check fails
-    console.log(`[Server] /api/auth/ready - Browser ready for user ${user.id}`);
-    return res.json({ ready: true, message: 'Browser ready' });
+    if (!user) {
+      // Session exists but user not loaded yet - still setting up
+      if (req.sessionID) {
+        return res.json({ ready: false, message: 'Setting up session...' });
+      }
+      return res.json({ ready: false, message: 'Not authenticated' });
+    }
+    
+    // Check if browser instance is ready
+    const browserManager = getBrowserManager();
+    let hasBrowser = browserManager.hasActiveBrowser(user.id);
+    
+    // If browser not active, try to restart it (user might have returned after timeout)
+    if (!hasBrowser) {
+      try {
+        const userData = db.getUserById(user.id);
+        if (userData && userData.access_token) {
+          console.log(`[Server] /api/auth/ready - Browser not active, restarting for user ${user.id}...`);
+          
+          // Extract initial cookies
+          let initialCookies = [];
+          try {
+            const { cookies } = await cookieExtractor.extractCookiesFromOAuth(
+              userData.access_token,
+              userData.refresh_token
+            );
+            if (cookies && cookies.length > 0) {
+              initialCookies = cookies;
+            }
+          } catch (e) {
+            // Continue without initial cookies
+          }
+          
+          // Restart browser
+          await browserManager.ensureBrowserForUser(
+            user.id,
+            userData.access_token,
+            userData.refresh_token,
+            initialCookies,
+            cookieExtractor.cookiesDir
+          );
+          
+          hasBrowser = browserManager.hasActiveBrowser(user.id);
+        }
+      } catch (browserError) {
+        console.error(`[Server] /api/auth/ready - Error restarting browser:`, browserError.message);
+      }
+    }
+    
+    if (hasBrowser) {
+      // Browser is ready, check if cookies are available
+      const cookieFilePath = cookieExtractor.getCookieFilePath(user.id);
+      if (cookieFilePath && fs.existsSync(cookieFilePath)) {
+        try {
+          const stats = fs.statSync(cookieFilePath);
+          if (stats.size > 0) {
+            console.log(`[Server] /api/auth/ready - Browser and cookies ready for user ${user.id}`);
+            return res.json({ ready: true, message: 'Setup complete!' });
+          }
+        } catch (error) {
+          console.error(`[Server] /api/auth/ready - Error checking cookie file:`, error.message);
+        }
+      }
+      
+      // Browser is ready even if cookies file check fails
+      console.log(`[Server] /api/auth/ready - Browser ready for user ${user.id}`);
+      return res.json({ ready: true, message: 'Browser ready' });
+    }
+    
+    // Still setting up
+    return res.json({ ready: false, message: 'Setting up browser and extracting cookies...' });
+  } catch (error) {
+    console.error('[Server] /api/auth/ready error:', error);
+    return res.json({ ready: false, message: 'Error checking status' });
   }
-  
-  // Still setting up
-  return res.json({ ready: false, message: 'Setting up browser and extracting cookies...' });
 });
 
 // Database reset endpoint (for fresh start)
@@ -499,18 +581,42 @@ app.post('/auth/logout', async (req, res) => {
 });
 
 // Get current user endpoint
-app.get('/api/user', (req, res) => {
+app.get('/api/user', async (req, res) => {
   console.log('[Server] /api/user request - Session ID:', req.sessionID);
-  console.log('[Server] /api/user request - Is authenticated:', req.isAuthenticated());
+  console.log('[Server] /api/user request - Is authenticated:', req.isAuthenticated ? req.isAuthenticated() : false);
   console.log('[Server] /api/user request - User:', req.user);
+  console.log('[Server] /api/user request - Session passport:', req.session?.passport);
   console.log('[Server] /api/user request - Cookies:', req.headers.cookie);
   
-  if (!authService.isAuthenticated(req)) {
+  // Try to get user from session if Passport hasn't deserialized yet
+  let user = authService.getUserFromSession(req);
+  
+  // If user not in req.user but session has passport.user, try to deserialize
+  if (!user && req.session?.passport?.user) {
+    try {
+      // Get user from database using the ID stored in session
+      const userData = db.getUserById(req.session.passport.user);
+      if (userData) {
+        user = {
+          id: userData.id,
+          googleId: userData.google_id,
+          email: userData.email,
+          name: userData.name,
+          picture: userData.picture
+        };
+        // Set req.user so Passport knows user is authenticated
+        req.user = user;
+      }
+    } catch (error) {
+      console.error('[Server] Error loading user from session:', error);
+    }
+  }
+  
+  if (!user) {
     console.log('[Server] /api/user - Not authenticated, returning 401');
     return res.status(401).json({ error: 'Not authenticated' });
   }
 
-  const user = authService.getUserFromSession(req);
   console.log('[Server] /api/user - Returning user:', user);
   res.json({ 
     id: user.id,
@@ -926,6 +1032,8 @@ function extractVideoId(url) {
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('[Server] SIGTERM received, shutting down gracefully...');
+  const browserManager = getBrowserManager();
+  await browserManager.stopAllBrowsers();
   if (youtubeExtractor) {
     await youtubeExtractor.cleanup();
   }
@@ -935,6 +1043,8 @@ process.on('SIGTERM', async () => {
 
 process.on('SIGINT', async () => {
   console.log('[Server] SIGINT received, shutting down gracefully...');
+  const browserManager = getBrowserManager();
+  await browserManager.stopAllBrowsers();
   if (youtubeExtractor) {
     await youtubeExtractor.cleanup();
   }

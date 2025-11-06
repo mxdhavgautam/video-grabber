@@ -15,8 +15,64 @@ import UserBrowserService from './user-browser-service.mjs';
 
 class BrowserManager {
   constructor() {
-    // Map of userId -> UserBrowserService instance
+    // Map of userId -> { browserService, lastUsed, timeoutId }
     this.browserInstances = new Map();
+    
+    // Browser timeout: 40 minutes (40 * 60 * 1000 ms)
+    this.browserTimeout = 40 * 60 * 1000;
+    
+    // Start cleanup interval to check for expired browsers
+    this.startCleanupInterval();
+  }
+  
+  /**
+   * Start periodic cleanup to check for expired browser instances
+   */
+  startCleanupInterval() {
+    // Check every 5 minutes for expired browsers
+    setInterval(() => {
+      this.cleanupExpiredBrowsers();
+    }, 5 * 60 * 1000);
+  }
+  
+  /**
+   * Clean up browser instances that haven't been used in 40 minutes
+   */
+  async cleanupExpiredBrowsers() {
+    const now = Date.now();
+    const expiredUsers = [];
+    
+    for (const [userId, instanceData] of this.browserInstances.entries()) {
+      if (now - instanceData.lastUsed > this.browserTimeout) {
+        expiredUsers.push(userId);
+      }
+    }
+    
+    for (const userId of expiredUsers) {
+      console.log(`[BrowserManager] Browser instance expired (40 min timeout) for user: ${userId}`);
+      await this.stopBrowserForUser(userId);
+    }
+  }
+  
+  /**
+   * Update last used timestamp for browser instance
+   */
+  updateLastUsed(userId) {
+    const instanceData = this.browserInstances.get(userId);
+    if (instanceData) {
+      instanceData.lastUsed = Date.now();
+      
+      // Clear existing timeout and set new one
+      if (instanceData.timeoutId) {
+        clearTimeout(instanceData.timeoutId);
+      }
+      
+      // Set timeout to stop browser after 40 minutes of inactivity
+      instanceData.timeoutId = setTimeout(async () => {
+        console.log(`[BrowserManager] Browser timeout reached for user: ${userId}`);
+        await this.stopBrowserForUser(userId);
+      }, this.browserTimeout);
+    }
   }
 
   /**
@@ -26,7 +82,12 @@ class BrowserManager {
    * @returns {UserBrowserService|null} - Browser service instance or null if not available
    */
   getBrowserInstance(userId, cookiesDir = null) {
-    return this.browserInstances.get(userId) || null;
+    const instanceData = this.browserInstances.get(userId);
+    if (instanceData && instanceData.browserService && instanceData.browserService.isRunning) {
+      this.updateLastUsed(userId);
+      return instanceData.browserService;
+    }
+    return null;
   }
 
   /**
@@ -39,11 +100,12 @@ class BrowserManager {
    * @returns {Promise<UserBrowserService>} - Browser service instance
    */
   async startBrowserForUser(userId, accessToken, refreshToken, initialCookies = [], cookiesDir = null) {
-    // If browser already exists, return it
-    const existing = this.browserInstances.get(userId);
-    if (existing && existing.isRunning) {
+    // If browser already exists and is running, return it
+    const existingData = this.browserInstances.get(userId);
+    if (existingData && existingData.browserService && existingData.browserService.isRunning) {
       console.log(`[BrowserManager] Browser instance already exists for user: ${userId}`);
-      return existing;
+      this.updateLastUsed(userId);
+      return existingData.browserService;
     }
 
     // Create new browser instance
@@ -53,10 +115,20 @@ class BrowserManager {
     // Start and authenticate
     await browserService.startAndAuthenticate(accessToken, refreshToken, initialCookies);
     
-    // Keep browser alive (don't call stop())
-    this.browserInstances.set(userId, browserService);
+    // Keep browser alive with timeout tracking
+    const now = Date.now();
+    const timeoutId = setTimeout(async () => {
+      console.log(`[BrowserManager] Browser timeout reached for user: ${userId}`);
+      await this.stopBrowserForUser(userId);
+    }, this.browserTimeout);
     
-    console.log(`[BrowserManager] Browser instance started and kept alive for user: ${userId}`);
+    this.browserInstances.set(userId, {
+      browserService,
+      lastUsed: now,
+      timeoutId
+    });
+    
+    console.log(`[BrowserManager] Browser instance started and kept alive for user: ${userId} (will timeout after 40 min inactivity)`);
     return browserService;
   }
 
@@ -67,11 +139,15 @@ class BrowserManager {
    * @returns {Promise<Array>} - Fresh cookies from browser
    */
   async navigateToVideoAndExtractCookies(userId, videoUrl) {
-    const browserService = this.browserInstances.get(userId);
+    const instanceData = this.browserInstances.get(userId);
+    const browserService = instanceData?.browserService;
     
     if (!browserService || !browserService.isRunning) {
       throw new Error(`No active browser instance for user: ${userId}`);
     }
+
+    // Update last used timestamp
+    this.updateLastUsed(userId);
 
     console.log(`[BrowserManager] Navigating to video URL in browser for user: ${userId}`);
     console.log(`[BrowserManager] Video URL: ${videoUrl}`);
@@ -102,11 +178,16 @@ class BrowserManager {
    * @param {string} userId - User ID
    */
   async stopBrowserForUser(userId) {
-    const browserService = this.browserInstances.get(userId);
+    const instanceData = this.browserInstances.get(userId);
     
-    if (browserService) {
+    if (instanceData) {
+      // Clear timeout
+      if (instanceData.timeoutId) {
+        clearTimeout(instanceData.timeoutId);
+      }
+      
       console.log(`[BrowserManager] Stopping browser instance for user: ${userId}`);
-      await browserService.stop();
+      await instanceData.browserService.stop();
       this.browserInstances.delete(userId);
     }
   }
@@ -130,8 +211,32 @@ class BrowserManager {
    * @returns {boolean} - True if browser is active
    */
   hasActiveBrowser(userId) {
-    const browserService = this.browserInstances.get(userId);
-    return browserService && browserService.isRunning;
+    const instanceData = this.browserInstances.get(userId);
+    return instanceData && instanceData.browserService && instanceData.browserService.isRunning;
+  }
+  
+  /**
+   * Restart browser for user if it was closed due to timeout
+   * Called when user returns to the site
+   * @param {string} userId - User ID
+   * @param {string} accessToken - OAuth access token
+   * @param {string} refreshToken - OAuth refresh token
+   * @param {Array} initialCookies - Initial cookies from OAuth
+   * @param {string} cookiesDir - Cookies directory
+   * @returns {Promise<UserBrowserService>} - Browser service instance
+   */
+  async ensureBrowserForUser(userId, accessToken, refreshToken, initialCookies = [], cookiesDir = null) {
+    const instanceData = this.browserInstances.get(userId);
+    
+    // If browser exists and is running, just update last used
+    if (instanceData && instanceData.browserService && instanceData.browserService.isRunning) {
+      this.updateLastUsed(userId);
+      return instanceData.browserService;
+    }
+    
+    // Browser doesn't exist or is not running, start a new one
+    console.log(`[BrowserManager] Browser not active for user ${userId}, starting new instance...`);
+    return await this.startBrowserForUser(userId, accessToken, refreshToken, initialCookies, cookiesDir);
   }
 }
 
