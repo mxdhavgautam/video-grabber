@@ -18,8 +18,8 @@ class BrowserManager {
     // Map of userId -> { browserService, lastUsed, timeoutId }
     this.browserInstances = new Map();
     
-    // Browser timeout: 40 minutes (40 * 60 * 1000 ms)
-    this.browserTimeout = 40 * 60 * 1000;
+    // Browser timeout: 5 minutes (5 * 60 * 1000 ms) - disconnect after 5 min inactivity
+    this.browserTimeout = 5 * 60 * 1000;
     
     // Start cleanup interval to check for expired browsers
     this.startCleanupInterval();
@@ -29,14 +29,14 @@ class BrowserManager {
    * Start periodic cleanup to check for expired browser instances
    */
   startCleanupInterval() {
-    // Check every 5 minutes for expired browsers
+    // Check every 1 minute for expired browsers (more frequent since timeout is 5 min)
     setInterval(() => {
       this.cleanupExpiredBrowsers();
-    }, 5 * 60 * 1000);
+    }, 1 * 60 * 1000);
   }
   
   /**
-   * Clean up browser instances that haven't been used in 40 minutes
+   * Clean up browser instances that haven't been used in 5 minutes
    */
   async cleanupExpiredBrowsers() {
     const now = Date.now();
@@ -49,7 +49,7 @@ class BrowserManager {
     }
     
     for (const userId of expiredUsers) {
-      console.log(`[BrowserManager] Browser instance expired (40 min timeout) for user: ${userId}`);
+      console.log(`[BrowserManager] Browser instance expired (5 min timeout) for user: ${userId}`);
       await this.stopBrowserForUser(userId);
     }
   }
@@ -67,7 +67,7 @@ class BrowserManager {
         clearTimeout(instanceData.timeoutId);
       }
       
-      // Set timeout to stop browser after 40 minutes of inactivity
+      // Set timeout to stop browser after 5 minutes of inactivity
       instanceData.timeoutId = setTimeout(async () => {
         console.log(`[BrowserManager] Browser timeout reached for user: ${userId}`);
         await this.stopBrowserForUser(userId);
@@ -128,7 +128,7 @@ class BrowserManager {
       timeoutId
     });
     
-    console.log(`[BrowserManager] Browser instance started and kept alive for user: ${userId} (will timeout after 40 min inactivity)`);
+    console.log(`[BrowserManager] Browser instance started and kept alive for user: ${userId} (will timeout after 5 min inactivity)`);
     return browserService;
   }
 
