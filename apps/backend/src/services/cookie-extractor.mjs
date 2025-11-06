@@ -1,7 +1,7 @@
 /**
  * Cookie Extractor Service
  * 
- * Extracts YouTube session cookies from OAuth tokens by making authenticated requests.
+ * Extracts YouTube session cookies from OAuth tokens using youtubei.js (Innertube).
  * Converts cookies to Netscape format for yt-dlp compatibility.
  * Encrypts cookie files at rest for security.
  */
@@ -9,6 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { Innertube } from 'youtubei.js';
 
 class CookieExtractor {
   constructor(cookiesDir = null) {
@@ -86,7 +87,8 @@ class CookieExtractor {
   }
 
   /**
-   * Extract cookies from OAuth tokens by making authenticated requests to YouTube
+   * Extract cookies from OAuth tokens using improved HTTP method
+   * Tries youtubei.js first, then falls back to direct HTTP with OAuth token
    * @param {string} accessToken - OAuth access token
    * @param {string} refreshToken - OAuth refresh token (optional)
    * @returns {Promise<Object>} - YouTube session with cookies
@@ -95,9 +97,29 @@ class CookieExtractor {
     try {
       console.log('[CookieExtractor] Extracting cookies using OAuth tokens...');
       
-      // Use OAuth token to make authenticated requests to YouTube
-      // This will cause YouTube to set session cookies
+      // Primary method: Use improved direct HTTP method with OAuth token
+      // This method makes authenticated requests to YouTube which should set session cookies
       const cookies = await this.getCookiesFromOAuthToken(accessToken);
+      
+      // Check if we got critical cookies
+      const criticalCookies = ['__Secure-3PSID', '__Secure-3PAPISID', 'LOGIN_INFO', 'VISITOR_INFO1_LIVE'];
+      const hasCriticalCookies = criticalCookies.some(name => cookies.find(c => c.name === name));
+      
+      if (!hasCriticalCookies && cookies.length > 0) {
+        console.log('[CookieExtractor] Missing critical cookies, trying youtubei.js as supplement...');
+        try {
+          // Try to get additional cookies from youtubei.js
+          const youtubeiCookies = await this.getCookiesFromOAuthWithYoutubei(accessToken, refreshToken);
+          // Merge cookies (avoid duplicates)
+          for (const cookie of youtubeiCookies) {
+            if (!cookies.find(c => c.name === cookie.name)) {
+              cookies.push(cookie);
+            }
+          }
+        } catch (youtubeiError) {
+          console.warn('[CookieExtractor] youtubei.js supplement failed:', youtubeiError.message);
+        }
+      }
       
       console.log(`[CookieExtractor] Extracted ${cookies.length} cookies from OAuth session`);
       
@@ -108,6 +130,157 @@ class CookieExtractor {
     } catch (error) {
       console.error('[CookieExtractor] Failed to extract cookies from OAuth:', error.message);
       throw new Error(`Cookie extraction failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get cookies using youtubei.js (Innertube) with OAuth tokens
+   * This method creates an authenticated YouTube session and extracts cookies from it
+   * Note: This is experimental - OAuth tokens don't directly work with youtubei.js
+   * @param {string} accessToken - OAuth access token
+   * @param {string} refreshToken - OAuth refresh token (optional)
+   * @returns {Promise<Array>} - Array of cookie objects
+   */
+  async getCookiesFromOAuthWithYoutubei(accessToken, refreshToken = null) {
+    try {
+      console.log('[CookieExtractor] Creating Innertube session...');
+      
+      // Create Innertube instance (without OAuth for now - youtubei.js doesn't support OAuth directly)
+      const yt = await Innertube.create({
+        cache: false,
+        generate_session_data: true
+      });
+
+      // Make requests to YouTube to trigger cookie generation
+      // Even without OAuth, browsing YouTube will set some cookies
+      console.log('[CookieExtractor] Making requests to YouTube to generate cookies...');
+      
+      // Request home feed to trigger cookie generation
+      try {
+        await yt.getHomeFeed();
+        console.log('[CookieExtractor] ✓ Home feed request successful');
+      } catch (feedError) {
+        console.warn('[CookieExtractor] Home feed request failed:', feedError.message);
+      }
+
+      // Try to get a video to trigger more cookies
+      try {
+        const video = await yt.getInfo('dQw4w9WgXcQ'); // Test video
+        console.log('[CookieExtractor] ✓ Video info request successful');
+      } catch (videoError) {
+        console.warn('[CookieExtractor] Video info request failed:', videoError.message);
+      }
+
+      // Extract cookies from Innertube session
+      const cookies = await this.extractCookiesFromInnertubeSession(yt);
+      
+      // Note: These cookies won't have OAuth authentication, so they may not include
+      // the critical session cookies. We'll need to combine with OAuth-based cookies.
+      return cookies;
+    } catch (error) {
+      console.error('[CookieExtractor] Error with youtubei.js method:', error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Extract cookies from Innertube session
+   * @param {Object} yt - Innertube instance
+   * @returns {Promise<Array>} - Array of cookie objects
+   */
+  async extractCookiesFromInnertubeSession(yt) {
+    try {
+      const cookies = [];
+      
+      // Innertube stores cookies in session.context.client.cookie_jar or similar
+      // We need to access the cookie jar from the session
+      const session = yt.session;
+      
+      // Try to get cookies from different locations in the session
+      if (session && session.context && session.context.client) {
+        const client = session.context.client;
+        
+        // Check for cookie jar
+        if (client.cookie_jar) {
+          const cookieJar = client.cookie_jar;
+          // Extract cookies from jar
+          const jarCookies = cookieJar.getCookiesSync('https://www.youtube.com');
+          for (const cookie of jarCookies) {
+            cookies.push({
+              name: cookie.key,
+              value: cookie.value,
+              domain: cookie.domain || '.youtube.com',
+              path: cookie.path || '/',
+              secure: cookie.secure || false,
+              httpOnly: cookie.httpOnly || false,
+              expires: cookie.expires ? Math.floor(cookie.expires.getTime() / 1000) : null
+            });
+          }
+        }
+        
+        // Also check HTTP client for cookies
+        if (client.http && client.http.cookie_jar) {
+          const httpCookieJar = client.http.cookie_jar;
+          const httpCookies = httpCookieJar.getCookiesSync('https://www.youtube.com');
+          for (const cookie of httpCookies) {
+            // Avoid duplicates
+            if (!cookies.find(c => c.name === cookie.key)) {
+              cookies.push({
+                name: cookie.key,
+                value: cookie.value,
+                domain: cookie.domain || '.youtube.com',
+                path: cookie.path || '/',
+                secure: cookie.secure || false,
+                httpOnly: cookie.httpOnly || false,
+                expires: cookie.expires ? Math.floor(cookie.expires.getTime() / 1000) : null
+              });
+            }
+          }
+        }
+      }
+
+      // If we didn't get cookies from the session, try to extract from HTTP client directly
+      if (cookies.length === 0 && yt.session && yt.session.http) {
+        // Make a request and capture cookies from response
+        try {
+          const response = await yt.session.http.request({
+            url: 'https://www.youtube.com/',
+            method: 'GET'
+          });
+          
+          // Extract cookies from response headers
+          const setCookies = response.headers['set-cookie'] || [];
+          for (const cookieHeader of setCookies) {
+            const cookie = this.parseSetCookieHeader(cookieHeader);
+            if (cookie && !cookies.find(c => c.name === cookie.name)) {
+              cookies.push(cookie);
+            }
+          }
+        } catch (requestError) {
+          console.warn('[CookieExtractor] Failed to extract cookies from HTTP response:', requestError.message);
+        }
+      }
+
+      console.log(`[CookieExtractor] Extracted ${cookies.length} cookies from Innertube session`);
+      
+      // Check for critical cookies
+      const criticalCookies = ['__Secure-3PSID', '__Secure-3PAPISID', 'LOGIN_INFO', 'VISITOR_INFO1_LIVE'];
+      const foundCriticalCookies = criticalCookies.filter(name => cookies.find(c => c.name === name));
+      const missingCriticalCookies = criticalCookies.filter(name => !cookies.find(c => c.name === name));
+      
+      if (foundCriticalCookies.length > 0) {
+        console.log(`[CookieExtractor] ✓ Found critical cookies: ${foundCriticalCookies.join(', ')}`);
+      }
+      
+      if (missingCriticalCookies.length > 0) {
+        console.warn(`[CookieExtractor] ⚠️ Missing critical cookies: ${missingCriticalCookies.join(', ')}`);
+        console.warn('[CookieExtractor] These cookies may be required for bypassing bot detection');
+      }
+
+      return cookies;
+    } catch (error) {
+      console.error('[CookieExtractor] Error extracting cookies from Innertube session:', error.message);
+      return [];
     }
   }
 
@@ -124,12 +297,36 @@ class CookieExtractor {
       
       // Helper to add cookies from response to jar
       const addCookiesToJar = (response, url) => {
-        const setCookies = response.headers.getSetCookie?.() || [];
+        // Try multiple ways to get Set-Cookie headers
+        let setCookies = [];
+        
+        // Method 1: getSetCookie() method (Node.js 18+)
+        if (response.headers.getSetCookie) {
+          setCookies = response.headers.getSetCookie();
+        }
+        // Method 2: Direct header access
+        else if (response.headers['set-cookie']) {
+          setCookies = Array.isArray(response.headers['set-cookie']) 
+            ? response.headers['set-cookie'] 
+            : [response.headers['set-cookie']];
+        }
+        // Method 3: Case-insensitive header access
+        else {
+          const headerKeys = Object.keys(response.headers);
+          const setCookieKey = headerKeys.find(k => k.toLowerCase() === 'set-cookie');
+          if (setCookieKey) {
+            setCookies = Array.isArray(response.headers[setCookieKey])
+              ? response.headers[setCookieKey]
+              : [response.headers[setCookieKey]];
+          }
+        }
+        
         for (const cookieHeader of setCookies) {
           const cookie = this.parseSetCookieHeader(cookieHeader);
           if (cookie) {
             cookieJar.set(cookie.name, cookie);
             cookieMap.set(cookie.name, cookie);
+            console.log(`[CookieExtractor] Extracted cookie: ${cookie.name}`);
           }
         }
       };
@@ -162,6 +359,29 @@ class CookieExtractor {
         redirect: 'follow'
       });
       addCookiesToJar(homeResponse, 'https://www.youtube.com/');
+      
+      // Also try visiting with account context
+      try {
+        console.log('[CookieExtractor] Step 1b: Visiting YouTube with account context...');
+        const accountHomeResponse = await fetch('https://www.youtube.com/?authuser=0', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Cookie': buildCookieHeader(),
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.youtube.com/',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'same-origin'
+          },
+          redirect: 'follow'
+        });
+        addCookiesToJar(accountHomeResponse, 'https://www.youtube.com/?authuser=0');
+      } catch (accountHomeError) {
+        console.warn('[CookieExtractor] Account home request failed:', accountHomeError.message);
+      }
       
       // Step 2: Visit YouTube watch page (triggers more cookies)
       console.log('[CookieExtractor] Step 2: Visiting YouTube watch page...');
