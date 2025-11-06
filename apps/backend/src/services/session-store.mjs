@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import { EventEmitter } from 'events';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -125,6 +126,72 @@ class SQLiteSessionStore extends EventEmitter {
     } catch (error) {
       return callback(error);
     }
+  }
+
+  /**
+   * Regenerate session (create new session ID)
+   * Required by express-session for Passport.js
+   * Signature: regenerate(req, callback)
+   */
+  regenerate(req, callback) {
+    if (!req || !callback) {
+      // If called incorrectly, just call callback with error
+      return callback(new Error('Invalid regenerate call'));
+    }
+    
+    const oldSid = req.sessionID;
+    if (!oldSid) {
+      return callback(new Error('No session ID to regenerate'));
+    }
+    
+    const newSid = this.generateSessionId();
+    
+    try {
+      // Get old session data
+      const row = this.db.prepare('SELECT sess FROM sessions WHERE sid = ?').get(oldSid);
+      
+      if (row) {
+        // Copy session data to new session ID
+        const sess = JSON.parse(row.sess);
+        const expire = sess.cookie && sess.cookie.expires 
+          ? sess.cookie.expires.getTime() 
+          : Date.now() + (24 * 60 * 60 * 1000);
+        
+        this.db.prepare(`
+          INSERT INTO sessions (sid, sess, expire)
+          VALUES (?, ?, ?)
+        `).run(newSid, row.sess, expire);
+        
+        // Delete old session
+        this.db.prepare('DELETE FROM sessions WHERE sid = ?').run(oldSid);
+      } else {
+        // Create new empty session if old one doesn't exist
+        const expire = Date.now() + (24 * 60 * 60 * 1000);
+        const emptySess = JSON.stringify({ cookie: { expires: new Date(expire) } });
+        
+        this.db.prepare(`
+          INSERT INTO sessions (sid, sess, expire)
+          VALUES (?, ?, ?)
+        `).run(newSid, emptySess, expire);
+      }
+      
+      // Update request session ID (express-session will handle this, but we set it for safety)
+      if (req.sessionID) {
+        req.sessionID = newSid;
+      }
+      
+      return callback(null);
+    } catch (error) {
+      console.error('[SessionStore] Regenerate error:', error);
+      return callback(error);
+    }
+  }
+
+  /**
+   * Generate a new session ID
+   */
+  generateSessionId() {
+    return crypto.randomBytes(24).toString('hex');
   }
 
   /**
