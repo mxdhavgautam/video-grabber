@@ -12,6 +12,7 @@ import session from 'express-session';
 import passport from 'passport';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { getDatabase } from './services/database.mjs';
 import { getAuthService } from './services/auth.mjs';
@@ -85,7 +86,7 @@ app.use(session({
     if (req.sessionID) {
       return req.sessionID;
     }
-    // Otherwise generate new one
+    // Otherwise generate new one using crypto module
     return crypto.randomBytes(24).toString('hex');
   }
 }));
