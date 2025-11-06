@@ -141,15 +141,35 @@ app.get('/auth/google/callback',
         return res.redirect(`${FRONTEND_URL}/?auth=error`);
       }
       
+      // Check if Set-Cookie header will be sent
+      // express-session sets the cookie automatically when session is saved
+      const setCookieHeader = res.getHeader('Set-Cookie');
       console.log('[Server] Session saved, redirecting to frontend');
       console.log('[Server] Session ID:', req.sessionID);
-      console.log('[Server] Session cookie config:', req.session.cookie);
+      console.log('[Server] Set-Cookie header before redirect:', setCookieHeader);
       
-      // Use a small delay to ensure session is fully committed to MemoryStore
-      // This is necessary because redirects can happen before the session is fully saved
-      setImmediate(() => {
-        res.redirect(`${FRONTEND_URL}/?auth=success`);
-      });
+      // If Set-Cookie header is not set, manually set it using express-session's cookie format
+      if (!setCookieHeader || (Array.isArray(setCookieHeader) && setCookieHeader.length === 0)) {
+        console.log('[Server] WARNING: Set-Cookie header not set by express-session, manually setting...');
+        const cookieName = process.env.SESSION_COOKIE_NAME || 'video-grabber-session';
+        const cookieValue = req.sessionID;
+        const cookieOptions = {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+          maxAge: 24 * 60 * 60 * 1000,
+          path: '/'
+        };
+        
+        if (process.env.NODE_ENV === 'production') {
+          cookieOptions.domain = '.mxdhavgautam.com';
+        }
+        
+        res.cookie(cookieName, cookieValue, cookieOptions);
+        console.log('[Server] Cookie manually set:', cookieName, '=', cookieValue);
+      }
+      
+      res.redirect(`${FRONTEND_URL}/?auth=success`);
     });
   }
 );
