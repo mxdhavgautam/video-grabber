@@ -61,30 +61,62 @@ class UserBrowserService {
         return;
       }
 
-      // First, try to kill any stale Chrome processes
+      // Strategy 1: Read lock file to get exact PID (if available)
+      const singletonLock = path.join(this.profileDir, 'SingletonLock');
+      if (fs.existsSync(singletonLock)) {
+        try {
+          // Try to read PID from lock file (format varies, but often contains PID)
+          const lockContent = fs.readFileSync(singletonLock, 'utf-8');
+          // Extract any numeric PID from lock file content
+          const pidMatch = lockContent.match(/\b(\d+)\b/);
+          if (pidMatch) {
+            const pid = pidMatch[1];
+            console.log(`[UserBrowserService:${this.userId}] Found PID ${pid} in lock file, attempting to kill...`);
+            try {
+              execSync(`kill -9 ${pid} 2>/dev/null || true`);
+              console.log(`[UserBrowserService:${this.userId}] Killed process from lock file: ${pid}`);
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            } catch (e) {
+              // Process might already be dead
+            }
+          }
+        } catch (readError) {
+          // Lock file might be binary or unreadable
+        }
+      }
+
+      // Strategy 2: Kill ALL Chrome/Chromium processes (more aggressive)
+      // This ensures we kill any process that might be holding the lock
       try {
-        // Find Chrome/Chromium processes that might be using this profile
-        const processes = execSync(`ps aux | grep -i "chrom.*${this.profileDir}" | grep -v grep || true`, { encoding: 'utf-8' });
-        if (processes && processes.trim()) {
-          console.log(`[UserBrowserService:${this.userId}] Found stale Chrome processes, attempting to kill...`);
-          const lines = processes.trim().split('\n');
+        // Find ALL Chrome/Chromium processes (not just ones with profile path)
+        const allChromeProcesses = execSync(`ps aux | grep -iE "(chrom|chromium)" | grep -v grep || true`, { encoding: 'utf-8' });
+        if (allChromeProcesses && allChromeProcesses.trim()) {
+          console.log(`[UserBrowserService:${this.userId}] Found Chrome processes, attempting to kill all...`);
+          const lines = allChromeProcesses.trim().split('\n');
+          let killedCount = 0;
           for (const line of lines) {
             const parts = line.trim().split(/\s+/);
             if (parts.length > 1) {
               const pid = parts[1];
+              // Skip if it's not a valid PID (should be numeric)
+              if (!/^\d+$/.test(pid)) continue;
               try {
-                execSync(`kill -9 ${pid} 2>/dev/null || true`);
-                console.log(`[UserBrowserService:${this.userId}] Killed stale Chrome process: ${pid}`);
+                execSync(`kill -9 ${pid} 2>/dev/null || true`, { timeout: 1000 });
+                killedCount++;
+                console.log(`[UserBrowserService:${this.userId}] Killed Chrome process: ${pid}`);
               } catch (e) {
-                // Process might already be dead
+                // Process might already be dead or not killable
               }
             }
           }
-          // Wait a bit for processes to die (use setTimeout since this is not async)
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          if (killedCount > 0) {
+            console.log(`[UserBrowserService:${this.userId}] Killed ${killedCount} Chrome processes`);
+            // Wait longer for processes to fully die
+            await new Promise(resolve => setTimeout(resolve, 3000));
+          }
         }
       } catch (e) {
-        // No processes found or error checking - that's fine
+        console.warn(`[UserBrowserService:${this.userId}] Error killing Chrome processes:`, e.message);
       }
 
       // Try to remove lock files
@@ -471,13 +503,30 @@ class UserBrowserService {
       await this.humanScroll();
       await this.sleep(2000);
 
-      // Step 7: Try to watch a video from homepage
+      // Step 7: Try to watch a video from homepage (generates VISITOR_INFO1_LIVE)
       await this.watchHomepageVideo();
 
-      // Step 8: Final wait for cookies to be fully set
+      // Step 8: Handle any ads or prompts that appeared during video watching
+      await this.handleYouTubePrompts();
+
+      // Step 9: Wait for cookie rotation to complete (YouTube rotates cookies)
+      // Check if cookie rotation page is loading
+      const currentUrl = this.page.url();
+      if (currentUrl.includes('RotateCookiesPage')) {
+        console.log(`[UserBrowserService:${this.userId}] Cookie rotation detected, waiting for completion...`);
+        await this.sleep(5000);
+        // Navigate back to YouTube after rotation
+        await this.page.goto('https://www.youtube.com', {
+          waitUntil: 'networkidle2',
+          timeout: 30000
+        });
+        await this.sleep(3000);
+      }
+
+      // Step 10: Final wait for cookies to be fully set
       await this.sleep(5000);
 
-      // Step 9: Export cookies after all interactions
+      // Step 11: Export cookies after all interactions (including rotation)
       await this.exportCookies();
 
       this.isBrowsing = false;
@@ -490,17 +539,52 @@ class UserBrowserService {
   }
 
   /**
-   * Handle YouTube prompts (consent, sign-in, etc.)
+   * Handle YouTube prompts (consent, sign-in, ads, etc.)
+   * Based on old working code - handles all YouTube UI elements
    */
   async handleYouTubePrompts() {
     try {
-      await this.sleep(2000);
+      await this.sleep(1000); // Shorter wait for responsiveness
+
+      // CRITICAL: Look for dismiss/skip buttons FIRST (before sign-in buttons)
+      // These buttons dismiss prompts without navigating
+      const dismissSelectors = [
+        'button:has-text("Not now")',
+        'button:has-text("Skip")',
+        'button:has-text("Maybe later")',
+        'button[aria-label*="Not now"]',
+        'button[aria-label*="Skip"]',
+        'button[aria-label*="Dismiss"]'
+      ];
+
+      for (const selector of dismissSelectors) {
+        try {
+          const buttons = await this.page.$$(selector);
+          for (const button of buttons.slice(0, 3)) {
+            const isVisible = await this.page.evaluate((el) => {
+              const rect = el.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0 && 
+                     window.getComputedStyle(el).visibility !== 'hidden' &&
+                     window.getComputedStyle(el).display !== 'none';
+            }, button);
+            
+            if (isVisible) {
+              await button.click();
+              await this.sleep(1000);
+              console.log(`[UserBrowserService:${this.userId}] Dismissed prompt: ${selector}`);
+            }
+          }
+        } catch (e) {
+          continue;
+        }
+      }
 
       // Accept consent if present
       const consentSelectors = [
         'button:has-text("Accept all")',
         'button:has-text("I agree")',
-        'button[aria-label*="Accept"]'
+        'button[aria-label*="Accept"]',
+        'button[aria-label*="I agree"]'
       ];
 
       for (const selector of consentSelectors) {
@@ -509,7 +593,9 @@ class UserBrowserService {
           if (button) {
             const isVisible = await this.page.evaluate((el) => {
               const rect = el.getBoundingClientRect();
-              return rect.width > 0 && rect.height > 0;
+              return rect.width > 0 && rect.height > 0 &&
+                     window.getComputedStyle(el).visibility !== 'hidden' &&
+                     window.getComputedStyle(el).display !== 'none';
             }, button);
             
             if (isVisible) {
@@ -524,17 +610,50 @@ class UserBrowserService {
         }
       }
 
-      // Dismiss "Not now" prompts
-      const dismissSelectors = [
-        'button:has-text("Not now")',
-        'button:has-text("Skip")',
-        'button[aria-label*="Not now"]'
+      // Handle video ad skip buttons (critical for video watching)
+      const adSkipSelectors = [
+        'button.ytp-ad-skip-button',
+        'button.ytp-ad-skip-button-modern',
+        'button[aria-label*="Skip ad"]',
+        'button[class*="skip"]',
+        '.ytp-ad-skip-button',
+        '.ytp-ad-skip-button-modern'
       ];
 
-      for (const selector of dismissSelectors) {
+      for (const selector of adSkipSelectors) {
         try {
-          const buttons = await this.page.$$(selector);
-          for (const button of buttons.slice(0, 3)) {
+          const button = await this.page.$(selector);
+          if (button) {
+            const isVisible = await this.page.evaluate((el) => {
+              const rect = el.getBoundingClientRect();
+              return rect.width > 0 && rect.height > 0 &&
+                     window.getComputedStyle(el).visibility !== 'hidden' &&
+                     window.getComputedStyle(el).display !== 'none';
+            }, button);
+            
+            if (isVisible) {
+              await button.click();
+              await this.sleep(2000);
+              console.log(`[UserBrowserService:${this.userId}] Skipped ad`);
+              break;
+            }
+          }
+        } catch (e) {
+          continue;
+        }
+      }
+
+      // Handle "Keep ads" or similar prompts
+      const keepAdsSelectors = [
+        'button:has-text("Keep ads")',
+        'button:has-text("Continue")',
+        'button[aria-label*="Continue"]'
+      ];
+
+      for (const selector of keepAdsSelectors) {
+        try {
+          const button = await this.page.$(selector);
+          if (button) {
             const isVisible = await this.page.evaluate((el) => {
               const rect = el.getBoundingClientRect();
               return rect.width > 0 && rect.height > 0;
@@ -542,7 +661,9 @@ class UserBrowserService {
             
             if (isVisible) {
               await button.click();
-              await this.sleep(1000);
+              await this.sleep(2000);
+              console.log(`[UserBrowserService:${this.userId}] Handled keep ads prompt`);
+              break;
             }
           }
         } catch (e) {
@@ -654,10 +775,21 @@ class UserBrowserService {
             console.log(`[UserBrowserService:${this.userId}] Navigation check completed`);
           }
           
+          // Handle any ads or prompts before watching
+          await this.handleYouTubePrompts();
+          
           // CRITICAL: Watch for 8-12 seconds (like old code) - this generates VISITOR_INFO1_LIVE
           const watchDuration = this.randomBetween(8000, 12000);
           console.log(`[UserBrowserService:${this.userId}] Watching video for ${watchDuration}ms to generate session cookies...`);
-          await this.sleep(watchDuration);
+          
+          // During video watching, periodically check for and skip ads
+          const checkInterval = 2000; // Check every 2 seconds
+          const checks = Math.ceil(watchDuration / checkInterval);
+          for (let i = 0; i < checks; i++) {
+            await this.sleep(Math.min(checkInterval, watchDuration - (i * checkInterval)));
+            // Check for skip ad button
+            await this.handleYouTubePrompts();
+          }
           
           // Scroll and interact while watching
           await this.humanScroll();
@@ -843,4 +975,5 @@ class UserBrowserService {
 }
 
 export default UserBrowserService;
+
 
