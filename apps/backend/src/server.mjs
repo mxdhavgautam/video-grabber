@@ -141,8 +141,10 @@ app.get('/auth/google/callback',
       success: true
     });
     
-    // Mark session as modified
-    req.session.touch();
+    // Mark session as modified (only if session exists and has touch method)
+    if (req.session && typeof req.session.touch === 'function') {
+      req.session.touch();
+    }
     
     // Send loading page IMMEDIATELY - don't wait for session save or browser automation
     console.log('[Server] Sending loading page immediately...');

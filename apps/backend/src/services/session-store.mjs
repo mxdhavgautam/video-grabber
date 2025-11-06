@@ -62,31 +62,63 @@ class SQLiteSessionStore extends EventEmitter {
 
   /**
    * Get session by ID
+   * Returns a plain object that express-session will wrap in a Session instance
    */
   get(sid, callback) {
     try {
       const row = this.db.prepare('SELECT sess FROM sessions WHERE sid = ? AND expire > ?').get(sid, Date.now());
       
-      if (row) {
-        const session = JSON.parse(row.sess);
-        return callback(null, session);
+      if (row && row.sess) {
+        try {
+          const session = JSON.parse(row.sess);
+          
+          // Ensure session has at least a cookie property (express-session requirement)
+          if (!session.cookie) {
+            session.cookie = {
+              originalMaxAge: 24 * 60 * 60 * 1000,
+              expires: Date.now() + (24 * 60 * 60 * 1000),
+              secure: false,
+              httpOnly: true,
+              path: '/'
+            };
+          } else if (session.cookie.expires && typeof session.cookie.expires === 'number') {
+            // Convert timestamp to Date object if needed (express-session expects Date or null)
+            // Actually, keep it as timestamp - express-session will handle conversion
+          }
+          
+          return callback(null, session);
+        } catch (parseError) {
+          console.error('[SessionStore] Error parsing session data:', parseError);
+          return callback(null, null);
+        }
       }
       
       return callback(null, null);
     } catch (error) {
+      console.error('[SessionStore] Error getting session:', error);
       return callback(error);
     }
   }
 
   /**
    * Set session
+   * express-session passes a Session instance, we serialize it to JSON
+   * We use JSON.stringify which will automatically skip functions and only serialize data
    */
   set(sid, sess, callback) {
     try {
-      const expire = sess.cookie && sess.cookie.expires 
-        ? sess.cookie.expires.getTime() 
-        : Date.now() + (24 * 60 * 60 * 1000); // Default 24 hours
+      // Calculate expiration from cookie
+      let expire;
+      if (sess.cookie && sess.cookie.expires) {
+        expire = sess.cookie.expires instanceof Date 
+          ? sess.cookie.expires.getTime() 
+          : sess.cookie.expires;
+      } else {
+        expire = Date.now() + (24 * 60 * 60 * 1000); // Default 24 hours
+      }
       
+      // JSON.stringify will automatically skip functions and only serialize data properties
+      // This is what express-session expects - just the data, not the methods
       const sessJson = JSON.stringify(sess);
       
       this.db.prepare(`
@@ -96,6 +128,7 @@ class SQLiteSessionStore extends EventEmitter {
       
       return callback(null);
     } catch (error) {
+      console.error('[SessionStore] Error setting session:', error);
       return callback(error);
     }
   }
@@ -192,33 +225,6 @@ class SQLiteSessionStore extends EventEmitter {
    */
   generateSessionId() {
     return crypto.randomBytes(24).toString('hex');
-  }
-
-  /**
-   * Create a new session (required by express-session)
-   * This is called when express-session needs to create a new session
-   */
-  createSession(req, sess) {
-    // Generate new session ID
-    const sid = this.generateSessionId();
-    
-    // Set session ID on request
-    req.sessionID = sid;
-    req.session = sess;
-    
-    // Calculate expiration
-    const expire = sess.cookie && sess.cookie.expires 
-      ? sess.cookie.expires.getTime() 
-      : Date.now() + (24 * 60 * 60 * 1000);
-    
-    // Store session
-    const sessJson = JSON.stringify(sess);
-    this.db.prepare(`
-      INSERT INTO sessions (sid, sess, expire)
-      VALUES (?, ?, ?)
-    `).run(sid, sessJson, expire);
-    
-    return sid;
   }
 
   /**
