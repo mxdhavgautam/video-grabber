@@ -497,8 +497,10 @@ class UserBrowserService {
 
   /**
    * Export cookies to Netscape format
+   * @param {boolean} saveToFile - Whether to save cookies to file (default: true)
+   * @returns {Promise<Array>} - Array of cookie objects
    */
-  async exportCookies() {
+  async exportCookies(saveToFile = true) {
     try {
       if (!this.page) {
         throw new Error('No page available');
@@ -527,11 +529,12 @@ class UserBrowserService {
         console.warn(`[UserBrowserService:${this.userId}] ⚠️ Missing critical cookies: ${missing.join(', ')}`);
       }
 
-      // Save cookies using CookieExtractor (which handles encryption)
-      const savedPath = this.cookieExtractor.saveCookiesToFile(this.userId, youtubeCookies);
-      this.cookieFilePath = savedPath;
-
-      console.log(`[UserBrowserService:${this.userId}] ✓ Exported and encrypted ${youtubeCookies.length} cookies to ${savedPath}`);
+      // Save cookies using CookieExtractor (which handles encryption) if requested
+      if (saveToFile) {
+        const savedPath = this.cookieExtractor.saveCookiesToFile(this.userId, youtubeCookies);
+        this.cookieFilePath = savedPath;
+        console.log(`[UserBrowserService:${this.userId}] ✓ Exported and encrypted ${youtubeCookies.length} cookies to ${savedPath}`);
+      }
 
       return youtubeCookies;
     } catch (error) {
