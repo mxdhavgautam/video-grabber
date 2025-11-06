@@ -1,43 +1,4 @@
 services:
-  tor-proxy:
-    platform: linux/amd64
-    image: dperson/torproxy:latest
-    restart: unless-stopped
-    # SECURITY: Tor proxy is NOT exposed externally - no ports mapping
-    # Tor only accepts connections from containers in the video-grabber network
-    # This runs as a CLIENT proxy only (not an exit relay) - routes outbound traffic only
-    # Tor proxy exposes SOCKS5 on port 9050 (internal Docker network only)
-    # This routes requests through Tor network (residential IPs from exit nodes)
-    # Helps bypass datacenter IP detection - Hetzner VPS IPs are flagged by YouTube
-    networks:
-      - video-grabber
-    # CRITICAL: No ports exposed - only accessible via Docker network
-    # SOCKS5 proxy available at tor-proxy:9050 within Docker network only
-    # dperson/torproxy exposes both SOCKS5 (9050) and HTTP proxy (8118) - internal only
-    # UFW firewall will block any attempts to connect from outside (ports not open)
-    # By default, dperson/torproxy runs as CLIENT ONLY (not exit relay)
-    # Even if Tor listens on 0.0.0.0:9050 inside container, Docker network isolation prevents external access
-    # Configure Tor to use US exit nodes (less likely to be blocked by YouTube)
-    # This is set via torrc file - dperson/torproxy supports TOR_ExitNodes env var
-    environment:
-      # Use US-based exit nodes (less likely blocked by YouTube)
-      # Format: {country code} - multiple countries: {us},{gb}
-      # Empty or "-" means allow any country (default)
-      - TOR_ExitNodes={us}
-      - TOR_StrictNodes=0  # Don't require strict nodes (allows fallback if US nodes unavailable)
-    healthcheck:
-      # CRITICAL: Verify Tor is fully bootstrapped before marking healthy
-      # Strategy: Use docker compose logs to check bootstrap status, then verify proxy works
-      # 1. Check ports are listening (9050 SOCKS5, 8118 HTTP proxy)
-      # 2. Verify proxy can actually route requests (implies bootstrap complete)
-      # 3. Require successful HTTPS request through proxy as final confirmation
-      # If proxy works, Tor must be bootstrapped - no proxy requests succeed until bootstrap is complete
-      test: ["CMD-SHELL", "nc -z 127.0.0.1 9050 && nc -z 127.0.0.1 8118 && timeout 20 curl -s -o /dev/null -w '%{http_code}' --proxy http://127.0.0.1:8118 --connect-timeout 10 --max-time 15 https://www.google.com 2>&1 | grep -qE '^[23]' || exit 1"]
-      interval: 10s  # Check frequently during bootstrap phase
-      timeout: 30s   # Generous timeout for curl (Tor proxy can be slow)
-      retries: 25    # Many retries - Tor bootstrapping can take 2-3 minutes on cold start
-      start_period: 180s  # Extended grace period for first bootstrap (can take 2-3 minutes)
-
   po-token-provider:
     platform: linux/amd64
     image: brainicism/bgutil-ytdlp-pot-provider:latest
@@ -80,8 +41,6 @@ services:
     networks:
       - video-grabber
     depends_on:
-      tor-proxy:
-        condition: service_healthy  # Wait for Tor to be fully bootstrapped
       po-token-provider:
         condition: service_started
     # Note: PO provider may show as unhealthy but it's still functional
