@@ -286,25 +286,60 @@ class UserBrowserService {
     try {
       this.isBrowsing = true;
 
-      // Visit YouTube homepage
+      // Step 1: Visit YouTube homepage
+      console.log(`[UserBrowserService:${this.userId}] Step 1: Visiting YouTube homepage...`);
       await this.page.goto('https://www.youtube.com', {
-        waitUntil: 'domcontentloaded',
+        waitUntil: 'networkidle2',
         timeout: 30000
       });
+      await this.sleep(5000); // Wait longer for cookies to be set
 
-      await this.sleep(3000);
-
-      // Handle YouTube prompts (consent, sign-in, etc.)
+      // Step 2: Handle YouTube prompts (consent, sign-in, etc.)
       await this.handleYouTubePrompts();
 
-      // Scroll feed
+      // Step 3: Visit YouTube account page to trigger session cookies
+      console.log(`[UserBrowserService:${this.userId}] Step 2: Visiting YouTube account page...`);
+      try {
+        await this.page.goto('https://www.youtube.com/account', {
+          waitUntil: 'networkidle2',
+          timeout: 30000
+        });
+        await this.sleep(5000);
+      } catch (e) {
+        console.warn(`[UserBrowserService:${this.userId}] Account page visit failed:`, e.message);
+      }
+
+      // Step 4: Visit YouTube Studio to trigger more session cookies
+      console.log(`[UserBrowserService:${this.userId}] Step 3: Visiting YouTube Studio...`);
+      try {
+        await this.page.goto('https://studio.youtube.com', {
+          waitUntil: 'networkidle2',
+          timeout: 30000
+        });
+        await this.sleep(5000);
+      } catch (e) {
+        console.warn(`[UserBrowserService:${this.userId}] Studio page visit failed:`, e.message);
+      }
+
+      // Step 5: Go back to YouTube homepage
+      console.log(`[UserBrowserService:${this.userId}] Step 4: Returning to YouTube homepage...`);
+      await this.page.goto('https://www.youtube.com', {
+        waitUntil: 'networkidle2',
+        timeout: 30000
+      });
+      await this.sleep(3000);
+
+      // Step 6: Scroll feed to trigger more cookies
       await this.humanScroll();
       await this.sleep(2000);
 
-      // Try to watch a video from homepage
+      // Step 7: Try to watch a video from homepage
       await this.watchHomepageVideo();
 
-      // Export cookies after watching
+      // Step 8: Final wait for cookies to be fully set
+      await this.sleep(5000);
+
+      // Step 9: Export cookies after all interactions
       await this.exportCookies();
 
       this.isBrowsing = false;
