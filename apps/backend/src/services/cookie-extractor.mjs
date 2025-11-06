@@ -118,72 +118,112 @@ class CookieExtractor {
    */
   async getCookiesFromOAuthToken(accessToken) {
     try {
-      // Make a request to YouTube's API with OAuth token
-      // This will return Set-Cookie headers that we can extract
-      const response = await fetch('https://www.youtube.com/', {
+      const cookies = [];
+      const cookieMap = new Map(); // Use Map to avoid duplicates
+      
+      // Step 1: Make request to YouTube homepage to get initial cookies
+      console.log('[CookieExtractor] Step 1: Requesting YouTube homepage...');
+      const homeResponse = await fetch('https://www.youtube.com/', {
         method: 'GET',
         headers: {
           'Authorization': `Bearer ${accessToken}`,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.9',
           'Accept-Encoding': 'gzip, deflate, br',
           'Connection': 'keep-alive',
-          'Upgrade-Insecure-Requests': '1'
+          'Upgrade-Insecure-Requests': '1',
+          'Sec-Fetch-Dest': 'document',
+          'Sec-Fetch-Mode': 'navigate',
+          'Sec-Fetch-Site': 'none'
         },
         redirect: 'follow'
       });
 
-      // Extract cookies from Set-Cookie headers
-      const setCookieHeaders = response.headers.getSetCookie?.() || [];
-      const cookies = [];
-
-      // Parse Set-Cookie headers
-      for (const cookieHeader of setCookieHeaders) {
+      // Extract cookies from homepage response
+      const homeSetCookies = homeResponse.headers.getSetCookie?.() || [];
+      for (const cookieHeader of homeSetCookies) {
         const cookie = this.parseSetCookieHeader(cookieHeader);
         if (cookie) {
-          cookies.push(cookie);
+          cookieMap.set(cookie.name, cookie);
         }
       }
 
-      // Also try to get cookies from response cookies if available
-      if (response.headers.get('set-cookie')) {
-        const additionalCookies = this.parseCookieString(response.headers.get('set-cookie'));
-        cookies.push(...additionalCookies);
+      // Step 2: Make authenticated request to YouTube API to get session cookies
+      console.log('[CookieExtractor] Step 2: Making authenticated API request...');
+      const apiResponse = await fetch('https://www.youtube.com/youtubei/v1/browse', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          'X-YouTube-Client-Name': '1',
+          'X-YouTube-Client-Version': '2.20250106.00.00',
+          'Origin': 'https://www.youtube.com',
+          'Referer': 'https://www.youtube.com/'
+        },
+        body: JSON.stringify({
+          context: {
+            client: {
+              clientName: 'WEB',
+              clientVersion: '2.20250106.00.00',
+              hl: 'en',
+              gl: 'US'
+            }
+          },
+          browseId: 'FEwhat_to_watch'
+        })
+      });
+
+      // Extract cookies from API response
+      const apiSetCookies = apiResponse.headers.getSetCookie?.() || [];
+      for (const cookieHeader of apiSetCookies) {
+        const cookie = this.parseSetCookieHeader(cookieHeader);
+        if (cookie) {
+          cookieMap.set(cookie.name, cookie);
+        }
       }
 
-      // If we don't have enough cookies, try making a request to YouTube's API
-      if (cookies.length < 3) {
-        console.log('[CookieExtractor] Making additional request to YouTube API to get more cookies...');
-        const apiResponse = await fetch('https://www.youtube.com/youtubei/v1/browse?key=AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8', {
-          method: 'POST',
+      // Step 3: Make request to account page to get account-specific cookies
+      console.log('[CookieExtractor] Step 3: Requesting account page...');
+      try {
+        const accountResponse = await fetch('https://www.youtube.com/account', {
+          method: 'GET',
           headers: {
             'Authorization': `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'X-YouTube-Client-Name': '1',
-            'X-YouTube-Client-Version': '2.0'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Referer': 'https://www.youtube.com/'
           },
-          body: JSON.stringify({
-            context: {
-              client: {
-                clientName: 'WEB',
-                clientVersion: '2.0'
-              }
-            }
-          })
+          redirect: 'follow'
         });
 
-        const apiSetCookieHeaders = apiResponse.headers.getSetCookie?.() || [];
-        for (const cookieHeader of apiSetCookieHeaders) {
+        const accountSetCookies = accountResponse.headers.getSetCookie?.() || [];
+        for (const cookieHeader of accountSetCookies) {
           const cookie = this.parseSetCookieHeader(cookieHeader);
-          if (cookie && !cookies.find(c => c.name === cookie.name)) {
-            cookies.push(cookie);
+          if (cookie) {
+            cookieMap.set(cookie.name, cookie);
           }
         }
+      } catch (accountError) {
+        console.warn('[CookieExtractor] Account page request failed:', accountError.message);
       }
 
-      return cookies;
+      // Convert Map to Array
+      const finalCookies = Array.from(cookieMap.values());
+      
+      // Log cookie names for debugging
+      const cookieNames = finalCookies.map(c => c.name).join(', ');
+      console.log(`[CookieExtractor] Extracted ${finalCookies.length} unique cookies: ${cookieNames}`);
+      
+      // Check for critical cookies
+      const criticalCookies = ['__Secure-3PSID', '__Secure-3PAPISID', 'LOGIN_INFO', 'VISITOR_INFO1_LIVE'];
+      const hasCriticalCookies = criticalCookies.some(name => cookieMap.has(name));
+      if (!hasCriticalCookies) {
+        console.warn('[CookieExtractor] WARNING: Missing critical session cookies. Extraction may fail.');
+      }
+
+      return finalCookies;
     } catch (error) {
       console.error('[CookieExtractor] Error getting cookies from OAuth token:', error.message);
       return [];
@@ -667,4 +707,5 @@ class CookieExtractor {
 }
 
 export default CookieExtractor;
+
 
