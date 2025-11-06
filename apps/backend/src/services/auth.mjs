@@ -69,88 +69,91 @@ class AuthService {
           const userId = this.db.upsertUser(profile, tokens);
           console.log('[Auth] User upserted:', userId);
 
-          // Extract cookies using browser automation with OAuth tokens
-          try {
-            console.log('[Auth] Extracting cookies using browser automation with OAuth tokens...');
-            
-            // Step 1: Extract initial cookies from OAuth (may be incomplete)
-            let initialCookies = [];
-            try {
-              const { cookies } = await this.cookieExtractor.extractCookiesFromOAuth(
-                accessToken,
-                refreshToken
-              );
-              if (cookies && cookies.length > 0) {
-                initialCookies = cookies;
-                console.log(`[Auth] Extracted ${initialCookies.length} initial cookies from OAuth`);
-              }
-            } catch (initialCookieError) {
-              console.warn('[Auth] Initial cookie extraction failed (will continue with browser):', initialCookieError.message);
-            }
-
-            // Step 2: Use browser automation to generate proper session cookies
-            const browserService = new UserBrowserService(
-              userId,
-              this.cookieExtractor.cookiesDir,
-              null // profileDir will be auto-generated
-            );
-
-            try {
-              console.log('[Auth] Starting browser automation to generate session cookies...');
-              const browserCookies = await browserService.startAndAuthenticate(
-                accessToken,
-                refreshToken,
-                initialCookies
-              );
-
-              if (browserCookies && browserCookies.length > 0) {
-                // Browser service already saved cookies to file, just update database
-                const cookieFilePath = browserService.cookieFilePath;
-                const cookieExpiresAt = Date.now() + (30 * 24 * 60 * 60 * 1000);
-                this.db.updateUserCookies(userId, cookieFilePath, cookieExpiresAt);
-                
-                // Check for critical cookies
-                const criticalCookies = ['__Secure-3PSID', '__Secure-3PAPISID', 'LOGIN_INFO', 'VISITOR_INFO1_LIVE', 'YSC', 'CONSENT'];
-                const found = criticalCookies.filter(name => browserCookies.some(c => c.name === name));
-                const missing = criticalCookies.filter(name => !browserCookies.some(c => c.name === name));
-                
-                if (found.length > 0) {
-                  console.log(`[Auth] ✓ Generated ${browserCookies.length} cookies with critical cookies: ${found.join(', ')}`);
-                }
-                if (missing.length > 0) {
-                  console.warn(`[Auth] ⚠️ Missing critical cookies: ${missing.join(', ')}`);
-                }
-              } else {
-                console.warn('[Auth] ⚠️ Browser automation did not generate cookies');
-              }
-
-              // Clean up browser instance
-              await browserService.stop();
-            } catch (browserError) {
-              console.error('[Auth] Browser automation failed:', browserError.message);
-              // Fallback: Use initial cookies if available
-              if (initialCookies.length > 0) {
-                console.log('[Auth] Falling back to initial OAuth cookies...');
-                const cookieFilePath = this.cookieExtractor.saveCookiesToFile(userId, initialCookies);
-                const cookieExpiresAt = Date.now() + (30 * 24 * 60 * 60 * 1000);
-                this.db.updateUserCookies(userId, cookieFilePath, cookieExpiresAt);
-                console.log(`[Auth] ✓ Saved ${initialCookies.length} initial cookies as fallback`);
-              }
-            }
-          } catch (cookieError) {
-            console.error('[Auth] Failed to extract cookies:', cookieError.message);
-            // Continue with authentication even if cookie extraction fails
-            // User can still use the app, cookies will be extracted on next login
-          }
-
-          // Return user profile
-          return done(null, {
+          // Return user profile IMMEDIATELY - don't wait for browser automation
+          // This allows the loading page to show up right away
+          done(null, {
             id: userId,
             googleId: profile.id,
             email: profile.emails?.[0]?.value || profile.email,
             name: profile.displayName || profile.name,
             picture: profile.photos?.[0]?.value || profile.picture
           });
+
+          // Run browser automation in BACKGROUND (non-blocking)
+          // This happens after the response is sent
+          (async () => {
+            try {
+              console.log('[Auth] Starting background browser automation to generate session cookies...');
+              
+              // Step 1: Extract initial cookies from OAuth (may be incomplete)
+              let initialCookies = [];
+              try {
+                const { cookies } = await this.cookieExtractor.extractCookiesFromOAuth(
+                  accessToken,
+                  refreshToken
+                );
+                if (cookies && cookies.length > 0) {
+                  initialCookies = cookies;
+                  console.log(`[Auth] Extracted ${initialCookies.length} initial cookies from OAuth`);
+                }
+              } catch (initialCookieError) {
+                console.warn('[Auth] Initial cookie extraction failed (will continue with browser):', initialCookieError.message);
+              }
+
+              // Step 2: Use browser automation to generate proper session cookies
+              const browserService = new UserBrowserService(
+                userId,
+                this.cookieExtractor.cookiesDir,
+                null // profileDir will be auto-generated
+              );
+
+              try {
+                console.log('[Auth] Starting browser automation to generate session cookies...');
+                const browserCookies = await browserService.startAndAuthenticate(
+                  accessToken,
+                  refreshToken,
+                  initialCookies
+                );
+
+                if (browserCookies && browserCookies.length > 0) {
+                  // Browser service already saved cookies to file, just update database
+                  const cookieFilePath = browserService.cookieFilePath;
+                  const cookieExpiresAt = Date.now() + (30 * 24 * 60 * 60 * 1000);
+                  this.db.updateUserCookies(userId, cookieFilePath, cookieExpiresAt);
+                  
+                  // Check for critical cookies
+                  const criticalCookies = ['__Secure-3PSID', '__Secure-3PAPISID', 'LOGIN_INFO', 'VISITOR_INFO1_LIVE', 'YSC', 'CONSENT'];
+                  const found = criticalCookies.filter(name => browserCookies.some(c => c.name === name));
+                  const missing = criticalCookies.filter(name => !browserCookies.some(c => c.name === name));
+                  
+                  if (found.length > 0) {
+                    console.log(`[Auth] ✓ Generated ${browserCookies.length} cookies with critical cookies: ${found.join(', ')}`);
+                  }
+                  if (missing.length > 0) {
+                    console.warn(`[Auth] ⚠️ Missing critical cookies: ${missing.join(', ')}`);
+                  }
+                } else {
+                  console.warn('[Auth] ⚠️ Browser automation did not generate cookies');
+                }
+
+                // Clean up browser instance
+                await browserService.stop();
+              } catch (browserError) {
+                console.error('[Auth] Browser automation failed:', browserError.message);
+                // Fallback: Use initial cookies if available
+                if (initialCookies.length > 0) {
+                  console.log('[Auth] Falling back to initial OAuth cookies...');
+                  const cookieFilePath = this.cookieExtractor.saveCookiesToFile(userId, initialCookies);
+                  const cookieExpiresAt = Date.now() + (30 * 24 * 60 * 60 * 1000);
+                  this.db.updateUserCookies(userId, cookieFilePath, cookieExpiresAt);
+                  console.log(`[Auth] ✓ Saved ${initialCookies.length} initial cookies as fallback`);
+                }
+              }
+            } catch (cookieError) {
+              console.error('[Auth] Failed to extract cookies in background:', cookieError.message);
+              // Continue - user can still use the app, cookies will be extracted on next login
+            }
+          })();
         } catch (error) {
           console.error('[Auth] OAuth callback error:', error);
           return done(error, null);

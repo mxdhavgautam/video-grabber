@@ -158,12 +158,25 @@ app.get('/auth/google/callback',
             * { margin: 0; padding: 0; box-sizing: border-box; }
             body {
               font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+              background: hsl(0, 0%, 6%);
+              color: hsl(0, 0%, 95%);
               display: flex;
               justify-content: center;
               align-items: center;
               min-height: 100vh;
-              color: #fff;
+            }
+            @media (prefers-color-scheme: light) {
+              body {
+                background: hsl(0, 0%, 100%);
+                color: hsl(0, 0%, 8%);
+              }
+              .spinner {
+                border-color: rgba(0, 0, 0, 0.1);
+                border-top-color: hsl(0, 0%, 8%);
+              }
+              .status {
+                color: hsl(0, 0%, 45%);
+              }
             }
             .container {
               text-align: center;
@@ -173,8 +186,8 @@ app.get('/auth/google/callback',
             .spinner {
               width: 50px;
               height: 50px;
-              border: 4px solid rgba(255, 255, 255, 0.3);
-              border-top-color: #fff;
+              border: 4px solid rgba(255, 255, 255, 0.1);
+              border-top-color: hsl(0, 0%, 95%);
               border-radius: 50%;
               animation: spin 1s linear infinite;
               margin: 0 auto 2rem;
@@ -186,16 +199,35 @@ app.get('/auth/google/callback',
               font-size: 1.5rem;
               margin-bottom: 1rem;
               font-weight: 600;
+              background: linear-gradient(to right, hsl(0, 0%, 95%), hsl(0, 0%, 60%));
+              -webkit-background-clip: text;
+              -webkit-text-fill-color: transparent;
+              background-clip: text;
+            }
+            @media (prefers-color-scheme: light) {
+              h1 {
+                background: linear-gradient(to right, hsl(0, 0%, 8%), hsl(0, 0%, 40%));
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+              }
             }
             .message {
               font-size: 1rem;
               opacity: 0.9;
               line-height: 1.6;
+              color: hsl(0, 0%, 65%);
+            }
+            @media (prefers-color-scheme: light) {
+              .message {
+                color: hsl(0, 0%, 45%);
+              }
             }
             .status {
               margin-top: 1.5rem;
               font-size: 0.9rem;
               opacity: 0.8;
+              color: hsl(0, 0%, 65%);
             }
           </style>
         </head>
