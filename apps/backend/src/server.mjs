@@ -125,13 +125,12 @@ app.get('/auth/google', passport.authenticate('google', {
 app.get('/auth/google/callback',
   passport.authenticate('google', { failureRedirect: `${FRONTEND_URL}/login?error=auth_failed` }),
   async (req, res) => {
-    // Successful authentication
+    // Successful authentication - send loading page IMMEDIATELY
     console.log('[Server] OAuth callback successful for user:', req.user.id);
     console.log('[Server] Session ID:', req.sessionID);
-    console.log('[Server] Session cookie:', req.session.cookie);
     console.log('[Server] Is authenticated:', req.isAuthenticated());
     
-    // Log successful authentication
+    // Log successful authentication (non-blocking)
     db.logAuditEvent({
       userId: req.user.id,
       eventType: 'authentication',
@@ -142,20 +141,13 @@ app.get('/auth/google/callback',
       success: true
     });
     
-    // Mark session as modified to ensure express-session sets the cookie
+    // Mark session as modified
     req.session.touch();
-    req.session.save(async (err) => {
-      if (err) {
-        console.error('[Server] Error saving session before redirect:', err);
-        return res.redirect(`${FRONTEND_URL}/?auth=error`);
-      }
-      
-      console.log('[Server] Session saved, showing loading page while setting up browser...');
-      
-      // Send loading page that polls for completion
-      // The browser automation happens in the auth service OAuth callback
-      // We'll poll an endpoint to check when it's done
-      const loadingPage = `
+    
+    // Send loading page IMMEDIATELY - don't wait for session save or browser automation
+    console.log('[Server] Sending loading page immediately...');
+    
+    const loadingPage = `
         <!DOCTYPE html>
         <html>
         <head>
@@ -265,9 +257,21 @@ app.get('/auth/google/callback',
         </body>
         </html>
       `;
-      
-      res.send(loadingPage);
+    
+    // Send response immediately
+    res.send(loadingPage);
+    
+    // Save session in background (non-blocking)
+    req.session.save((err) => {
+      if (err) {
+        console.error('[Server] Error saving session:', err);
+      } else {
+        console.log('[Server] Session saved in background');
+      }
     });
+    
+    // Browser automation is already running in the Passport strategy callback
+    // The loading page will poll /api/auth/ready to check when it's complete
   }
 );
 
