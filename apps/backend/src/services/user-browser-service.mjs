@@ -52,8 +52,7 @@ class UserBrowserService {
 
   /**
    * Clean up Chrome profile lock files
-   * Removes lock files that prevent browser from starting
-   * If locks persist, removes entire profile directory (like old working code)
+   * AGGRESSIVE: Removes entire profile if any locks exist - ensures fresh start
    */
   async cleanupProfileLocks() {
     try {
@@ -61,102 +60,69 @@ class UserBrowserService {
         return;
       }
 
-      // Strategy 1: Read lock file to get exact PID (if available)
-      const singletonLockPath = path.join(this.profileDir, 'SingletonLock');
-      if (fs.existsSync(singletonLockPath)) {
-        try {
-          // Try to read PID from lock file (format varies, but often contains PID)
-          const lockContent = fs.readFileSync(singletonLockPath, 'utf-8');
-          // Extract any numeric PID from lock file content
-          const pidMatch = lockContent.match(/\b(\d+)\b/);
-          if (pidMatch) {
-            const pid = pidMatch[1];
-            console.log(`[UserBrowserService:${this.userId}] Found PID ${pid} in lock file, attempting to kill...`);
-            try {
-              execSync(`kill -9 ${pid} 2>/dev/null || true`);
-              console.log(`[UserBrowserService:${this.userId}] Killed process from lock file: ${pid}`);
-              await new Promise(resolve => setTimeout(resolve, 1000));
-            } catch (e) {
-              // Process might already be dead
-            }
-          }
-        } catch (readError) {
-          // Lock file might be binary or unreadable
-        }
-      }
-
-      // Strategy 2: Kill ALL Chrome/Chromium processes (more aggressive)
-      // This ensures we kill any process that might be holding the lock
-      try {
-        // Find ALL Chrome/Chromium processes (not just ones with profile path)
-        const allChromeProcesses = execSync(`ps aux | grep -iE "(chrom|chromium)" | grep -v grep || true`, { encoding: 'utf-8' });
-        if (allChromeProcesses && allChromeProcesses.trim()) {
-          console.log(`[UserBrowserService:${this.userId}] Found Chrome processes, attempting to kill all...`);
-          const lines = allChromeProcesses.trim().split('\n');
-          let killedCount = 0;
-          for (const line of lines) {
-            const parts = line.trim().split(/\s+/);
-            if (parts.length > 1) {
-              const pid = parts[1];
-              // Skip if it's not a valid PID (should be numeric)
-              if (!/^\d+$/.test(pid)) continue;
-              try {
-                execSync(`kill -9 ${pid} 2>/dev/null || true`, { timeout: 1000 });
-                killedCount++;
-                console.log(`[UserBrowserService:${this.userId}] Killed Chrome process: ${pid}`);
-              } catch (e) {
-                // Process might already be dead or not killable
-              }
-            }
-          }
-          if (killedCount > 0) {
-            console.log(`[UserBrowserService:${this.userId}] Killed ${killedCount} Chrome processes`);
-            // Wait longer for processes to fully die
-            await new Promise(resolve => setTimeout(resolve, 3000));
-          }
-        }
-      } catch (e) {
-        console.warn(`[UserBrowserService:${this.userId}] Error killing Chrome processes:`, e.message);
-      }
-
-      // Try to remove lock files
+      // Check if any lock files exist
       const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
-      let locksRemoved = 0;
+      let hasLocks = false;
       
       for (const lockFile of lockFiles) {
         const lockPath = path.join(this.profileDir, lockFile);
         if (fs.existsSync(lockPath)) {
-          try {
-            fs.unlinkSync(lockPath);
-            locksRemoved++;
-            console.log(`[UserBrowserService:${this.userId}] Removed ${lockFile} file`);
-          } catch (e) {
-            console.warn(`[UserBrowserService:${this.userId}] Could not remove ${lockFile}:`, e.message);
-          }
+          hasLocks = true;
+          break;
         }
       }
 
-      // If locks still exist or profile is corrupted, remove entire profile (like old code)
-      // This ensures a fresh start
-      const singletonLock = path.join(this.profileDir, 'SingletonLock');
-      if (fs.existsSync(singletonLock)) {
-        console.warn(`[UserBrowserService:${this.userId}] Profile still locked after cleanup, removing entire profile for fresh start...`);
+      // If ANY locks exist, nuke the entire profile and start fresh
+      // This is the most reliable approach - no point trying to clean individual locks
+      if (hasLocks) {
+        console.log(`[UserBrowserService:${this.userId}] Profile has lock files, removing entire profile for fresh start...`);
+        
+        // First, try to kill any Chrome processes that might be using it
+        try {
+          // Kill ALL Chrome/Chromium processes (aggressive)
+          const allChromeProcesses = execSync(`ps aux | grep -iE "(chrom|chromium)" | grep -v grep || true`, { encoding: 'utf-8' });
+          if (allChromeProcesses && allChromeProcesses.trim()) {
+            console.log(`[UserBrowserService:${this.userId}] Killing all Chrome processes...`);
+            const lines = allChromeProcesses.trim().split('\n');
+            for (const line of lines) {
+              const parts = line.trim().split(/\s+/);
+              if (parts.length > 1) {
+                const pid = parts[1];
+                if (/^\d+$/.test(pid)) {
+                  try {
+                    execSync(`kill -9 ${pid} 2>/dev/null || true`);
+                    console.log(`[UserBrowserService:${this.userId}] Killed Chrome process: ${pid}`);
+                  } catch (e) {
+                    // Process might already be dead
+                  }
+                }
+              }
+            }
+            // Wait for processes to die
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        } catch (e) {
+          console.warn(`[UserBrowserService:${this.userId}] Error killing Chrome processes:`, e.message);
+        }
+
+        // Remove entire profile directory
         try {
           fs.rmSync(this.profileDir, { recursive: true, force: true });
           fs.mkdirSync(this.profileDir, { recursive: true });
-          console.log(`[UserBrowserService:${this.userId}] ✓ Profile removed and recreated for fresh start`);
+          console.log(`[UserBrowserService:${this.userId}] ✓ Profile nuked and recreated for fresh start`);
         } catch (rmError) {
           console.error(`[UserBrowserService:${this.userId}] Error removing profile:`, rmError.message);
+          throw rmError;
         }
-      } else if (locksRemoved > 0) {
-        console.log(`[UserBrowserService:${this.userId}] ✓ Removed ${locksRemoved} lock files`);
+      } else {
+        console.log(`[UserBrowserService:${this.userId}] No lock files found, profile is clean`);
       }
     } catch (error) {
       console.warn(`[UserBrowserService:${this.userId}] Error cleaning up profile locks:`, error.message);
-      // If cleanup fails, try removing entire profile as last resort
+      // Last resort: try to remove profile anyway
       try {
         if (fs.existsSync(this.profileDir)) {
-          console.log(`[UserBrowserService:${this.userId}] Attempting to remove entire profile as last resort...`);
+          console.log(`[UserBrowserService:${this.userId}] Last resort: removing entire profile...`);
           fs.rmSync(this.profileDir, { recursive: true, force: true });
           fs.mkdirSync(this.profileDir, { recursive: true });
         }
@@ -174,14 +140,18 @@ class UserBrowserService {
    * @returns {Promise<Array>} - Extracted cookies in Netscape format
    */
   async startAndAuthenticate(accessToken, refreshToken = null, initialCookies = []) {
-    try {
-      console.log(`[UserBrowserService:${this.userId}] Starting browser for user ${this.userId}...`);
-      
-      // Clean up any stale lock files before starting
-      await this.cleanupProfileLocks();
-      
-      // Launch Chrome with stealth plugin
-      const chromeArgs = [
+    let retryCount = 0;
+    const maxRetries = 2;
+    
+    while (retryCount <= maxRetries) {
+      try {
+        console.log(`[UserBrowserService:${this.userId}] Starting browser for user ${this.userId} (attempt ${retryCount + 1}/${maxRetries + 1})...`);
+        
+        // Clean up any stale lock files before starting (aggressive - nukes profile if locked)
+        await this.cleanupProfileLocks();
+        
+        // Launch Chrome with stealth plugin
+        const chromeArgs = [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
@@ -319,15 +289,52 @@ class UserBrowserService {
       console.log(`[UserBrowserService:${this.userId}] Browsing YouTube to generate session cookies...`);
       await this.browseYouTube();
 
-      // Step 4: Export cookies
-      console.log(`[UserBrowserService:${this.userId}] Exporting cookies...`);
-      const cookies = await this.exportCookies();
+        // Step 4: Export cookies
+        console.log(`[UserBrowserService:${this.userId}] Exporting cookies...`);
+        const cookies = await this.exportCookies();
 
-      return cookies;
-    } catch (error) {
-      console.error(`[UserBrowserService:${this.userId}] Error:`, error.message);
-      throw error;
+        console.log(`[UserBrowserService:${this.userId}] ✓ Browser started and authenticated successfully`);
+        return cookies;
+      } catch (error) {
+        console.error(`[UserBrowserService:${this.userId}] Browser launch/authentication error (attempt ${retryCount + 1}):`, error.message);
+        
+        // Clean up browser if it was partially started
+        if (this.browser) {
+          try {
+            await this.browser.close();
+          } catch (e) {
+            // Browser might already be closed
+          }
+          this.browser = null;
+          this.page = null;
+          this.isRunning = false;
+        }
+        
+        // If it's a profile lock error and we haven't retried yet, nuke profile and retry
+        if ((error.message.includes('profile') || error.message.includes('Code: 21') || error.message.includes('locked')) && retryCount < maxRetries) {
+          console.log(`[UserBrowserService:${this.userId}] Profile lock detected, nuking profile and retrying...`);
+          try {
+            // Aggressively remove entire profile
+            if (fs.existsSync(this.profileDir)) {
+              fs.rmSync(this.profileDir, { recursive: true, force: true });
+              fs.mkdirSync(this.profileDir, { recursive: true });
+              console.log(`[UserBrowserService:${this.userId}] ✓ Profile nuked, retrying in 2 seconds...`);
+            }
+          } catch (rmError) {
+            console.error(`[UserBrowserService:${this.userId}] Error nuking profile:`, rmError.message);
+          }
+          retryCount++;
+          await new Promise(resolve => setTimeout(resolve, 2000)); // Wait before retry
+          continue; // Retry
+        }
+        
+        // If we've exhausted retries or it's not a lock error, throw
+        throw error;
+      }
     }
+    
+    // Should never reach here, but just in case
+    throw new Error('Failed to start browser after all retries');
   }
 
   /**
