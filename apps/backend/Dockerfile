@@ -4,10 +4,11 @@ ENV NODE_ENV=production
 
 WORKDIR /app
 
-# Install system dependencies for yt-dlp, ffmpeg, and Deno
+# Install system dependencies for yt-dlp, ffmpeg, Deno, and Chromium
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
+        chromium \
         curl \
         dumb-init \
         ffmpeg \
@@ -18,6 +19,11 @@ RUN apt-get update \
         unzip \
         wget \
     && rm -rf /var/lib/apt/lists/*
+
+# Set Puppeteer environment variables to use system Chromium
+ENV PUPPETEER_PRODUCT=chrome \
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
+    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # Install Deno 2.0.0+ for EJS runtime (required for upcoming yt-dlp releases)
 # Using explicit version check to ensure 2.0.0+ is installed
@@ -67,15 +73,17 @@ RUN npm install --omit=dev --workspace @video-grabber/backend
 COPY apps/backend ./apps/backend
 
 # Prepare persistent directories (mapped via volumes in docker-compose)
-# OAuth cookies stored per-user, database for user management
+# OAuth cookies stored per-user, database for user management, Chrome profiles per-user
 RUN mkdir -p /var/lib/video-grabber/yt-dlp \
     /var/lib/video-grabber/cookies \
-    /var/lib/video-grabber/database
+    /var/lib/video-grabber/database \
+    /var/lib/video-grabber/chrome-profiles
 
 # Default runtime configuration (can be overridden by env vars)
 ENV PORT=3001 \
     COOKIES_DIR=/var/lib/video-grabber/cookies \
-    DATABASE_PATH=/var/lib/video-grabber/database/video-grabber.db
+    DATABASE_PATH=/var/lib/video-grabber/database/video-grabber.db \
+    CHROME_PROFILE_DIR=/var/lib/video-grabber/chrome-profiles
 
 EXPOSE 3001
 
