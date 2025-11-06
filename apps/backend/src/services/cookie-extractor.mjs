@@ -1025,6 +1025,7 @@ class CookieExtractor {
   /**
    * Get temporary decrypted cookie file for yt-dlp to use
    * Creates a temporary file with decrypted content that yt-dlp can read
+   * Also normalizes cookie expiration values (-1 -> 0 for session cookies)
    * @param {string} userId - User ID
    * @returns {string|null} - Path to temporary decrypted cookie file, or null if error
    */
@@ -1035,9 +1036,13 @@ class CookieExtractor {
         return null;
       }
 
+      // Normalize cookie file: convert -1 expiration to 0 (session cookies)
+      // yt-dlp requires 0 for session cookies, not -1
+      const normalizedContent = this.normalizeCookieFile(decryptedContent);
+
       // Create temporary file in same directory
       const tempFilePath = path.join(this.cookiesDir, `temp-user-${userId}-${Date.now()}.txt`);
-      fs.writeFileSync(tempFilePath, decryptedContent, 'utf-8');
+      fs.writeFileSync(tempFilePath, normalizedContent, 'utf-8');
       
       // Set restrictive permissions
       fs.chmodSync(tempFilePath, 0o600);
@@ -1047,6 +1052,50 @@ class CookieExtractor {
       console.error(`[CookieExtractor] Error creating temporary cookie file for user ${userId}:`, error.message);
       return null;
     }
+  }
+
+  /**
+   * Normalize cookie file content
+   * Converts -1 expiration values to 0 (session cookies) for yt-dlp compatibility
+   * @param {string} content - Cookie file content
+   * @returns {string} - Normalized content
+   */
+  normalizeCookieFile(content) {
+    if (!content) {
+      return content;
+    }
+
+    const lines = content.split('\n');
+    const normalizedLines = lines.map(line => {
+      // Skip comment lines and empty lines
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) {
+        return line;
+      }
+
+      // Parse Netscape format: domain\tflag\tpath\tsecure\texpiration\tname\tvalue
+      const parts = line.split('\t');
+      if (parts.length >= 6) {
+        const expiration = parts[4];
+        
+        // Convert -1 to 0 for session cookies
+        if (expiration === '-1') {
+          parts[4] = '0';
+          return parts.join('\t');
+        }
+        
+        // Also handle negative numbers
+        const expirationNum = parseInt(expiration, 10);
+        if (expirationNum < 0) {
+          parts[4] = '0';
+          return parts.join('\t');
+        }
+      }
+      
+      return line;
+    });
+
+    return normalizedLines.join('\n');
   }
 
   /**
