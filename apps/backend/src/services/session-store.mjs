@@ -151,9 +151,19 @@ class SQLiteSessionStore extends EventEmitter {
    */
   touch(sid, sess, callback) {
     try {
-      const expire = sess.cookie && sess.cookie.expires 
-        ? sess.cookie.expires.getTime() 
-        : Date.now() + (24 * 60 * 60 * 1000);
+      let expire;
+      if (sess.cookie && sess.cookie.expires) {
+        // Handle both Date objects and timestamps
+        if (sess.cookie.expires instanceof Date) {
+          expire = sess.cookie.expires.getTime();
+        } else if (typeof sess.cookie.expires === 'number') {
+          expire = sess.cookie.expires;
+        } else {
+          expire = Date.now() + (24 * 60 * 60 * 1000);
+        }
+      } else {
+        expire = Date.now() + (24 * 60 * 60 * 1000);
+      }
       
       this.db.prepare('UPDATE sessions SET expire = ? WHERE sid = ?').run(expire, sid);
       return callback(null);
@@ -187,9 +197,19 @@ class SQLiteSessionStore extends EventEmitter {
       if (row) {
         // Copy session data to new session ID
         const sess = JSON.parse(row.sess);
-        const expire = sess.cookie && sess.cookie.expires 
-          ? sess.cookie.expires.getTime() 
-          : Date.now() + (24 * 60 * 60 * 1000);
+        let expire;
+        if (sess.cookie && sess.cookie.expires) {
+          // Handle both Date objects and timestamps
+          if (sess.cookie.expires instanceof Date) {
+            expire = sess.cookie.expires.getTime();
+          } else if (typeof sess.cookie.expires === 'number') {
+            expire = sess.cookie.expires;
+          } else {
+            expire = Date.now() + (24 * 60 * 60 * 1000);
+          }
+        } else {
+          expire = Date.now() + (24 * 60 * 60 * 1000);
+        }
         
         this.db.prepare(`
           INSERT INTO sessions (sid, sess, expire)
@@ -201,7 +221,7 @@ class SQLiteSessionStore extends EventEmitter {
       } else {
         // Create new empty session if old one doesn't exist
         const expire = Date.now() + (24 * 60 * 60 * 1000);
-        const emptySess = JSON.stringify({ cookie: { expires: new Date(expire) } });
+        const emptySess = JSON.stringify({ cookie: { expires: expire } });
         
         this.db.prepare(`
           INSERT INTO sessions (sid, sess, expire)
