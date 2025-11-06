@@ -53,6 +53,7 @@ class UserBrowserService {
   /**
    * Clean up Chrome profile lock files
    * Removes lock files that prevent browser from starting
+   * If locks persist, removes entire profile directory (like old working code)
    */
   cleanupProfileLocks() {
     try {
@@ -60,46 +61,12 @@ class UserBrowserService {
         return;
       }
 
-      // Remove SingletonLock file (most common lock file)
-      const singletonLock = path.join(this.profileDir, 'SingletonLock');
-      if (fs.existsSync(singletonLock)) {
-        try {
-          fs.unlinkSync(singletonLock);
-          console.log(`[UserBrowserService:${this.userId}] Removed SingletonLock file`);
-        } catch (e) {
-          console.warn(`[UserBrowserService:${this.userId}] Could not remove SingletonLock:`, e.message);
-        }
-      }
-
-      // Remove SingletonSocket file
-      const singletonSocket = path.join(this.profileDir, 'SingletonSocket');
-      if (fs.existsSync(singletonSocket)) {
-        try {
-          fs.unlinkSync(singletonSocket);
-          console.log(`[UserBrowserService:${this.userId}] Removed SingletonSocket file`);
-        } catch (e) {
-          console.warn(`[UserBrowserService:${this.userId}] Could not remove SingletonSocket:`, e.message);
-        }
-      }
-
-      // Remove SingletonCookie file
-      const singletonCookie = path.join(this.profileDir, 'SingletonCookie');
-      if (fs.existsSync(singletonCookie)) {
-        try {
-          fs.unlinkSync(singletonCookie);
-          console.log(`[UserBrowserService:${this.userId}] Removed SingletonCookie file`);
-        } catch (e) {
-          console.warn(`[UserBrowserService:${this.userId}] Could not remove SingletonCookie:`, e.message);
-        }
-      }
-
-      // Try to kill any stale Chrome processes that might be using this profile
+      // First, try to kill any stale Chrome processes
       try {
         // Find Chrome/Chromium processes that might be using this profile
         const processes = execSync(`ps aux | grep -i "chrom.*${this.profileDir}" | grep -v grep || true`, { encoding: 'utf-8' });
         if (processes && processes.trim()) {
           console.log(`[UserBrowserService:${this.userId}] Found stale Chrome processes, attempting to kill...`);
-          // Extract PIDs and kill them
           const lines = processes.trim().split('\n');
           for (const line of lines) {
             const parts = line.trim().split(/\s+/);
@@ -113,12 +80,57 @@ class UserBrowserService {
               }
             }
           }
+          // Wait a bit for processes to die (use setTimeout since this is not async)
+          await new Promise(resolve => setTimeout(resolve, 2000));
         }
       } catch (e) {
         // No processes found or error checking - that's fine
       }
+
+      // Try to remove lock files
+      const lockFiles = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+      let locksRemoved = 0;
+      
+      for (const lockFile of lockFiles) {
+        const lockPath = path.join(this.profileDir, lockFile);
+        if (fs.existsSync(lockPath)) {
+          try {
+            fs.unlinkSync(lockPath);
+            locksRemoved++;
+            console.log(`[UserBrowserService:${this.userId}] Removed ${lockFile} file`);
+          } catch (e) {
+            console.warn(`[UserBrowserService:${this.userId}] Could not remove ${lockFile}:`, e.message);
+          }
+        }
+      }
+
+      // If locks still exist or profile is corrupted, remove entire profile (like old code)
+      // This ensures a fresh start
+      const singletonLock = path.join(this.profileDir, 'SingletonLock');
+      if (fs.existsSync(singletonLock)) {
+        console.warn(`[UserBrowserService:${this.userId}] Profile still locked after cleanup, removing entire profile for fresh start...`);
+        try {
+          fs.rmSync(this.profileDir, { recursive: true, force: true });
+          fs.mkdirSync(this.profileDir, { recursive: true });
+          console.log(`[UserBrowserService:${this.userId}] ✓ Profile removed and recreated for fresh start`);
+        } catch (rmError) {
+          console.error(`[UserBrowserService:${this.userId}] Error removing profile:`, rmError.message);
+        }
+      } else if (locksRemoved > 0) {
+        console.log(`[UserBrowserService:${this.userId}] ✓ Removed ${locksRemoved} lock files`);
+      }
     } catch (error) {
       console.warn(`[UserBrowserService:${this.userId}] Error cleaning up profile locks:`, error.message);
+      // If cleanup fails, try removing entire profile as last resort
+      try {
+        if (fs.existsSync(this.profileDir)) {
+          console.log(`[UserBrowserService:${this.userId}] Attempting to remove entire profile as last resort...`);
+          fs.rmSync(this.profileDir, { recursive: true, force: true });
+          fs.mkdirSync(this.profileDir, { recursive: true });
+        }
+      } catch (rmError) {
+        console.error(`[UserBrowserService:${this.userId}] Failed to remove profile:`, rmError.message);
+      }
     }
   }
 
@@ -187,29 +199,68 @@ class UserBrowserService {
 
       this.page = await this.browser.newPage();
       
-      // Enhanced stealth
+      // Enhanced stealth (based on old working code)
       await this.page.evaluateOnNewDocument(() => {
+        // Remove webdriver property
         Object.defineProperty(navigator, 'webdriver', { get: () => false });
         delete navigator.__proto__.webdriver;
         
+        // Override permissions API
+        const originalQuery = window.navigator.permissions.query;
+        window.navigator.permissions.query = (parameters) => (
+          parameters.name === 'notifications' ?
+            Promise.resolve({ state: Notification.permission }) :
+            originalQuery(parameters)
+        );
+        
+        // Override plugins (more realistic)
+        Object.defineProperty(navigator, 'plugins', {
+          get: () => {
+            const plugins = [];
+            plugins.push({
+              0: { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+              description: 'Portable Document Format',
+              filename: 'internal-pdf-viewer',
+              length: 1,
+              name: 'Chrome PDF Plugin'
+            });
+            plugins.push({
+              0: { type: 'application/pdf', suffixes: 'pdf', description: '' },
+              description: '',
+              filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai',
+              length: 1,
+              name: 'Chrome PDF Viewer'
+            });
+            return plugins;
+          }
+        });
+        
+        // Override languages
         Object.defineProperty(navigator, 'languages', {
           get: () => ['en-US', 'en']
         });
         
+        // Override platform to be consistent
         Object.defineProperty(navigator, 'platform', {
           get: () => 'Win32'
         });
         
+        // Add realistic hardware concurrency
         Object.defineProperty(navigator, 'hardwareConcurrency', {
           get: () => 8
         });
         
+        // Add realistic device memory
         Object.defineProperty(navigator, 'deviceMemory', {
           get: () => 8
         });
         
-        window.chrome = { runtime: {} };
+        // Override Chrome runtime
+        window.chrome = {
+          runtime: {}
+        };
         
+        // Override outerWidth/outerHeight to match viewport
         Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth });
         Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight });
       });
@@ -282,73 +333,84 @@ class UserBrowserService {
   }
 
   /**
-   * Authenticate with OAuth token by navigating to Google account page
-   * Uses initial cookies to establish session, then navigates to YouTube
+   * Authenticate with OAuth token by establishing Google session in browser
+   * Uses OAuth cookies to sign in to Google account, then navigates to YouTube
    */
   async authenticateWithOAuth(accessToken) {
     try {
-      // First, navigate to YouTube with initial cookies already loaded
-      // The cookies should establish a session
-      console.log(`[UserBrowserService:${this.userId}] Navigating to YouTube with initial cookies...`);
+      // Step 1: Navigate to Google account page with OAuth cookies loaded
+      // This should establish a Google session
+      console.log(`[UserBrowserService:${this.userId}] Establishing Google session with OAuth cookies...`);
       
+      await this.page.goto('https://accounts.google.com', {
+        waitUntil: 'networkidle2',
+        timeout: 30000
+      });
+      await this.sleep(3000);
+
+      // Step 2: Navigate to YouTube - cookies should establish session
+      console.log(`[UserBrowserService:${this.userId}] Navigating to YouTube with Google session...`);
       await this.page.goto('https://www.youtube.com', {
         waitUntil: 'networkidle2',
         timeout: 30000
       });
-
       await this.sleep(3000);
 
-      // Check if we're logged in by looking for user avatar or account button
+      // Step 3: Check if we're logged in by looking for user avatar or account button
       const isLoggedIn = await this.page.evaluate(() => {
         // Check for various indicators of being logged in
         return !!(
           document.querySelector('yt-img-shadow[alt*="Google Account"]') ||
           document.querySelector('button[aria-label*="Account"]') ||
           document.querySelector('#avatar-btn') ||
-          document.querySelector('ytd-topbar-menu-button-renderer')
+          document.querySelector('ytd-topbar-menu-button-renderer') ||
+          document.querySelector('img[alt*="Google Account"]')
         );
       });
 
       if (!isLoggedIn) {
-        console.log(`[UserBrowserService:${this.userId}] Not logged in, attempting to establish session...`);
+        console.log(`[UserBrowserService:${this.userId}] Not logged in yet, cookies may need time to establish session...`);
+        // Wait a bit more and check again
+        await this.sleep(3000);
         
-        // Try navigating to Google account page to trigger authentication
-        try {
-          await this.page.goto('https://accounts.google.com', {
-            waitUntil: 'networkidle2',
-            timeout: 20000
-          });
-          await this.sleep(3000);
-          
-          // Check if we need to sign in
-          const needsSignIn = await this.page.evaluate(() => {
-            return !!(
-              document.querySelector('input[type="email"]') ||
-              document.querySelector('input[name="identifier"]') ||
-              document.querySelector('button:has-text("Sign in")')
-            );
-          });
-          
-          if (needsSignIn) {
-            console.log(`[UserBrowserService:${this.userId}] Google requires sign-in, but we have OAuth tokens`);
-            console.log(`[UserBrowserService:${this.userId}] Cookies from OAuth should establish session on YouTube`);
-          }
-        } catch (accountError) {
-          console.warn(`[UserBrowserService:${this.userId}] Google account page navigation failed:`, accountError.message);
+        const stillNotLoggedIn = await this.page.evaluate(() => {
+          return !(
+            document.querySelector('yt-img-shadow[alt*="Google Account"]') ||
+            document.querySelector('button[aria-label*="Account"]') ||
+            document.querySelector('#avatar-btn')
+          );
+        });
+        
+        if (stillNotLoggedIn) {
+          console.warn(`[UserBrowserService:${this.userId}] ⚠️ Still not logged in - cookies may be insufficient`);
+          console.warn(`[UserBrowserService:${this.userId}] Will continue anyway - browsing may generate session cookies`);
+        } else {
+          console.log(`[UserBrowserService:${this.userId}] ✓ Logged in after waiting`);
         }
       } else {
-        console.log(`[UserBrowserService:${this.userId}] Already logged in to Google/YouTube`);
+        console.log(`[UserBrowserService:${this.userId}] ✓ Already logged in to Google/YouTube`);
       }
 
-      // Navigate back to YouTube to establish YouTube session
+      // Step 4: Navigate to YouTube account page to confirm session
+      try {
+        await this.page.goto('https://www.youtube.com/account', {
+          waitUntil: 'networkidle2',
+          timeout: 20000
+        });
+        await this.sleep(2000);
+        console.log(`[UserBrowserService:${this.userId}] ✓ Account page accessible - session established`);
+      } catch (accountError) {
+        console.warn(`[UserBrowserService:${this.userId}] Account page check failed:`, accountError.message);
+      }
+
+      // Step 5: Return to YouTube homepage
       await this.page.goto('https://www.youtube.com', {
         waitUntil: 'networkidle2',
         timeout: 30000
       });
-
       await this.sleep(2000);
 
-      console.log(`[UserBrowserService:${this.userId}] OAuth authentication completed`);
+      console.log(`[UserBrowserService:${this.userId}] ✓ OAuth authentication completed`);
     } catch (error) {
       console.error(`[UserBrowserService:${this.userId}] OAuth authentication error:`, error.message);
       throw error;
@@ -494,59 +556,116 @@ class UserBrowserService {
 
   /**
    * Watch a video from homepage feed
+   * Based on old working code - watches videos for 8-12 seconds to generate VISITOR_INFO1_LIVE
    */
   async watchHomepageVideo() {
     try {
-      // Scroll to load feed
+      // Wait for feed to populate (YouTube may be slow to load)
+      console.log(`[UserBrowserService:${this.userId}] Waiting for YouTube feed to populate...`);
+      await this.sleep(this.randomBetween(3000, 5000));
+      
+      // Scroll to trigger lazy loading and reveal more videos
+      await this.humanScroll();
+      await this.sleep(2000);
+      
+      // Scroll again to ensure feed is loaded
       await this.humanScroll();
       await this.sleep(2000);
 
-      // Find video links
+      // Look for video links in the feed - try multiple selectors (like old code)
       const videoSelectors = [
         'a[href*="/watch?v="]',
         'ytd-rich-item-renderer a[href*="/watch"]',
-        'ytd-video-renderer a[href*="/watch"]'
+        'ytd-video-renderer a[href*="/watch"]',
+        'ytd-grid-video-renderer a[href*="/watch"]',
+        '#dismissible a[href*="/watch"]',
+        '#contents a[href*="/watch"]'
       ];
 
       let videoLink = null;
+      let videoCount = 0;
+      
       for (const selector of videoSelectors) {
         try {
+          console.log(`[UserBrowserService:${this.userId}] Looking for videos with selector: ${selector}`);
           const links = await this.page.$$(selector);
-          for (const link of links.slice(0, 5)) {
-            const isVisible = await this.page.evaluate((el) => {
-              const rect = el.getBoundingClientRect();
-              return rect.width > 0 && rect.height > 0;
-            }, link);
+          console.log(`[UserBrowserService:${this.userId}] Found ${links.length} potential video links`);
+          
+          if (links.length > 0) {
+            // Filter to only visible, legitimate video links (like old code)
+            const visibleLinks = [];
+            for (const link of links.slice(0, 20)) { // Check first 20
+              try {
+                const href = await this.page.evaluate(el => el.href, link);
+                // Must be a watch link, not a channel or other link
+                if (href && href.includes('/watch?v=') && !href.includes('channel') && !href.includes('user')) {
+                  const isVisible = await this.page.evaluate((el) => {
+                    const rect = el.getBoundingClientRect();
+                    return rect.width > 0 && rect.height > 0 && 
+                           window.getComputedStyle(el).visibility !== 'hidden' &&
+                           window.getComputedStyle(el).display !== 'none';
+                  }, link);
+                  
+                  if (isVisible) {
+                    visibleLinks.push({ link, href });
+                  }
+                }
+              } catch (evalError) {
+                continue;
+              }
+            }
             
-            if (isVisible) {
-              videoLink = link;
+            console.log(`[UserBrowserService:${this.userId}] Found ${visibleLinks.length} visible, valid video links`);
+            
+            if (visibleLinks.length > 0) {
+              // Pick a random video from top 10 (more likely to be relevant)
+              const index = Math.floor(Math.random() * Math.min(10, visibleLinks.length));
+              videoLink = visibleLinks[index].link;
+              videoCount = visibleLinks.length;
+              console.log(`[UserBrowserService:${this.userId}] ✓ Selected video ${index + 1} of ${visibleLinks.length}: ${visibleLinks[index].href}`);
               break;
             }
           }
-          if (videoLink) break;
         } catch (e) {
+          console.warn(`[UserBrowserService:${this.userId}] Error with selector ${selector}:`, e.message);
           continue;
         }
       }
 
       if (videoLink) {
-        console.log(`[UserBrowserService:${this.userId}] Clicking video from feed...`);
-        await videoLink.click();
-        
+        // Click and watch the video (like old code)
         try {
-          await this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
-          console.log(`[UserBrowserService:${this.userId}] Video page loaded`);
+          console.log(`[UserBrowserService:${this.userId}] Clicking video link from homepage...`);
           
-          // Watch for 15-20 seconds
-          await this.sleep(this.randomBetween(15000, 20000));
+          // Scroll video into view first
+          await this.page.evaluate((el) => {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, videoLink);
+          await this.sleep(1000);
           
-          // Scroll and interact
+          await videoLink.click();
+          
+          // Wait for navigation
+          try {
+            await this.page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 15000 });
+            console.log(`[UserBrowserService:${this.userId}] Video page loaded`);
+          } catch (navError) {
+            // Navigation might have already happened
+            console.log(`[UserBrowserService:${this.userId}] Navigation check completed`);
+          }
+          
+          // CRITICAL: Watch for 8-12 seconds (like old code) - this generates VISITOR_INFO1_LIVE
+          const watchDuration = this.randomBetween(8000, 12000);
+          console.log(`[UserBrowserService:${this.userId}] Watching video for ${watchDuration}ms to generate session cookies...`);
+          await this.sleep(watchDuration);
+          
+          // Scroll and interact while watching
           await this.humanScroll();
           await this.sleep(2000);
           
-          console.log(`[UserBrowserService:${this.userId}] Video watched, session cookies should be generated`);
-        } catch (navError) {
-          console.warn(`[UserBrowserService:${this.userId}] Video navigation timeout:`, navError.message);
+          console.log(`[UserBrowserService:${this.userId}] ✓ Video watched, session cookies (VISITOR_INFO1_LIVE) should be generated`);
+        } catch (watchError) {
+          console.warn(`[UserBrowserService:${this.userId}] Error watching video:`, watchError.message);
         }
       } else {
         console.warn(`[UserBrowserService:${this.userId}] No video links found in feed`);
