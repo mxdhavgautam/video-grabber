@@ -88,27 +88,39 @@ class YouTubeExtractor {
         console.log(`[yt-dlp] Using PO Token Provider at: ${poProviderUrl}`);
       }
 
-      // Use curl_cffi impersonation to mimic real browser
-      let impersonateTarget = 'chrome'; // Chrome for best compatibility
+      // Use curl_cffi impersonation to mimic real browser (latest technique)
+      // Try chrome120 or chrome131 for better compatibility
+      let impersonateTarget = 'chrome131'; // Latest Chrome version for best compatibility
       args.push('--impersonate', impersonateTarget);
       console.log(`[yt-dlp] Using curl_cffi with ${impersonateTarget} impersonation`);
 
-      // Set user agent
+      // Set user agent (must match impersonate target)
       const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
       args.push('--user-agent', userAgent);
 
-      // Add headers
+      // Add headers to mimic real browser requests
       args.push('--add-header', 'Referer:https://www.youtube.com/');
-      args.push('--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8');
+      args.push('--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7');
       args.push('--add-header', 'Accept-Language:en-US,en;q=0.9');
-      args.push('--add-header', 'Accept-Encoding:gzip, deflate, br');
+      args.push('--add-header', 'Accept-Encoding:gzip, deflate, br, zstd');
       args.push('--add-header', 'DNT:1');
       args.push('--add-header', 'Connection:keep-alive');
       args.push('--add-header', 'Upgrade-Insecure-Requests:1');
+      args.push('--add-header', 'Sec-Fetch-Dest:document');
+      args.push('--add-header', 'Sec-Fetch-Mode:navigate');
+      args.push('--add-header', 'Sec-Fetch-Site:none');
+      args.push('--add-header', 'Sec-Fetch-User:?1');
+      args.push('--add-header', 'Sec-Ch-Ua:"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"');
+      args.push('--add-header', 'Sec-Ch-Ua-Mobile:?0');
+      args.push('--add-header', 'Sec-Ch-Ua-Platform:"Windows"');
 
-      // Add random delays to mimic human behavior
-      args.push('--sleep-interval', '2');
-      args.push('--max-sleep-interval', '5');
+      // Add random delays to mimic human behavior (longer delays for better stealth)
+      args.push('--sleep-interval', '3');
+      args.push('--max-sleep-interval', '8');
+      
+      // Add retry logic for bot detection
+      args.push('--retries', '3');
+      args.push('--fragment-retries', '3');
 
       // Add video URL
       args.push(`https://www.youtube.com/watch?v=${videoId}`);

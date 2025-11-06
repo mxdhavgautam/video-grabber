@@ -201,10 +201,13 @@ class UserBrowserService {
 
       this.page = await this.browser.newPage();
       
-      // Enhanced stealth (based on old working code)
+      // Enhanced stealth (latest techniques for bot detection bypass)
       await this.page.evaluateOnNewDocument(() => {
-        // Remove webdriver property
-        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        // Remove webdriver property (critical for bot detection)
+        Object.defineProperty(navigator, 'webdriver', { 
+          get: () => undefined,
+          configurable: true
+        });
         delete navigator.__proto__.webdriver;
         
         // Override permissions API
@@ -215,7 +218,7 @@ class UserBrowserService {
             originalQuery(parameters)
         );
         
-        // Override plugins (more realistic)
+        // Override plugins (more realistic Chrome plugins)
         Object.defineProperty(navigator, 'plugins', {
           get: () => {
             const plugins = [];
@@ -234,37 +237,86 @@ class UserBrowserService {
               name: 'Chrome PDF Viewer'
             });
             return plugins;
-          }
+          },
+          configurable: true
         });
         
         // Override languages
         Object.defineProperty(navigator, 'languages', {
-          get: () => ['en-US', 'en']
+          get: () => ['en-US', 'en'],
+          configurable: true
         });
         
         // Override platform to be consistent
         Object.defineProperty(navigator, 'platform', {
-          get: () => 'Win32'
+          get: () => 'Win32',
+          configurable: true
         });
         
         // Add realistic hardware concurrency
         Object.defineProperty(navigator, 'hardwareConcurrency', {
-          get: () => 8
+          get: () => 8,
+          configurable: true
         });
         
         // Add realistic device memory
         Object.defineProperty(navigator, 'deviceMemory', {
-          get: () => 8
+          get: () => 8,
+          configurable: true
         });
         
-        // Override Chrome runtime
+        // Override Chrome runtime (must be present for Chrome)
         window.chrome = {
-          runtime: {}
+          runtime: {},
+          loadTimes: function() {},
+          csi: function() {},
+          app: {}
         };
         
         // Override outerWidth/outerHeight to match viewport
-        Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth });
-        Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight });
+        Object.defineProperty(window, 'outerWidth', { 
+          get: () => window.innerWidth,
+          configurable: true
+        });
+        Object.defineProperty(window, 'outerHeight', { 
+          get: () => window.innerHeight,
+          configurable: true
+        });
+        
+        // Override connection API (important for bot detection)
+        if (navigator.connection) {
+          Object.defineProperty(navigator, 'connection', {
+            get: () => ({
+              effectiveType: '4g',
+              rtt: 50,
+              downlink: 10,
+              saveData: false
+            }),
+            configurable: true
+          });
+        }
+        
+        // Override battery API if present
+        if (navigator.getBattery) {
+          navigator.getBattery = () => Promise.resolve({
+            charging: true,
+            chargingTime: 0,
+            dischargingTime: Infinity,
+            level: 1
+          });
+        }
+        
+        // Override automation flags
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => false,
+          configurable: true
+        });
+        
+        // Override Notification permission
+        Object.defineProperty(Notification, 'permission', {
+          get: () => 'default',
+          configurable: true
+        });
       });
 
       await this.page.setViewport({ width: 1920, height: 1080 });
@@ -372,50 +424,133 @@ class UserBrowserService {
   }
 
   /**
-   * Authenticate with OAuth token by actually signing in to YouTube
-   * CRITICAL: We need to actually sign in, not just navigate with cookies
+   * Authenticate with OAuth token by actually signing in to Google/YouTube
+   * CRITICAL: We need to actually sign in via Google's OAuth flow, not just navigate with cookies
    * YouTube session cookies (__Secure-3PSID, __Secure-3PAPISID, LOGIN_INFO) are only
-   * set when you actually sign in, not just when you navigate with OAuth cookies
+   * set when you actually sign in via Google's authentication flow
+   * 
+   * Strategy: Use OAuth token to make authenticated requests that will set session cookies
    */
   async authenticateWithOAuth(accessToken) {
     try {
-      // Step 1: Navigate to YouTube sign-in page using OAuth token
-      // We'll use the OAuth token to authenticate via YouTube's web interface
-      console.log(`[UserBrowserService:${this.userId}] Signing in to YouTube with OAuth token...`);
+      console.log(`[UserBrowserService:${this.userId}] Signing in to Google/YouTube with OAuth token...`);
       
-      // Navigate to YouTube with OAuth token in URL or as a cookie
-      // YouTube will recognize the OAuth token and sign us in
+      // Step 1: Make authenticated requests using OAuth token to establish session
+      // This will set the necessary cookies for Google/YouTube
+      console.log(`[UserBrowserService:${this.userId}] Step 1: Making authenticated requests to establish session...`);
+      
+      // First, navigate to YouTube and inject OAuth token
       await this.page.goto('https://www.youtube.com', {
-        waitUntil: 'networkidle2',
+        waitUntil: 'domcontentloaded',
         timeout: 30000
       });
+      await this.sleep(2000);
+
+      // Step 2: Use OAuth token to make authenticated requests via page.evaluate
+      // This will trigger Google/YouTube to set session cookies
+      try {
+        await this.page.evaluate(async (token) => {
+          // Make authenticated request to Google OAuth userinfo endpoint
+          // This establishes the authenticated session
+          const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          });
+          
+          if (userInfoResponse.ok) {
+            const userInfo = await userInfoResponse.json();
+            console.log('Authenticated as:', userInfo.email);
+          }
+
+          // Make authenticated request to YouTube API to establish YouTube session
+          const youtubeResponse = await fetch('https://www.youtube.com/youtubei/v1/browse', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json',
+              'X-YouTube-Client-Name': '1',
+              'X-YouTube-Client-Version': '2.20250106.00.00',
+              'Origin': 'https://www.youtube.com',
+              'Referer': 'https://www.youtube.com/'
+            },
+            credentials: 'include', // Important: include cookies
+            body: JSON.stringify({
+              context: {
+                client: {
+                  clientName: 'WEB',
+                  clientVersion: '2.20250106.00.00',
+                  hl: 'en',
+                  gl: 'US',
+                  utcOffsetMinutes: 0
+                }
+              },
+              browseId: 'FEwhat_to_watch'
+            })
+          });
+          
+          return youtubeResponse.ok;
+        }, accessToken);
+        console.log(`[UserBrowserService:${this.userId}] ✓ Authenticated API requests successful`);
+      } catch (apiError) {
+        console.warn(`[UserBrowserService:${this.userId}] API authentication failed:`, apiError.message);
+      }
+
+      // Step 3: Wait for cookies to be set and navigate to trigger session establishment
       await this.sleep(3000);
-
-      // Step 2: Wait for YouTube to recognize the session and populate feed
-      // YouTube may take time to establish session after OAuth cookies are loaded
-      console.log(`[UserBrowserService:${this.userId}] Waiting for YouTube to establish session...`);
-      await this.sleep(5000);
       
-      // Handle any prompts that might appear
-      await this.handleYouTubePrompts();
-
-      // Step 3: Navigate to YouTube account page to trigger session establishment
-      console.log(`[UserBrowserService:${this.userId}] Navigating to YouTube account page...`);
+      // Step 4: Navigate to YouTube account page to trigger session cookies
+      console.log(`[UserBrowserService:${this.userId}] Step 2: Navigating to YouTube account page...`);
       await this.page.goto('https://www.youtube.com/account', {
         waitUntil: 'networkidle2',
         timeout: 30000
       });
       await this.sleep(5000);
 
-      // Step 5: Navigate back to YouTube homepage and check for session cookies
-      console.log(`[UserBrowserService:${this.userId}] Checking YouTube session...`);
+      // Step 5: Handle any prompts (consent, sign-in, etc.)
+      await this.handleYouTubePrompts();
+
+      // Step 6: Navigate back to YouTube homepage
+      console.log(`[UserBrowserService:${this.userId}] Step 3: Returning to YouTube homepage...`);
       await this.page.goto('https://www.youtube.com', {
         waitUntil: 'networkidle2',
         timeout: 30000
       });
       await this.sleep(5000);
 
-      // Step 6: Verify we have session cookies by checking cookies
+      // Step 7: Make another authenticated request to ensure cookies are set
+      try {
+        await this.page.evaluate(async (token) => {
+          // Make another authenticated request to YouTube
+          await fetch('https://www.youtube.com/youtubei/v1/player', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json',
+              'X-YouTube-Client-Name': '1',
+              'X-YouTube-Client-Version': '2.20250106.00.00',
+              'Origin': 'https://www.youtube.com',
+              'Referer': 'https://www.youtube.com/'
+            },
+            credentials: 'include',
+            body: JSON.stringify({
+              context: {
+                client: {
+                  clientName: 'WEB',
+                  clientVersion: '2.20250106.00.00',
+                  hl: 'en',
+                  gl: 'US'
+                }
+              },
+              videoId: 'dQw4w9WgXcQ' // Test video
+            })
+          });
+        }, accessToken);
+      } catch (e) {
+        // Ignore errors - cookies may still be set
+      }
+
+      // Step 8: Verify we have session cookies by checking cookies
       const cookies = await this.page.cookies();
       const hasSessionCookies = cookies.some(c => 
         c.name === '__Secure-3PSID' || 
@@ -430,13 +565,16 @@ class UserBrowserService {
         console.warn(`[UserBrowserService:${this.userId}] Will continue browsing - session cookies may be set during interaction`);
       }
 
-      // Step 7: Check if feed is populated (indicates successful sign-in)
+      // Step 9: Check if feed is populated (indicates successful sign-in)
       const feedPopulated = await this.page.evaluate(() => {
         // Check if YouTube feed has videos
         const videoSelectors = [
           'a[href*="/watch?v="]',
           'ytd-rich-item-renderer',
-          'ytd-video-renderer'
+          'ytd-video-renderer',
+          'ytd-grid-video-renderer',
+          '#dismissible',
+          '#contents ytd-rich-item-renderer'
         ];
         
         for (const selector of videoSelectors) {
@@ -482,14 +620,19 @@ class UserBrowserService {
 
       // Step 3: Wait for feed to populate - CRITICAL: This proves we're not detected as bot
       // If feed is empty, YouTube is blocking us
+      // IMPORTANT: Wait longer and interact more to ensure session cookies are set
       console.log(`[UserBrowserService:${this.userId}] Step 2: Waiting for YouTube feed to populate...`);
       let feedPopulated = false;
       let feedCheckAttempts = 0;
-      const maxFeedChecks = 10; // Check up to 10 times (30 seconds total)
+      const maxFeedChecks = 20; // Check up to 20 times (60+ seconds total) - longer wait for cookies
       
       while (!feedPopulated && feedCheckAttempts < maxFeedChecks) {
-        await this.sleep(3000);
+        await this.sleep(4000); // Longer wait between checks
         feedCheckAttempts++;
+        
+        // Human-like scrolling and interaction
+        await this.humanScroll();
+        await this.sleep(2000);
         
         feedPopulated = await this.page.evaluate(() => {
           const videoSelectors = [
@@ -498,7 +641,9 @@ class UserBrowserService {
             'ytd-video-renderer',
             'ytd-grid-video-renderer',
             '#dismissible',
-            '#contents ytd-rich-item-renderer'
+            '#contents ytd-rich-item-renderer',
+            'ytd-rich-grid-renderer',
+            'ytd-rich-grid-media'
           ];
           
           for (const selector of videoSelectors) {
@@ -511,12 +656,21 @@ class UserBrowserService {
         });
         
         if (!feedPopulated) {
-          console.log(`[UserBrowserService:${this.userId}] Feed not populated yet (attempt ${feedCheckAttempts}/${maxFeedChecks}), scrolling to trigger lazy loading...`);
-          // Scroll to trigger lazy loading
+          console.log(`[UserBrowserService:${this.userId}] Feed not populated yet (attempt ${feedCheckAttempts}/${maxFeedChecks}), scrolling and interacting...`);
+          // More aggressive scrolling to trigger lazy loading
           await this.page.evaluate(() => {
-            window.scrollBy(0, 500);
+            window.scrollBy(0, 800);
           });
           await this.sleep(2000);
+          
+          // Try clicking on page to simulate user interaction
+          try {
+            await this.page.mouse.move(100, 100);
+            await this.sleep(500);
+            await this.page.mouse.move(200, 200);
+          } catch (e) {
+            // Ignore mouse movement errors
+          }
         }
       }
       
@@ -524,7 +678,7 @@ class UserBrowserService {
         console.log(`[UserBrowserService:${this.userId}] ✓ Feed populated - YouTube session established successfully`);
       } else {
         console.warn(`[UserBrowserService:${this.userId}] ⚠️ Feed still empty after ${maxFeedChecks} attempts - YouTube may be detecting bot`);
-        console.warn(`[UserBrowserService:${this.userId}] Will continue - session cookies may still be generated`);
+        console.warn(`[UserBrowserService:${this.userId}] Will continue - session cookies may still be generated during video watching`);
       }
 
       // Step 4: Visit YouTube account page to trigger session cookies
@@ -583,10 +737,50 @@ class UserBrowserService {
         await this.sleep(3000);
       }
 
-      // Step 11: Final wait for cookies to be fully set
-      await this.sleep(5000);
+      // Step 11: Final wait for cookies to be fully set (longer wait for session cookies)
+      // Session cookies may take time to be set after all interactions
+      console.log(`[UserBrowserService:${this.userId}] Step 6: Final wait for session cookies to be set...`);
+      await this.sleep(10000); // Wait 10 seconds for cookies to be fully set
 
-      // Step 12: Export cookies after all interactions (including rotation)
+      // Step 12: Check cookies one more time and wait if critical ones are missing
+      const finalCookies = await this.page.cookies();
+      const criticalCookies = ['__Secure-3PSID', '__Secure-3PAPISID', 'LOGIN_INFO', 'VISITOR_INFO1_LIVE'];
+      const hasAllCritical = criticalCookies.every(name => finalCookies.some(c => c.name === name));
+      
+      if (!hasAllCritical) {
+        console.log(`[UserBrowserService:${this.userId}] Critical cookies still missing, waiting longer and making more requests...`);
+        // Make more API requests to trigger cookie generation
+        try {
+          await this.page.evaluate(async () => {
+            // Make requests to YouTube API to trigger cookie generation
+            await fetch('https://www.youtube.com/youtubei/v1/browse', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-YouTube-Client-Name': '1',
+                'X-YouTube-Client-Version': '2.20250106.00.00'
+              },
+              credentials: 'include',
+              body: JSON.stringify({
+                context: {
+                  client: {
+                    clientName: 'WEB',
+                    clientVersion: '2.20250106.00.00',
+                    hl: 'en',
+                    gl: 'US'
+                  }
+                },
+                browseId: 'FEwhat_to_watch'
+              })
+            });
+          });
+          await this.sleep(5000);
+        } catch (e) {
+          // Ignore errors
+        }
+      }
+
+      // Step 13: Export cookies after all interactions (including rotation)
       await this.exportCookies();
 
       this.isBrowsing = false;
