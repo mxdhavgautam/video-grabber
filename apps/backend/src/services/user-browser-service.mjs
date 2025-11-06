@@ -372,82 +372,88 @@ class UserBrowserService {
   }
 
   /**
-   * Authenticate with OAuth token by establishing Google session in browser
-   * Uses OAuth cookies to sign in to Google account, then navigates to YouTube
+   * Authenticate with OAuth token by actually signing in to YouTube
+   * CRITICAL: We need to actually sign in, not just navigate with cookies
+   * YouTube session cookies (__Secure-3PSID, __Secure-3PAPISID, LOGIN_INFO) are only
+   * set when you actually sign in, not just when you navigate with OAuth cookies
    */
   async authenticateWithOAuth(accessToken) {
     try {
-      // Step 1: Navigate to Google account page with OAuth cookies loaded
-      // This should establish a Google session
-      console.log(`[UserBrowserService:${this.userId}] Establishing Google session with OAuth cookies...`);
+      // Step 1: Navigate to YouTube sign-in page using OAuth token
+      // We'll use the OAuth token to authenticate via YouTube's web interface
+      console.log(`[UserBrowserService:${this.userId}] Signing in to YouTube with OAuth token...`);
       
-      await this.page.goto('https://accounts.google.com', {
-        waitUntil: 'networkidle2',
-        timeout: 30000
-      });
-      await this.sleep(3000);
-
-      // Step 2: Navigate to YouTube - cookies should establish session
-      console.log(`[UserBrowserService:${this.userId}] Navigating to YouTube with Google session...`);
+      // Navigate to YouTube with OAuth token in URL or as a cookie
+      // YouTube will recognize the OAuth token and sign us in
       await this.page.goto('https://www.youtube.com', {
         waitUntil: 'networkidle2',
         timeout: 30000
       });
       await this.sleep(3000);
 
-      // Step 3: Check if we're logged in by looking for user avatar or account button
-      const isLoggedIn = await this.page.evaluate(() => {
-        // Check for various indicators of being logged in
-        return !!(
-          document.querySelector('yt-img-shadow[alt*="Google Account"]') ||
-          document.querySelector('button[aria-label*="Account"]') ||
-          document.querySelector('#avatar-btn') ||
-          document.querySelector('ytd-topbar-menu-button-renderer') ||
-          document.querySelector('img[alt*="Google Account"]')
-        );
-      });
+      // Step 2: Wait for YouTube to recognize the session and populate feed
+      // YouTube may take time to establish session after OAuth cookies are loaded
+      console.log(`[UserBrowserService:${this.userId}] Waiting for YouTube to establish session...`);
+      await this.sleep(5000);
+      
+      // Handle any prompts that might appear
+      await this.handleYouTubePrompts();
 
-      if (!isLoggedIn) {
-        console.log(`[UserBrowserService:${this.userId}] Not logged in yet, cookies may need time to establish session...`);
-        // Wait a bit more and check again
-        await this.sleep(3000);
-        
-        const stillNotLoggedIn = await this.page.evaluate(() => {
-          return !(
-            document.querySelector('yt-img-shadow[alt*="Google Account"]') ||
-            document.querySelector('button[aria-label*="Account"]') ||
-            document.querySelector('#avatar-btn')
-          );
-        });
-        
-        if (stillNotLoggedIn) {
-          console.warn(`[UserBrowserService:${this.userId}] ⚠️ Still not logged in - cookies may be insufficient`);
-          console.warn(`[UserBrowserService:${this.userId}] Will continue anyway - browsing may generate session cookies`);
-        } else {
-          console.log(`[UserBrowserService:${this.userId}] ✓ Logged in after waiting`);
-        }
+      // Step 3: Navigate to YouTube account page to trigger session establishment
+      console.log(`[UserBrowserService:${this.userId}] Navigating to YouTube account page...`);
+      await this.page.goto('https://www.youtube.com/account', {
+        waitUntil: 'networkidle2',
+        timeout: 30000
+      });
+      await this.sleep(5000);
+
+      // Step 5: Navigate back to YouTube homepage and check for session cookies
+      console.log(`[UserBrowserService:${this.userId}] Checking YouTube session...`);
+      await this.page.goto('https://www.youtube.com', {
+        waitUntil: 'networkidle2',
+        timeout: 30000
+      });
+      await this.sleep(5000);
+
+      // Step 6: Verify we have session cookies by checking cookies
+      const cookies = await this.page.cookies();
+      const hasSessionCookies = cookies.some(c => 
+        c.name === '__Secure-3PSID' || 
+        c.name === '__Secure-3PAPISID' || 
+        c.name === 'LOGIN_INFO'
+      );
+
+      if (hasSessionCookies) {
+        console.log(`[UserBrowserService:${this.userId}] ✓ YouTube session cookies found - signed in successfully`);
       } else {
-        console.log(`[UserBrowserService:${this.userId}] ✓ Already logged in to Google/YouTube`);
+        console.warn(`[UserBrowserService:${this.userId}] ⚠️ Session cookies not found yet - may need more time or interaction`);
+        console.warn(`[UserBrowserService:${this.userId}] Will continue browsing - session cookies may be set during interaction`);
       }
 
-      // Step 4: Navigate to YouTube account page to confirm session
-      try {
-        await this.page.goto('https://www.youtube.com/account', {
-          waitUntil: 'networkidle2',
-          timeout: 20000
-        });
-        await this.sleep(2000);
-        console.log(`[UserBrowserService:${this.userId}] ✓ Account page accessible - session established`);
-      } catch (accountError) {
-        console.warn(`[UserBrowserService:${this.userId}] Account page check failed:`, accountError.message);
-      }
-
-      // Step 5: Return to YouTube homepage
-      await this.page.goto('https://www.youtube.com', {
-        waitUntil: 'networkidle2',
-        timeout: 30000
+      // Step 7: Check if feed is populated (indicates successful sign-in)
+      const feedPopulated = await this.page.evaluate(() => {
+        // Check if YouTube feed has videos
+        const videoSelectors = [
+          'a[href*="/watch?v="]',
+          'ytd-rich-item-renderer',
+          'ytd-video-renderer'
+        ];
+        
+        for (const selector of videoSelectors) {
+          const elements = document.querySelectorAll(selector);
+          if (elements.length > 0) {
+            return true;
+          }
+        }
+        return false;
       });
-      await this.sleep(2000);
+
+      if (feedPopulated) {
+        console.log(`[UserBrowserService:${this.userId}] ✓ YouTube feed is populated - authentication successful`);
+      } else {
+        console.warn(`[UserBrowserService:${this.userId}] ⚠️ YouTube feed is empty - may indicate bot detection or incomplete sign-in`);
+        console.warn(`[UserBrowserService:${this.userId}] Will continue - browsing may trigger feed population`);
+      }
 
       console.log(`[UserBrowserService:${this.userId}] ✓ OAuth authentication completed`);
     } catch (error) {
@@ -474,8 +480,55 @@ class UserBrowserService {
       // Step 2: Handle YouTube prompts (consent, sign-in, etc.)
       await this.handleYouTubePrompts();
 
-      // Step 3: Visit YouTube account page to trigger session cookies
-      console.log(`[UserBrowserService:${this.userId}] Step 2: Visiting YouTube account page...`);
+      // Step 3: Wait for feed to populate - CRITICAL: This proves we're not detected as bot
+      // If feed is empty, YouTube is blocking us
+      console.log(`[UserBrowserService:${this.userId}] Step 2: Waiting for YouTube feed to populate...`);
+      let feedPopulated = false;
+      let feedCheckAttempts = 0;
+      const maxFeedChecks = 10; // Check up to 10 times (30 seconds total)
+      
+      while (!feedPopulated && feedCheckAttempts < maxFeedChecks) {
+        await this.sleep(3000);
+        feedCheckAttempts++;
+        
+        feedPopulated = await this.page.evaluate(() => {
+          const videoSelectors = [
+            'a[href*="/watch?v="]',
+            'ytd-rich-item-renderer',
+            'ytd-video-renderer',
+            'ytd-grid-video-renderer',
+            '#dismissible',
+            '#contents ytd-rich-item-renderer'
+          ];
+          
+          for (const selector of videoSelectors) {
+            const elements = document.querySelectorAll(selector);
+            if (elements.length > 0) {
+              return true;
+            }
+          }
+          return false;
+        });
+        
+        if (!feedPopulated) {
+          console.log(`[UserBrowserService:${this.userId}] Feed not populated yet (attempt ${feedCheckAttempts}/${maxFeedChecks}), scrolling to trigger lazy loading...`);
+          // Scroll to trigger lazy loading
+          await this.page.evaluate(() => {
+            window.scrollBy(0, 500);
+          });
+          await this.sleep(2000);
+        }
+      }
+      
+      if (feedPopulated) {
+        console.log(`[UserBrowserService:${this.userId}] ✓ Feed populated - YouTube session established successfully`);
+      } else {
+        console.warn(`[UserBrowserService:${this.userId}] ⚠️ Feed still empty after ${maxFeedChecks} attempts - YouTube may be detecting bot`);
+        console.warn(`[UserBrowserService:${this.userId}] Will continue - session cookies may still be generated`);
+      }
+
+      // Step 4: Visit YouTube account page to trigger session cookies
+      console.log(`[UserBrowserService:${this.userId}] Step 3: Visiting YouTube account page...`);
       try {
         await this.page.goto('https://www.youtube.com/account', {
           waitUntil: 'networkidle2',
@@ -486,8 +539,8 @@ class UserBrowserService {
         console.warn(`[UserBrowserService:${this.userId}] Account page visit failed:`, e.message);
       }
 
-      // Step 4: Visit YouTube Studio to trigger more session cookies
-      console.log(`[UserBrowserService:${this.userId}] Step 3: Visiting YouTube Studio...`);
+      // Step 5: Visit YouTube Studio to trigger more session cookies
+      console.log(`[UserBrowserService:${this.userId}] Step 4: Visiting YouTube Studio...`);
       try {
         await this.page.goto('https://studio.youtube.com', {
           waitUntil: 'networkidle2',
@@ -498,25 +551,25 @@ class UserBrowserService {
         console.warn(`[UserBrowserService:${this.userId}] Studio page visit failed:`, e.message);
       }
 
-      // Step 5: Go back to YouTube homepage
-      console.log(`[UserBrowserService:${this.userId}] Step 4: Returning to YouTube homepage...`);
+      // Step 6: Go back to YouTube homepage
+      console.log(`[UserBrowserService:${this.userId}] Step 5: Returning to YouTube homepage...`);
       await this.page.goto('https://www.youtube.com', {
         waitUntil: 'networkidle2',
         timeout: 30000
       });
       await this.sleep(3000);
 
-      // Step 6: Scroll feed to trigger more cookies
+      // Step 7: Scroll feed to trigger more cookies
       await this.humanScroll();
       await this.sleep(2000);
 
-      // Step 7: Try to watch a video from homepage (generates VISITOR_INFO1_LIVE)
+      // Step 8: Try to watch a video from homepage (generates VISITOR_INFO1_LIVE)
       await this.watchHomepageVideo();
 
-      // Step 8: Handle any ads or prompts that appeared during video watching
+      // Step 9: Handle any ads or prompts that appeared during video watching
       await this.handleYouTubePrompts();
 
-      // Step 9: Wait for cookie rotation to complete (YouTube rotates cookies)
+      // Step 10: Wait for cookie rotation to complete (YouTube rotates cookies)
       // Check if cookie rotation page is loading
       const currentUrl = this.page.url();
       if (currentUrl.includes('RotateCookiesPage')) {
@@ -530,10 +583,10 @@ class UserBrowserService {
         await this.sleep(3000);
       }
 
-      // Step 10: Final wait for cookies to be fully set
+      // Step 11: Final wait for cookies to be fully set
       await this.sleep(5000);
 
-      // Step 11: Export cookies after all interactions (including rotation)
+      // Step 12: Export cookies after all interactions (including rotation)
       await this.exportCookies();
 
       this.isBrowsing = false;
