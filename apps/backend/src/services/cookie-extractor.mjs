@@ -60,26 +60,48 @@ class CookieExtractor {
 
   /**
    * Decrypt cookie file content
+   * Handles both new format (IV:encrypted) and old format (plain text or different encryption)
    */
   decryptCookieContent(encryptedText) {
     if (!encryptedText) return null;
     
     try {
+      // Check if it's in the new format (IV:encrypted)
       const parts = encryptedText.split(':');
-      if (parts.length !== 2) {
-        console.error('[CookieExtractor] Invalid encrypted format');
-        return null;
+      if (parts.length === 2) {
+        try {
+          const iv = Buffer.from(parts[0], 'hex');
+          const encrypted = parts[1];
+          
+          // Validate IV is 16 bytes (128 bits)
+          if (iv.length !== 16) {
+            throw new Error('Invalid IV length');
+          }
+          
+          const decipher = crypto.createDecipheriv('aes-256-cbc', this.encryptionKey, iv);
+          
+          let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+          decrypted += decipher.final('utf8');
+          
+          return decrypted;
+        } catch (decryptError) {
+          console.warn('[CookieExtractor] Decryption failed, trying as plain text...');
+          // Fall through to try as plain text
+        }
       }
       
-      const iv = Buffer.from(parts[0], 'hex');
-      const encrypted = parts[1];
+      // Try as plain text (for old cookie files or unencrypted files)
+      // Check if it looks like Netscape cookie format
+      if (encryptedText.includes('# Netscape HTTP Cookie File') || 
+          encryptedText.includes('\t') || 
+          encryptedText.split('\n').length > 2) {
+        console.log('[CookieExtractor] Treating as plain text cookie file');
+        return encryptedText;
+      }
       
-      const decipher = crypto.createDecipheriv('aes-256-cbc', this.encryptionKey, iv);
-      
-      let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-      decrypted += decipher.final('utf8');
-      
-      return decrypted;
+      // If it doesn't look like a cookie file, it might be corrupted
+      console.error('[CookieExtractor] File does not appear to be encrypted or plain text cookie format');
+      return null;
     } catch (error) {
       console.error('[CookieExtractor] Decryption error:', error.message);
       return null;

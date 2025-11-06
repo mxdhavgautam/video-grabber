@@ -22,6 +22,7 @@ import puppeteerExtra from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import fs from 'fs';
 import path from 'path';
+import CookieExtractor from './cookie-extractor.mjs';
 
 // Configure puppeteer-extra with stealth plugin
 puppeteerExtra.use(StealthPlugin());
@@ -31,6 +32,7 @@ class UserBrowserService {
     this.userId = userId;
     this.cookiesDir = cookiesDir || process.env.COOKIES_DIR || path.join(process.cwd(), 'cookies');
     this.profileDir = profileDir || path.join(process.env.CHROME_PROFILE_DIR || '/var/lib/video-grabber/chrome-profiles', `user-${userId}`);
+    this.cookieExtractor = new CookieExtractor(this.cookiesDir);
     this.cookieFilePath = path.join(this.cookiesDir, `user-${userId}.txt`);
     
     this.browser = null;
@@ -205,37 +207,70 @@ class UserBrowserService {
 
   /**
    * Authenticate with OAuth token by navigating to Google account page
+   * Uses initial cookies to establish session, then navigates to YouTube
    */
   async authenticateWithOAuth(accessToken) {
     try {
-      // Navigate to Google account page with OAuth token
-      // We'll use the token in Authorization header via request interception
-      await this.page.setExtraHTTPHeaders({
-        'Authorization': `Bearer ${accessToken}`
-      });
-
-      // Navigate to YouTube which will use the OAuth token
+      // First, navigate to YouTube with initial cookies already loaded
+      // The cookies should establish a session
+      console.log(`[UserBrowserService:${this.userId}] Navigating to YouTube with initial cookies...`);
+      
       await this.page.goto('https://www.youtube.com', {
-        waitUntil: 'domcontentloaded',
+        waitUntil: 'networkidle2',
         timeout: 30000
       });
 
-      // Also try navigating to Google account page to establish session
-      try {
-        await this.page.goto('https://myaccount.google.com', {
-          waitUntil: 'domcontentloaded',
-          timeout: 20000
-        });
-        await this.sleep(2000);
-      } catch (accountError) {
-        console.warn(`[UserBrowserService:${this.userId}] Google account page navigation failed:`, accountError.message);
+      await this.sleep(3000);
+
+      // Check if we're logged in by looking for user avatar or account button
+      const isLoggedIn = await this.page.evaluate(() => {
+        // Check for various indicators of being logged in
+        return !!(
+          document.querySelector('yt-img-shadow[alt*="Google Account"]') ||
+          document.querySelector('button[aria-label*="Account"]') ||
+          document.querySelector('#avatar-btn') ||
+          document.querySelector('ytd-topbar-menu-button-renderer')
+        );
+      });
+
+      if (!isLoggedIn) {
+        console.log(`[UserBrowserService:${this.userId}] Not logged in, attempting to establish session...`);
+        
+        // Try navigating to Google account page to trigger authentication
+        try {
+          await this.page.goto('https://accounts.google.com', {
+            waitUntil: 'networkidle2',
+            timeout: 20000
+          });
+          await this.sleep(3000);
+          
+          // Check if we need to sign in
+          const needsSignIn = await this.page.evaluate(() => {
+            return !!(
+              document.querySelector('input[type="email"]') ||
+              document.querySelector('input[name="identifier"]') ||
+              document.querySelector('button:has-text("Sign in")')
+            );
+          });
+          
+          if (needsSignIn) {
+            console.log(`[UserBrowserService:${this.userId}] Google requires sign-in, but we have OAuth tokens`);
+            console.log(`[UserBrowserService:${this.userId}] Cookies from OAuth should establish session on YouTube`);
+          }
+        } catch (accountError) {
+          console.warn(`[UserBrowserService:${this.userId}] Google account page navigation failed:`, accountError.message);
+        }
+      } else {
+        console.log(`[UserBrowserService:${this.userId}] Already logged in to Google/YouTube`);
       }
 
-      // Navigate back to YouTube
+      // Navigate back to YouTube to establish YouTube session
       await this.page.goto('https://www.youtube.com', {
-        waitUntil: 'domcontentloaded',
+        waitUntil: 'networkidle2',
         timeout: 30000
       });
+
+      await this.sleep(2000);
 
       console.log(`[UserBrowserService:${this.userId}] OAuth authentication completed`);
     } catch (error) {
@@ -457,15 +492,11 @@ class UserBrowserService {
         console.warn(`[UserBrowserService:${this.userId}] ⚠️ Missing critical cookies: ${missing.join(', ')}`);
       }
 
-      // Convert to Netscape format
-      const netscapeFormat = this.convertToNetscapeFormat(youtubeCookies);
+      // Save cookies using CookieExtractor (which handles encryption)
+      const savedPath = this.cookieExtractor.saveCookiesToFile(this.userId, youtubeCookies);
+      this.cookieFilePath = savedPath;
 
-      // Write to file
-      const tempPath = `${this.cookieFilePath}.tmp`;
-      fs.writeFileSync(tempPath, netscapeFormat, 'utf-8');
-      fs.renameSync(tempPath, this.cookieFilePath);
-
-      console.log(`[UserBrowserService:${this.userId}] ✓ Exported ${youtubeCookies.length} cookies to ${this.cookieFilePath}`);
+      console.log(`[UserBrowserService:${this.userId}] ✓ Exported and encrypted ${youtubeCookies.length} cookies to ${savedPath}`);
 
       return youtubeCookies;
     } catch (error) {
