@@ -155,18 +155,62 @@ class BrowserManager {
 
     try {
       // Navigate to video URL
+      console.log(`[BrowserManager] Navigating to video page...`);
       await browserService.page.goto(videoUrl, {
         waitUntil: 'networkidle2',
         timeout: 30000
       });
 
-      // Wait a bit for cookies to be set
+      // Handle any prompts (consent, ads, etc.)
+      await browserService.handleYouTubePrompts();
+
+      // Wait for video player to load - this is critical for cookie generation
+      console.log(`[BrowserManager] Waiting for video player to load and generate cookies...`);
+      await browserService.sleep(8000);
+
+      // Try to interact with the video page to trigger cookie generation
+      // Scroll down to comments section to trigger more requests
+      await browserService.page.evaluate(() => {
+        window.scrollTo(0, 500);
+      });
       await browserService.sleep(3000);
+
+      // Scroll back up
+      await browserService.page.evaluate(() => {
+        window.scrollTo(0, 0);
+      });
+      await browserService.sleep(2000);
+
+      // Try clicking on the page to simulate user interaction
+      try {
+        await browserService.page.mouse.click(400, 300);
+        await browserService.sleep(1000);
+      } catch (e) {
+        // Ignore click errors
+      }
+
+      // Wait longer for cookies to be fully set - YouTube needs time to set session cookies
+      console.log(`[BrowserManager] Waiting for YouTube to set session cookies...`);
+      await browserService.sleep(5000);
 
       // Extract fresh cookies (don't save to file yet - will be saved in extraction endpoint)
       const cookies = await browserService.exportCookies(false);
       
       console.log(`[BrowserManager] Extracted ${cookies.length} fresh cookies from browser`);
+      
+      // Check for critical cookies
+      const criticalCookies = ['__Secure-3PSID', '__Secure-3PAPISID', 'LOGIN_INFO', 'VISITOR_INFO1_LIVE'];
+      const found = criticalCookies.filter(name => cookies.some(c => c.name === name));
+      const missing = criticalCookies.filter(name => !cookies.some(c => c.name === name));
+      
+      if (found.length > 0) {
+        console.log(`[BrowserManager] ✓ Found critical cookies: ${found.join(', ')}`);
+      }
+      if (missing.length > 0) {
+        console.warn(`[BrowserManager] ⚠️ Still missing critical cookies: ${missing.join(', ')}`);
+        console.warn(`[BrowserManager] Cookies may not be sufficient for extraction`);
+      }
+      
       return cookies;
     } catch (error) {
       console.error(`[BrowserManager] Error navigating to video:`, error.message);

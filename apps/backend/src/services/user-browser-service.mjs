@@ -338,14 +338,17 @@ class UserBrowserService {
       console.log(`[UserBrowserService:${this.userId}] Authenticating with OAuth token...`);
       await this.authenticateWithOAuth(accessToken, skipCookieGeneration);
 
-      // Step 3: Browse YouTube to generate session cookies (skip if we have a video URL to extract)
+      // Step 3: Wait for feed to populate to establish session cookies, then proceed
+      // Even when we have a video URL, we need to wait for feed to get session cookies
       if (!skipCookieGeneration) {
         console.log(`[UserBrowserService:${this.userId}] Browsing YouTube to generate session cookies...`);
         await this.browseYouTube();
       } else {
-        console.log(`[UserBrowserService:${this.userId}] Skipping cookie generation browsing - will go directly to video URL`);
-        // Just wait a moment for any cookies to be set from authentication
-        await this.sleep(2000);
+        console.log(`[UserBrowserService:${this.userId}] Waiting for feed to populate to establish session cookies, then going to video...`);
+        // Wait for feed to populate - this is critical for getting session cookies
+        // Once feed is populated, we know we're signed in and can proceed to video
+        await this.waitForFeedPopulated();
+        console.log(`[UserBrowserService:${this.userId}] ✓ Feed populated - session cookies should be set, ready for video extraction`);
       }
 
         // Step 4: Export cookies
@@ -617,6 +620,77 @@ class UserBrowserService {
     } catch (error) {
       console.error(`[UserBrowserService:${this.userId}] OAuth authentication error:`, error.message);
       throw error;
+    }
+  }
+
+  /**
+   * Wait for YouTube feed to populate - this establishes session cookies
+   * Used when we have a video URL and need to quickly get session cookies
+   */
+  async waitForFeedPopulated() {
+    try {
+      // Make sure we're on YouTube homepage
+      const currentUrl = this.page.url();
+      if (!currentUrl.includes('youtube.com')) {
+        await this.page.goto('https://www.youtube.com', {
+          waitUntil: 'networkidle2',
+          timeout: 30000
+        });
+        await this.sleep(3000);
+      }
+
+      // Handle any prompts
+      await this.handleYouTubePrompts();
+
+      // Wait for feed to populate - this is critical for getting session cookies
+      console.log(`[UserBrowserService:${this.userId}] Waiting for YouTube feed to populate...`);
+      let feedPopulated = false;
+      let feedCheckAttempts = 0;
+      const maxFeedChecks = 15; // Check up to 15 times (about 45 seconds)
+      
+      while (!feedPopulated && feedCheckAttempts < maxFeedChecks) {
+        await this.sleep(3000);
+        feedCheckAttempts++;
+        
+        // Scroll a bit to trigger lazy loading
+        await this.page.evaluate(() => {
+          window.scrollBy(0, 400);
+        });
+        await this.sleep(1000);
+        
+        feedPopulated = await this.page.evaluate(() => {
+          const videoSelectors = [
+            'a[href*="/watch?v="]',
+            'ytd-rich-item-renderer',
+            'ytd-video-renderer',
+            'ytd-grid-video-renderer',
+            '#dismissible',
+            '#contents ytd-rich-item-renderer',
+            'ytd-rich-grid-renderer'
+          ];
+          
+          for (const selector of videoSelectors) {
+            const elements = document.querySelectorAll(selector);
+            if (elements.length > 0) {
+              return true;
+            }
+          }
+          return false;
+        });
+        
+        if (!feedPopulated && feedCheckAttempts < maxFeedChecks) {
+          console.log(`[UserBrowserService:${this.userId}] Feed not populated yet (attempt ${feedCheckAttempts}/${maxFeedChecks})...`);
+        }
+      }
+      
+      if (feedPopulated) {
+        console.log(`[UserBrowserService:${this.userId}] ✓ Feed populated after ${feedCheckAttempts} attempts - session cookies should be set`);
+      } else {
+        console.warn(`[UserBrowserService:${this.userId}] ⚠️ Feed still empty after ${maxFeedChecks} attempts - proceeding anyway`);
+      }
+    } catch (error) {
+      console.warn(`[UserBrowserService:${this.userId}] Error waiting for feed:`, error.message);
+      // Continue anyway - cookies may still be set
     }
   }
 
