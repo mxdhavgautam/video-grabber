@@ -132,39 +132,24 @@ app.get('/auth/google/callback',
       success: true
     });
     
-    // Save session and manually set cookie to ensure it's sent with redirect
-    // express-session should set it automatically, but we'll set it explicitly
-    // to ensure it's included in the redirect response
+    // Mark session as modified to ensure express-session sets the cookie
+    // Then save the session - express-session will automatically set the cookie
+    req.session.touch();
     req.session.save((err) => {
       if (err) {
         console.error('[Server] Error saving session before redirect:', err);
         return res.redirect(`${FRONTEND_URL}/?auth=error`);
       }
       
-      // Manually set the session cookie using the same signed session ID
-      // This ensures the cookie is sent even if express-session doesn't set it automatically
-      const cookieName = process.env.SESSION_COOKIE_NAME || 'video-grabber-session';
-      const cookieOptions = {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
-        maxAge: 24 * 60 * 60 * 1000, // 24 hours
-        path: '/'
-      };
-      
-      if (process.env.NODE_ENV === 'production') {
-        cookieOptions.domain = '.mxdhavgautam.com';
-      }
-      
-      // Set cookie with the signed session ID (req.sessionID is already signed by express-session)
-      res.cookie(cookieName, req.sessionID, cookieOptions);
-      
-      console.log('[Server] Session saved, cookie manually set, redirecting to frontend');
+      console.log('[Server] Session saved, redirecting to frontend');
       console.log('[Server] Session ID:', req.sessionID);
-      console.log('[Server] Cookie name:', cookieName);
-      console.log('[Server] Cookie options:', cookieOptions);
+      console.log('[Server] Session cookie config:', req.session.cookie);
       
-      res.redirect(`${FRONTEND_URL}/?auth=success`);
+      // Use a small delay to ensure session is fully committed to MemoryStore
+      // This is necessary because redirects can happen before the session is fully saved
+      setImmediate(() => {
+        res.redirect(`${FRONTEND_URL}/?auth=success`);
+      });
     });
   }
 );
