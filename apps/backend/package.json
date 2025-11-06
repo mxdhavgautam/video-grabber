@@ -10,13 +10,16 @@
     "build": "echo 'Backend is pure Node.js and does not require a build step.'"
   },
   "dependencies": {
+    "@distube/youtubei": "^6.16.8",
     "axios": "^1.7.9",
+    "better-sqlite3": "^11.7.0",
     "body-parser": "^1.20.3",
+    "cookie-parser": "^1.4.6",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
-    "puppeteer-core": "^23.8.0",
-    "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "express-session": "^1.18.1",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0"
   }
 }
 

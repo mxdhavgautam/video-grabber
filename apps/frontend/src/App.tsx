@@ -1,11 +1,23 @@
 import { useState, useEffect } from 'react'
 import { VideoGrabber } from './components/VideoGrabber'
+import { LoginScreen } from './components/LoginScreen'
 import { Toaster } from './components/ui/toaster'
 import { Button } from './components/ui/button'
-import { Moon, Sun } from 'lucide-react'
+import { Avatar, AvatarFallback, AvatarImage } from './components/ui/avatar'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from './components/ui/dropdown-menu'
+import { Moon, Sun, Monitor, LogOut, User } from 'lucide-react'
+import { useAuth } from './hooks/useAuth'
 import './index.css'
 
 function App() {
+  const { user, isLoading, isAuthenticated, logout } = useAuth()
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system')
   const [isExtracting, setIsExtracting] = useState(false)
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
@@ -16,9 +28,8 @@ function App() {
     if (savedTheme) {
       setTheme(savedTheme)
     } else {
-      // Check system preference
-      const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-      setTheme(systemDark ? 'dark' : 'light')
+      // Default to system preference
+      setTheme('system')
     }
   }, [])
 
@@ -32,7 +43,7 @@ function App() {
     return () => window.removeEventListener('resize', handleResize)
   }, [])
 
-  // Apply theme to DOM
+  // Apply theme to DOM with proper system preference detection
   useEffect(() => {
     const root = document.documentElement
     let activeTheme = theme
@@ -42,30 +53,28 @@ function App() {
       activeTheme = systemDark ? 'dark' : 'light'
     }
 
-    if (activeTheme === 'dark') {
-      root.classList.add('dark')
-      root.classList.remove('light')
-    } else {
-      root.classList.add('light')
-      root.classList.remove('dark')
-    }
-
+    // Remove all theme classes first
+    root.classList.remove('light', 'dark')
+    
+    // Add the active theme class
+    root.classList.add(activeTheme)
+    
+    // Store the preference (not the computed theme)
     localStorage.setItem('theme', theme)
   }, [theme])
 
-  // Listen for system theme changes
+  // Listen for system theme changes when theme is set to 'system'
   useEffect(() => {
     if (theme !== 'system') return
 
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
     const handleChange = (e: MediaQueryListEvent) => {
       const root = document.documentElement
+      root.classList.remove('light', 'dark')
       if (e.matches) {
         root.classList.add('dark')
-        root.classList.remove('light')
       } else {
         root.classList.add('light')
-        root.classList.remove('dark')
       }
     }
 
@@ -73,30 +82,120 @@ function App() {
     return () => mediaQuery.removeEventListener('change', handleChange)
   }, [theme])
 
-  const toggleTheme = () => {
-    const newTheme = theme === 'dark' ? 'light' : theme === 'light' ? 'system' : 'dark'
-    setTheme(newTheme)
+  // Check for auth success in URL params
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('auth') === 'success') {
+      // Remove auth param from URL
+      window.history.replaceState({}, '', window.location.pathname)
+      // Refresh auth state
+      window.location.reload()
+    }
+  }, [])
+
+  const getActiveTheme = () => {
+    if (theme === 'system') {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+    }
+    return theme
   }
 
-  const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  const isDark = getActiveTheme() === 'dark'
 
+  // Show login screen if not authenticated
+  if (!isLoading && !isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-background text-foreground transition-colors duration-300">
+        <LoginScreen />
+        <Toaster />
+      </div>
+    )
+  }
+
+  // Show loading state
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+          <p className="text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Main app for authenticated users
   return (
     <div className="min-h-screen bg-background text-foreground transition-colors duration-300 overflow-hidden">
-      {/* Theme toggle - positioned absolutely in top-right */}
-      <div className="fixed top-2 right-2 sm:top-4 sm:right-4 z-50">
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={toggleTheme}
-          className="h-9 w-9 sm:h-10 sm:w-10 rounded-lg hover:bg-muted"
-          title={`Switch to ${theme === 'dark' ? 'light' : theme === 'light' ? 'system' : 'dark'} mode`}
-          aria-label={`Current theme: ${theme}. Click to change.`}
-        >
-          {isDark ? <Sun className="h-4 w-4 sm:h-5 sm:w-5" /> : <Moon className="h-4 w-4 sm:h-5 sm:w-5" />}
-        </Button>
+      {/* Top bar with theme toggle and user menu */}
+      <div className="fixed top-2 right-2 sm:top-4 sm:right-4 z-50 flex items-center gap-2">
+        {/* Theme toggle */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-9 w-9 sm:h-10 sm:w-10 rounded-lg hover:bg-muted"
+              title={`Current theme: ${theme}. Click to change.`}
+            >
+              {theme === 'system' ? (
+                <Monitor className="h-4 w-4 sm:h-5 sm:w-5" />
+              ) : isDark ? (
+                <Sun className="h-4 w-4 sm:h-5 sm:w-5" />
+              ) : (
+                <Moon className="h-4 w-4 sm:h-5 sm:w-5" />
+              )}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => setTheme('light')}>
+              <Sun className="mr-2 h-4 w-4" />
+              Light
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setTheme('dark')}>
+              <Moon className="mr-2 h-4 w-4" />
+              Dark
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setTheme('system')}>
+              <Monitor className="mr-2 h-4 w-4" />
+              System
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        {/* User menu */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-9 w-9 sm:h-10 sm:w-10 rounded-lg hover:bg-muted"
+            >
+              <Avatar className="h-8 w-8">
+                {user?.picture && <AvatarImage src={user.picture} alt={user.name || 'User'} />}
+                <AvatarFallback>
+                  {user?.name?.charAt(0).toUpperCase() || user?.email?.charAt(0).toUpperCase() || <User className="h-4 w-4" />}
+                </AvatarFallback>
+              </Avatar>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-56">
+            <DropdownMenuLabel>
+              <div className="flex flex-col space-y-1">
+                <p className="text-sm font-medium">{user?.name || 'User'}</p>
+                <p className="text-xs text-muted-foreground">{user?.email}</p>
+              </div>
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={logout}>
+              <LogOut className="mr-2 h-4 w-4" />
+              Logout
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
-      {/* Main content container - fit to screen height */}
+      {/* Main content container */}
       <div className="flex flex-col h-screen px-8 py-32 sm:px-4 sm:py-4 transition-all duration-500 ease-out">
         {/* Combined Header & Input Section */}
         <div className={`w-full max-w-2xl mx-auto transition-all duration-500 ease-out ${
@@ -120,7 +219,7 @@ function App() {
             </div>
           )}
 
-          {/* Single VideoGrabber Component - manages its own layout */}
+          {/* Single VideoGrabber Component */}
           <main className="w-full transition-all duration-500 ease-out">
             <VideoGrabber onExtracting={setIsExtracting} />
           </main>
@@ -133,4 +232,3 @@ function App() {
 }
 
 export default App
-

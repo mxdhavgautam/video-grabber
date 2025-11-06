@@ -1,9 +1,22 @@
+/**
+ * Express Server with OAuth Authentication
+ * 
+ * Handles Google OAuth authentication, per-user cookie management,
+ * and YouTube video extraction with rate limiting.
+ */
+
 import express from 'express';
 import bodyParser from 'body-parser';
+import cookieParser from 'cookie-parser';
+import session from 'express-session';
+import passport from 'passport';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { getDatabase } from './services/database.mjs';
+import { getAuthService } from './services/auth.mjs';
 import YouTubeExtractor from './services/youtube-extractor.mjs';
+import CookieExtractor from './services/cookie-extractor.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,10 +24,53 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173').split(',');
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+const BACKEND_URL = process.env.BACKEND_URL || `http://localhost:${PORT}`;
+
+// Initialize services
+const db = getDatabase();
+const authService = getAuthService();
+const cookieExtractor = new CookieExtractor();
+let youtubeExtractor = null;
+
+// Initialize YouTube extractor (no cookie generator needed)
+(async () => {
+  try {
+    youtubeExtractor = new YouTubeExtractor();
+    await youtubeExtractor.init();
+    console.log('[Server] YouTube extractor initialized');
+  } catch (error) {
+    console.error('[Server] Failed to initialize YouTube extractor:', error.message);
+  }
+})();
 
 // Middleware
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.text({ limit: '10mb' }));
+app.use(cookieParser());
+
+// Session configuration
+const sessionSecret = process.env.SESSION_SECRET;
+if (!sessionSecret) {
+  console.error('[Server] WARNING: SESSION_SECRET not set, using default (NOT SECURE FOR PRODUCTION)');
+}
+
+app.use(session({
+  secret: sessionSecret || 'change-this-secret-in-production',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production', // HTTPS only in production
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000, // 24 hours
+    sameSite: 'lax'
+  },
+  name: process.env.SESSION_COOKIE_NAME || 'video-grabber-session'
+}));
+
+// Initialize Passport
+app.use(passport.initialize());
+app.use(passport.session());
 
 // CORS middleware
 app.use((req, res, next) => {
@@ -32,131 +88,120 @@ app.use((req, res, next) => {
   next();
 });
 
-// Ensure runtime directories exist
-const runtimeDir = path.join(process.cwd(), 'runtime');
-const ytdlpDir = path.join(runtimeDir, 'yt-dlp');
-const chromeProfilesDir = path.join(runtimeDir, 'chrome-profiles');
-const cookiesPath = process.env.COOKIES_FILE || path.join(ytdlpDir, 'cookies.txt');
-
-// Initialize Cookie Generator first (needed for YouTube extractor)
-// Dynamic import to handle missing puppeteer-core gracefully
-let cookieGenerator = null;
-
-// Initialize YouTube extractor (will get cookieGenerator reference after it's created)
-let youtubeExtractor = null;
-
-// Async initialization for cookie generator and extractor
-(async () => {
-  try {
-    const cookieGeneratorModule = await import('./services/cookie-generator.mjs');
-    const CookieGenerator = cookieGeneratorModule.default;
-    
-    cookieGenerator = new CookieGenerator(cookiesPath, chromeProfilesDir);
-
-    // Initialize YouTube extractor with cookieGenerator reference
-    // This allows extractor to report bot detection failures to trigger browser restart
-    const YouTubeExtractor = (await import('./services/youtube-extractor.mjs')).default;
-    youtubeExtractor = new YouTubeExtractor(cookieGenerator);
-
-    // Start cookie generator in background (non-blocking)
-    // This will generate legitimate cookies through human-like browsing
-    // The browsing happens asynchronously, so server startup is not delayed
-    if (process.env.ENABLE_COOKIE_GENERATOR !== 'false') {
-      // Start in background - don't block server startup
-      setImmediate(() => {
-        cookieGenerator.start().catch(error => {
-          console.error('[Server] Failed to start cookie generator:', error.message);
-          console.error('[Server] Cookie generator will not run, but manual cookie upload still works');
-        });
-      });
-      console.log('[Server] Cookie generator enabled - will start browsing in background');
-      console.log('[Server] Browser will restart every 12 hours (or on consecutive bot detection failures)');
-    } else {
-      console.log('[Server] Cookie generator disabled (ENABLE_COOKIE_GENERATOR=false)');
-      // Still create extractor without cookie generator
-      const YouTubeExtractor = (await import('./services/youtube-extractor.mjs')).default;
-      youtubeExtractor = new YouTubeExtractor(null);
-    }
-  } catch (error) {
-    console.warn('[Server] CookieGenerator not available (puppeteer-core may not be installed):', error.message);
-    console.warn('[Server] Cookie generator will not run, but manual cookie upload still works');
-    // Still create extractor without cookie generator
-    const YouTubeExtractor = (await import('./services/youtube-extractor.mjs')).default;
-    youtubeExtractor = new YouTubeExtractor(null);
-  }
-})();
-
-// Fallback: Create extractor synchronously (will be replaced by async init above)
-// Import synchronously but initialize without cookieGenerator reference initially
-import('./services/youtube-extractor.mjs').then(module => {
-  if (!youtubeExtractor) {
-    youtubeExtractor = new module.default(null);
-  }
-}).catch(() => {
-  // Silently fail - async init will handle it
-});
-
-[runtimeDir, ytdlpDir, chromeProfilesDir].forEach(dir => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-    console.log(`[Server] Created directory: ${dir}`);
-  }
-});
-
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.status(200).send('ok');
+  res.status(200).json({ status: 'ok' });
 });
 
-// Upload cookies endpoint
-app.post('/api/upload-authenticated-cookies', (req, res) => {
-  try {
-    const cookiesContent = req.body;
-    
-    if (!cookiesContent || typeof cookiesContent !== 'string') {
-      return res.status(400).json({ error: 'Invalid cookies content' });
-    }
+// OAuth Routes
+app.get('/auth/google', passport.authenticate('google', {
+  scope: ['profile', 'email', 'openid']
+}));
 
-    // Validate cookies.txt format
-    const lines = cookiesContent.split('\n');
-    const validLines = lines.filter(line => {
-      if (!line || line.startsWith('#')) return true;
-      const parts = line.split('\t');
-      return parts.length >= 7;
+app.get('/auth/google/callback',
+  passport.authenticate('google', { failureRedirect: `${FRONTEND_URL}/login?error=auth_failed` }),
+  (req, res) => {
+    // Successful authentication
+    console.log('[Server] OAuth callback successful for user:', req.user.id);
+    
+    // Log successful authentication
+    db.logAuditEvent({
+      userId: req.user.id,
+      eventType: 'authentication',
+      eventAction: 'oauth_login_success',
+      eventDetails: { googleId: req.user.googleId, email: req.user.email },
+      ipAddress: req.ip || 'unknown',
+      userAgent: req.get('user-agent') || 'unknown',
+      success: true
     });
-
-    if (validLines.length === 0) {
-      return res.status(400).json({ error: 'No valid cookies found' });
-    }
-
-    // Save cookies to file
-    fs.writeFileSync(cookiesPath, cookiesContent, 'utf-8');
     
-    console.log(`[Cookies] Saved ${validLines.length} cookie lines to ${cookiesPath}`);
-    
-    res.json({ 
-      success: true, 
-      message: 'Cookies uploaded successfully',
-      cookieCount: validLines.length
-    });
-    } catch (error) {
-    console.error('[Cookies] Upload error:', error);
-    res.status(500).json({ error: 'Failed to save cookies' });
+    res.redirect(`${FRONTEND_URL}/?auth=success`);
   }
+);
+
+// Logout endpoint
+app.post('/auth/logout', (req, res) => {
+  const userId = req.user?.id;
+  const ipAddress = req.ip || 'unknown';
+  const userAgent = req.get('user-agent') || 'unknown';
+  
+  req.logout((err) => {
+    if (err) {
+      db.logAuditEvent({
+        userId,
+        eventType: 'authentication',
+        eventAction: 'logout_failed',
+        eventDetails: { error: err.message },
+        ipAddress,
+        userAgent,
+        success: false,
+        errorMessage: err.message
+      });
+      
+      return res.status(500).json({ error: 'Logout failed' });
+    }
+    req.session.destroy((err) => {
+      if (err) {
+        db.logAuditEvent({
+          userId,
+          eventType: 'authentication',
+          eventAction: 'logout_session_destroy_failed',
+          eventDetails: { error: err.message },
+          ipAddress,
+          userAgent,
+          success: false,
+          errorMessage: err.message
+        });
+        
+        return res.status(500).json({ error: 'Session destruction failed' });
+      }
+      
+      // Log successful logout
+      db.logAuditEvent({
+        userId,
+        eventType: 'authentication',
+        eventAction: 'logout_success',
+        eventDetails: {},
+        ipAddress,
+        userAgent,
+        success: true
+      });
+      
+      res.json({ success: true, message: 'Logged out successfully' });
+    });
+  });
 });
 
-// Get cookies status endpoint
-app.get('/api/cookies-status', (req, res) => {
+// Get current user endpoint
+app.get('/api/user', (req, res) => {
+  if (!authService.isAuthenticated(req)) {
+    return res.status(401).json({ error: 'Not authenticated' });
+    }
+
+  const user = authService.getUserFromSession(req);
+    res.json({ 
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    picture: user.picture
+  });
+});
+
+// Get user's cookie status
+app.get('/api/cookies-status', authService.requireAuth.bind(authService), (req, res) => {
   try {
-    if (!fs.existsSync(cookiesPath)) {
+    const user = authService.getUserFromSession(req);
+    const cookieFilePath = cookieExtractor.getCookieFilePath(user.id);
+    
+    if (!cookieFilePath || !fs.existsSync(cookieFilePath)) {
       return res.json({ 
         hasCookies: false,
-        message: 'No cookies file found'
+        message: 'No cookies found. Please sign in again to generate cookies.'
       });
     }
 
-    const stats = fs.statSync(cookiesPath);
-    const content = fs.readFileSync(cookiesPath, 'utf-8');
+    const stats = fs.statSync(cookieFilePath);
+    const content = fs.readFileSync(cookieFilePath, 'utf-8');
     const lines = content.split('\n').filter(line => line && !line.startsWith('#'));
     
     res.json({
@@ -166,30 +211,21 @@ app.get('/api/cookies-status', (req, res) => {
       fileSize: stats.size
     });
           } catch (error) {
-    console.error('[Cookies] Status check error:', error);
-    res.status(500).json({ error: 'Failed to check cookies status' });
+    console.error('[Server] Cookie status error:', error);
+    res.status(500).json({ error: 'Failed to check cookie status' });
   }
 });
 
-// Delete cookies endpoint
-app.delete('/api/cookies', (req, res) => {
+// Extract video info endpoint (requires authentication)
+app.post('/api/extract', authService.requireAuth.bind(authService), async (req, res) => {
+  let tempCookieFilePath = null;
+  
   try {
-    if (fs.existsSync(cookiesPath)) {
-      fs.unlinkSync(cookiesPath);
-      console.log('[Cookies] Deleted cookies file');
-    }
-    
-    res.json({ success: true, message: 'Cookies deleted successfully' });
-      } catch (error) {
-    console.error('[Cookies] Delete error:', error);
-    res.status(500).json({ error: 'Failed to delete cookies' });
-  }
-});
+    // Get client info for audit logging
+    const ipAddress = req.ip || req.connection.remoteAddress || 'unknown';
+    const userAgent = req.get('user-agent') || 'unknown';
 
-// Extract video info endpoint
-app.post('/api/extract', async (req, res) => {
-  try {
-    // Wait for extractor to be initialized (async init might still be running)
+    // Wait for extractor to be initialized
     let attempts = 0;
     while (!youtubeExtractor && attempts < 50) {
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -197,48 +233,215 @@ app.post('/api/extract', async (req, res) => {
     }
     
     if (!youtubeExtractor) {
+      db.logAuditEvent({
+        userId: req.user?.id,
+        eventType: 'extraction',
+        eventAction: 'extract_video',
+        eventDetails: { error: 'Service not ready' },
+        ipAddress,
+        userAgent,
+        success: false,
+        errorMessage: 'YouTube extractor is not ready yet'
+      });
+      
       return res.status(503).json({ 
         error: 'Service initializing, please try again in a moment',
         message: 'YouTube extractor is not ready yet'
       });
     }
 
-    // CRITICAL: Check if cookie generator is ready before allowing extraction
-    // Block extraction until first successful cookie generation completes
-    if (cookieGenerator && !cookieGenerator.isReady) {
-      return res.status(503).json({
-        error: 'Backend is still powering on',
-        message: 'Please wait while my backend server finishes powering on. Feel free to try again in 5 minutes, thank you for your patience!'
+    const user = authService.getUserFromSession(req);
+    if (!user || !user.id) {
+      db.logAuditEvent({
+        userId: null,
+        eventType: 'authentication',
+        eventAction: 'extract_attempt',
+        eventDetails: { error: 'User not in session' },
+        ipAddress,
+        userAgent,
+        success: false,
+        errorMessage: 'User not found in session'
+      });
+      
+      return res.status(401).json({ error: 'User not found in session' });
+    }
+
+    // Check rate limit (30 videos per hour)
+    const rateLimit = db.checkRateLimit(user.id, 30, 3600000);
+    if (!rateLimit.allowed) {
+      const resetTime = new Date(rateLimit.resetAt);
+      
+      db.logAuditEvent({
+        userId: user.id,
+        eventType: 'rate_limit',
+        eventAction: 'rate_limit_exceeded',
+        eventDetails: { resetAt: rateLimit.resetAt, remaining: rateLimit.remaining },
+        ipAddress,
+        userAgent,
+        success: false,
+        errorMessage: 'Rate limit exceeded'
+      });
+      
+      return res.status(429).json({
+        error: 'Rate limit exceeded',
+        message: `You have reached the rate limit of 30 videos per hour. Please try again after ${resetTime.toISOString()}`,
+        resetAt: rateLimit.resetAt,
+        remaining: rateLimit.remaining
+      });
+    }
+
+    // Explicit cookie expiration check
+    const cookieExpirationCheck = cookieExtractor.checkCookieExpiration(user.id);
+    if (!cookieExpirationCheck.valid) {
+      console.log(`[Extract] Cookie expiration check: ${cookieExpirationCheck.message}`);
+      
+      // Try to refresh cookies
+      const refreshSuccess = await authService.refreshCookiesForUser(user.id);
+      
+      if (!refreshSuccess) {
+        db.logAuditEvent({
+          userId: user.id,
+          eventType: 'cookie',
+          eventAction: 'cookie_refresh_failed',
+          eventDetails: { expirationCheck: cookieExpirationCheck },
+          ipAddress,
+          userAgent,
+          success: false,
+          errorMessage: cookieExpirationCheck.message
+        });
+        
+        return res.status(401).json({
+          error: 'Cookies expired',
+          message: cookieExpirationCheck.message + '. Please sign in again to generate fresh cookies.'
+        });
+      }
+    }
+
+    // Get user's cookie file path
+    const userData = db.getUserById(user.id);
+    const encryptedCookieFilePath = userData?.cookie_file_path || cookieExtractor.getCookieFilePath(user.id);
+
+    // Check if encrypted cookie file exists
+    if (!encryptedCookieFilePath || !fs.existsSync(encryptedCookieFilePath)) {
+      db.logAuditEvent({
+        userId: user.id,
+        eventType: 'cookie',
+        eventAction: 'cookie_file_missing',
+        eventDetails: {},
+        ipAddress,
+        userAgent,
+        success: false,
+        errorMessage: 'Cookie file not found'
+      });
+      
+      return res.status(401).json({
+        error: 'No cookies found',
+        message: 'Please sign in again to generate cookies from your Google account.'
+      });
+    }
+
+    // Get temporary decrypted cookie file for yt-dlp
+    tempCookieFilePath = cookieExtractor.getTemporaryDecryptedCookieFile(user.id);
+    if (!tempCookieFilePath) {
+      db.logAuditEvent({
+        userId: user.id,
+        eventType: 'cookie',
+        eventAction: 'cookie_decrypt_failed',
+        eventDetails: {},
+        ipAddress,
+        userAgent,
+        success: false,
+        errorMessage: 'Failed to decrypt cookie file'
+      });
+      
+      return res.status(500).json({
+        error: 'Cookie decryption failed',
+        message: 'Failed to decrypt cookies. Please sign in again.'
       });
     }
 
     const { url } = req.body;
     
     if (!url) {
+      db.logAuditEvent({
+        userId: user.id,
+        eventType: 'extraction',
+        eventAction: 'extract_attempt',
+        eventDetails: { error: 'URL missing' },
+        ipAddress,
+        userAgent,
+        success: false,
+        errorMessage: 'URL is required'
+      });
+      
       return res.status(400).json({ error: 'URL is required' });
     }
 
     // Extract video ID from URL
     const videoId = extractVideoId(url);
     if (!videoId) {
+      db.logAuditEvent({
+        userId: user.id,
+        eventType: 'extraction',
+        eventAction: 'extract_attempt',
+        eventDetails: { url, error: 'Invalid URL' },
+        ipAddress,
+        userAgent,
+        success: false,
+        errorMessage: 'Invalid YouTube URL'
+      });
+      
       return res.status(400).json({ error: 'Invalid YouTube URL' });
     }
 
-    console.log(`[Extract] Processing video: ${videoId}`);
+    console.log(`[Extract] Processing video: ${videoId} for user: ${user.id}`);
     
-    // Extract video info
-    const videoInfo = await youtubeExtractor.extract(videoId);
+    // Extract video info with user's cookies
+    const videoInfo = await youtubeExtractor.extract(videoId, tempCookieFilePath);
+    
+    // Log successful extraction
+    db.logAuditEvent({
+      userId: user.id,
+      eventType: 'extraction',
+      eventAction: 'extract_success',
+      eventDetails: { videoId, url },
+      ipAddress,
+      userAgent,
+      success: true
+    });
     
     res.json({
       success: true,
-      data: videoInfo
+      data: videoInfo,
+      rateLimit: {
+        remaining: rateLimit.remaining,
+        resetAt: rateLimit.resetAt
+      }
     });
-      } catch (error) {
+  } catch (error) {
     console.error('[Extract] Error:', error);
+    
+    // Log error
+    db.logAuditEvent({
+      userId: req.user?.id,
+      eventType: 'extraction',
+      eventAction: 'extract_error',
+      eventDetails: { error: error.message },
+      ipAddress: req.ip || 'unknown',
+      userAgent: req.get('user-agent') || 'unknown',
+      success: false,
+      errorMessage: error.message
+    });
+    
     res.status(500).json({ 
       error: 'Failed to extract video info',
       message: error.message
     });
+  } finally {
+    // Clean up temporary decrypted cookie file
+    if (tempCookieFilePath) {
+      cookieExtractor.cleanupTemporaryCookieFile(tempCookieFilePath);
+    }
   }
 });
 
@@ -262,19 +465,19 @@ function extractVideoId(url) {
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('[Server] SIGTERM received, shutting down gracefully...');
-  if (cookieGenerator) {
-    await cookieGenerator.stop();
+  if (youtubeExtractor) {
+    await youtubeExtractor.cleanup();
   }
-  await youtubeExtractor.cleanup();
+  db.close();
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
   console.log('[Server] SIGINT received, shutting down gracefully...');
-  if (cookieGenerator) {
-    await cookieGenerator.stop();
+  if (youtubeExtractor) {
+    await youtubeExtractor.cleanup();
   }
-  await youtubeExtractor.cleanup();
+  db.close();
   process.exit(0);
 });
 
@@ -283,4 +486,6 @@ app.listen(PORT, () => {
   console.log(`[Server] Backend running on port ${PORT}`);
   console.log(`[Server] Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`[Server] Allowed origins: ${ALLOWED_ORIGINS.join(', ')}`);
+  console.log(`[Server] Frontend URL: ${FRONTEND_URL}`);
+  console.log(`[Server] OAuth enabled - authentication required for video extraction`);
 });
