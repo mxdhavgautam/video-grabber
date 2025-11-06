@@ -195,6 +195,33 @@ class SQLiteSessionStore extends EventEmitter {
   }
 
   /**
+   * Create a new session (required by express-session)
+   * This is called when express-session needs to create a new session
+   */
+  createSession(req, sess) {
+    // Generate new session ID
+    const sid = this.generateSessionId();
+    
+    // Set session ID on request
+    req.sessionID = sid;
+    req.session = sess;
+    
+    // Calculate expiration
+    const expire = sess.cookie && sess.cookie.expires 
+      ? sess.cookie.expires.getTime() 
+      : Date.now() + (24 * 60 * 60 * 1000);
+    
+    // Store session
+    const sessJson = JSON.stringify(sess);
+    this.db.prepare(`
+      INSERT INTO sessions (sid, sess, expire)
+      VALUES (?, ?, ?)
+    `).run(sid, sessJson, expire);
+    
+    return sid;
+  }
+
+  /**
    * Cleanup expired sessions
    */
   cleanup() {
