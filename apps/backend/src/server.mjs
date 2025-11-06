@@ -95,7 +95,9 @@ app.get('/health', (req, res) => {
 
 // OAuth Routes
 app.get('/auth/google', passport.authenticate('google', {
-  scope: ['profile', 'email', 'openid']
+  scope: ['profile', 'email', 'openid'],
+  accessType: 'offline',
+  prompt: 'consent'
 }));
 
 app.get('/auth/google/callback',

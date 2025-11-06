@@ -120,7 +120,7 @@ class DatabaseService {
         name TEXT,
         picture TEXT,
         access_token_encrypted TEXT NOT NULL,
-        refresh_token_encrypted TEXT NOT NULL,
+        refresh_token_encrypted TEXT,
         token_expires_at INTEGER NOT NULL,
         cookie_file_path TEXT,
         cookie_last_updated INTEGER,
@@ -190,7 +190,7 @@ class DatabaseService {
         profile.displayName || profile.name || '',
         profile.photos?.[0]?.value || profile.picture || '',
         this.encrypt(tokens.access_token),
-        this.encrypt(tokens.refresh_token),
+        tokens.refresh_token ? this.encrypt(tokens.refresh_token) : null,
         expiresAt,
         now,
         profile.id
@@ -214,7 +214,7 @@ class DatabaseService {
         profile.displayName || profile.name || '',
         profile.photos?.[0]?.value || profile.picture || '',
         this.encrypt(tokens.access_token),
-        this.encrypt(tokens.refresh_token),
+        tokens.refresh_token ? this.encrypt(tokens.refresh_token) : null,
         expiresAt,
         now,
         now
@@ -234,7 +234,7 @@ class DatabaseService {
     return {
       ...user,
       access_token: this.decrypt(user.access_token_encrypted),
-      refresh_token: this.decrypt(user.refresh_token_encrypted)
+      refresh_token: user.refresh_token_encrypted ? this.decrypt(user.refresh_token_encrypted) : null
     };
   }
 
@@ -248,7 +248,7 @@ class DatabaseService {
     return {
       ...user,
       access_token: this.decrypt(user.access_token_encrypted),
-      refresh_token: this.decrypt(user.refresh_token_encrypted)
+      refresh_token: user.refresh_token_encrypted ? this.decrypt(user.refresh_token_encrypted) : null
     };
   }
 
@@ -320,22 +320,42 @@ class DatabaseService {
    */
   updateUserTokens(userId, tokens) {
     const expiresAt = tokens.expiry_date || (Date.now() + tokens.expires_in * 1000);
-    const stmt = this.db.prepare(`
-      UPDATE users SET
-        access_token_encrypted = ?,
-        refresh_token_encrypted = ?,
-        token_expires_at = ?,
-        updated_at = ?
-      WHERE id = ?
-    `);
     
-    stmt.run(
-      this.encrypt(tokens.access_token),
-      this.encrypt(tokens.refresh_token || ''), // refresh_token might not be updated
-      expiresAt,
-      Date.now(),
-      userId
-    );
+    // Only update refresh_token if provided, otherwise keep existing value
+    if (tokens.refresh_token) {
+      const stmt = this.db.prepare(`
+        UPDATE users SET
+          access_token_encrypted = ?,
+          refresh_token_encrypted = ?,
+          token_expires_at = ?,
+          updated_at = ?
+        WHERE id = ?
+      `);
+      
+      stmt.run(
+        this.encrypt(tokens.access_token),
+        this.encrypt(tokens.refresh_token),
+        expiresAt,
+        Date.now(),
+        userId
+      );
+    } else {
+      // Only update access token, keep existing refresh token
+      const stmt = this.db.prepare(`
+        UPDATE users SET
+          access_token_encrypted = ?,
+          token_expires_at = ?,
+          updated_at = ?
+        WHERE id = ?
+      `);
+      
+      stmt.run(
+        this.encrypt(tokens.access_token),
+        expiresAt,
+        Date.now(),
+        userId
+      );
+    }
   }
 
   /**

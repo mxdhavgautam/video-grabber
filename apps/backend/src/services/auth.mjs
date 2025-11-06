@@ -42,12 +42,15 @@ class AuthService {
     }
 
     // Configure Google OAuth strategy
+    // access_type: 'offline' and prompt: 'consent' ensure we get a refresh token
     passport.use(new GoogleStrategy(
       {
         clientID: clientId,
         clientSecret: clientSecret,
         callbackURL: callbackURL,
-        scope: ['profile', 'email', 'openid']
+        scope: ['profile', 'email', 'openid'],
+        accessType: 'offline',
+        prompt: 'consent'
       },
       async (accessToken, refreshToken, profile, done) => {
         try {
