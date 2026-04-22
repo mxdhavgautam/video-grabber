@@ -1,0 +1,32 @@
+{
+  "name": "@video-grabber/extension",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync:ffmpeg-assets": "node scripts/sync-ffmpeg-assets.mjs",
+    "dev": "npm run sync:ffmpeg-assets && vite",
+    "build": "npm run sync:ffmpeg-assets && vite build",
+    "lint": "tsc --noEmit",
+    "test:fixtures": "node scripts/check-extractor-fixtures.mjs",
+    "test:e2e:sandbox": "node scripts/sandbox-e2e.mjs",
+    "pack:crx": "node scripts/pack-crx.mjs"
+  },
+  "dependencies": {
+    "@ffmpeg/core": "^0.12.10",
+    "@ffmpeg/core-mt": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.276",
+    "@types/node": "^24.3.0",
+    "@types/react": "^18.3.26",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "playwright-core": "^1.58.2",
+    "typescript": "^5.9.3",
+    "vite": "^5.4.21"
+  }
+}

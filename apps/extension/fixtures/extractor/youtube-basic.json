@@ -1,0 +1,41 @@
+{
+  "name": "youtube-basic-adaptive-and-progressive",
+  "input": {
+    "title": "Fixture Video",
+    "sourceUrl": "https://www.youtube.com/watch?v=fixture",
+    "adaptiveFormats": [
+      {
+        "itag": 137,
+        "quality_label": "1080p",
+        "container": "mp4",
+        "has_video": true,
+        "has_audio": false,
+        "content_length": "15000000",
+        "url": "https://example.com/video-1080.mp4"
+      },
+      {
+        "itag": 140,
+        "quality_label": "audio",
+        "container": "m4a",
+        "has_video": false,
+        "has_audio": true,
+        "audio_bitrate": 128,
+        "content_length": "2500000",
+        "url": "https://example.com/audio.m4a"
+      },
+      {
+        "itag": 22,
+        "quality_label": "720p",
+        "container": "mp4",
+        "has_video": true,
+        "has_audio": true,
+        "content_length": "12000000",
+        "url": "https://example.com/progressive-720.mp4"
+      }
+    ]
+  },
+  "expected": {
+    "minFormats": 2,
+    "requiresQualityLabels": ["1080p", "720p"]
+  }
+}

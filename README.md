@@ -1,87 +1,91 @@
 # Video Grabber
 
-Modernised monorepo for the Video Grabber project with dedicated frontend and backend services deployable via a single `docker compose up -d --build` command.
+Video Grabber is being rebuilt as a **strict client-side Chromium extension runtime** with a hard cutover strategy.
+No backend compatibility, no VPS runtime, and no server deployment path are retained.
 
-## Repository Layout
+## Distribution Strategy (Locked)
 
-- `apps/frontend` – React + Vite SPA packaged into an Nginx container
-- `apps/backend` – Node.js API with yt-dlp, Puppeteer, and cookie tooling
-- `infra/caddy` – TLS-enabled reverse proxy for domain routing
-- `docker-compose.yml` – Orchestrates frontend, backend, and proxy services
+Primary track is **open-source unpacked tooling** (developer/power-user flow), with CWS treated as optional and policy-gated.
 
-## Local Development
+See:
+
+- `docs/distribution-strategy.md`
+- `docs/support-contract.md`
+- `docs/error-taxonomy.md`
+- `docs/mux-guardrails.md`
+- `docs/recovery-failure-matrix.md`
+- `docs/breakage-triage-runbook.md`
+- `docs/open-source-readiness.md`
+
+## Runtime Architecture
+
+- `apps/extension` (MV3 extension only)
+- background service worker control plane
+- offscreen document for ffmpeg.wasm operations
+- OPFS + `chrome.storage` checkpoints for resumable jobs
+
+## Development
 
 ```bash
-# Install workspace dependencies
 npm install
-
-# Start both services (frontend: 5173, backend: 3001)
 npm run dev
-
-# Run individual services
-npm run dev:frontend
-npm run dev:backend
-
-# Production-style commands
 npm run build
-npm run start
 ```
 
-- Frontend dev server: `http://localhost:5173`
-- Backend API: `http://localhost:3001`
+Build output lands in `apps/extension/dist/`.
 
-## Environment Configuration
+## Install In Helium (Unpacked)
 
-Each workspace provides ready-to-edit env files:
+Helium is Chromium-based; the flow is the same as Chrome:
 
-- `apps/frontend/.env.local` → `VITE_API_URL=http://localhost:3001`
-- `apps/frontend/.env.production` → `VITE_API_URL=https://video-grabber-api.mxdhavgautam.com`
-- `apps/backend/.env.local` → Development ports, CORS, and local storage paths
-- `apps/backend/.env.production` → Production domains and persistent storage paths
+1. `npm install`
+2. `npm run build`
+3. Open Helium and navigate to `chrome://extensions`
+4. Enable `Developer mode`
+5. Click `Load unpacked`
+6. Select `apps/extension/dist`
 
-Backend defaults:
+## Install From GitHub Releases
 
-- Cookies stored at `COOKIES_FILE` (local: `./runtime/yt-dlp/cookies.txt`, container: `/var/lib/video-grabber/yt-dlp/cookies.txt`)
-- Chromium profiles stored at `CHROME_PROFILE_DIR`
+Chrome Web Store publication is likely to be policy-gated for a YouTube downloader-style extension (regardless of implementation details), so distribution is expected to be via GitHub Releases.
 
-## Production Deployment
+Release install flow:
 
-Requirements: Ubuntu 24.04 LTS VPS with Docker + Docker Compose and DNS A records pointing to the server:
+1. Download the release asset zip
+2. Unzip it somewhere permanent on disk
+3. Open `chrome://extensions` in Helium (or any Chromium browser)
+4. Enable `Developer mode`
+5. Click `Load unpacked`
+6. Select the unzipped folder (the one that contains `manifest.json`)
 
-- `video-grabber.mxdhavgautam.com`
-- `video-grabber-api.mxdhavgautam.com`
+## Build And Package (Maintainers)
 
 ```bash
-# Build images and start all services
-docker compose up -d --build
-
-# Stream logs
-docker compose logs -f
-
-# Stop the stack
-docker compose down
+npm install
+npm run build
 ```
 
-Caddy automatically provisions TLS certificates. Set `ACME_EMAIL` in your shell or override it in `docker-compose.yml` to receive certificate notifications.
+### Zip (Unpacked Release)
 
-### Services
+```bash
+cd apps/extension/dist
+zip -r ../../video-grabber-extension.zip .
+```
 
-- **frontend** – Nginx serving the compiled SPA
-- **backend** – Node.js API (internal port 3001)
-- **caddy** – TLS reverse proxy publishing the two domains
+### CRX (Helium Pack)
 
-### Persistent Volumes
+```bash
+# Requires Helium installed at /Applications/Helium.app (or set HELIUM_EXECUTABLE)
+npm run pack:crx --workspace @video-grabber/extension
+```
 
-- `backend_data` → `/var/lib/video-grabber` (yt-dlp cookies, Chromium profiles)
-- `caddy_data`, `caddy_config` → TLS assets and Caddy state
+Notes:
+- The `.pem` key is stored under `apps/extension/release/` and is intentionally gitignored. Keep it private if you want a stable extension ID across builds.
+- Many modern Chromium builds restrict CRX installs outside the Web Store; if CRX install is blocked, use the unpacked install flow instead.
 
-### Health Checks
+## Omnibox Shortcut
 
-- Frontend: `https://video-grabber.mxdhavgautam.com/health`
-- Backend: `https://video-grabber-api.mxdhavgautam.com/health`
+After installing, type `vg` in the address bar, press Space, then press Enter to open the extension UI.
 
-## Maintenance Notes
-
-- Rebuild the backend when yt-dlp or Chromium tooling needs updates: `docker compose build backend`.
-- Authenticated sessions can upload cookies via `POST /upload-authenticated-cookies`; the files persist in the backend data volume.
-- The previous simplified server is archived at `apps/backend/legacy/server-simple.mjs` for reference only.
+- You can also do `vg <youtube-url>` to open the UI with the URL prefilled.
+- Chrome lets users customize omnibox shortcuts under Settings → Search engine → Manage site search.

@@ -3,20 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "workspaces": [
-    "apps/frontend",
-    "apps/backend"
+    "apps/extension"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev --workspace @video-grabber/backend\" \"npm run dev --workspace @video-grabber/frontend\"",
-    "dev:backend": "npm run dev --workspace @video-grabber/backend",
-    "dev:frontend": "npm run dev --workspace @video-grabber/frontend",
-    "build": "npm run build --workspace @video-grabber/backend && npm run build --workspace @video-grabber/frontend",
-    "build:backend": "npm run build --workspace @video-grabber/backend",
-    "build:frontend": "npm run build --workspace @video-grabber/frontend",
-    "lint": "npm run lint --workspace @video-grabber/frontend",
-    "start": "npm run start --workspace @video-grabber/backend"
-  },
-  "devDependencies": {
-    "concurrently": "^9.2.1"
+    "dev": "npm run dev --workspace @video-grabber/extension",
+    "build": "npm run build --workspace @video-grabber/extension",
+    "lint": "npm run lint --workspace @video-grabber/extension"
   }
 }
