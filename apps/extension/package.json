@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "sync:ffmpeg-assets": "node scripts/sync-ffmpeg-assets.mjs",
-    "dev": "npm run sync:ffmpeg-assets && vite",
-    "build": "npm run sync:ffmpeg-assets && vite build",
+    "dev": "pnpm sync:ffmpeg-assets && vite",
+    "build": "pnpm sync:ffmpeg-assets && vite build",
     "lint": "tsc --noEmit",
     "test:fixtures": "node scripts/check-extractor-fixtures.mjs",
     "test:e2e:sandbox": "node scripts/sandbox-e2e.mjs",

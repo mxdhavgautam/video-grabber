@@ -8,9 +8,9 @@
 
 ## Required Validation Before Publish
 
-- `npm run lint`
-- `npm run build`
-- `npm run test:fixtures --workspace @video-grabber/extension`
+- `pnpm lint`
+- `pnpm build`
+- `pnpm --filter @video-grabber/extension test:fixtures`
 
 ## History Rewrite Plan
 

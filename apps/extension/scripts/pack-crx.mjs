@@ -30,7 +30,7 @@ const root = path.resolve(".");
 const distDir = path.join(root, "dist");
 const manifest = path.join(distDir, "manifest.json");
 if (!fs.existsSync(manifest)) {
-  throw new Error(`Missing build output at ${manifest}. Run: npm run build`);
+  throw new Error(`Missing build output at ${manifest}. Run: pnpm build`);
 }
 
 const releaseDir = path.join(root, "release");

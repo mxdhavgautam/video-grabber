@@ -2,12 +2,9 @@
   "name": "video-grabber",
   "version": "1.0.0",
   "private": true,
-  "workspaces": [
-    "apps/extension"
-  ],
   "scripts": {
-    "dev": "npm run dev --workspace @video-grabber/extension",
-    "build": "npm run build --workspace @video-grabber/extension",
-    "lint": "npm run lint --workspace @video-grabber/extension"
+    "dev": "pnpm --filter @video-grabber/extension dev",
+    "build": "pnpm --filter @video-grabber/extension build",
+    "lint": "pnpm --filter @video-grabber/extension lint"
   }
 }

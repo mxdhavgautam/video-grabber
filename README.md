@@ -27,9 +27,9 @@ See:
 ## Development
 
 ```bash
-npm install
-npm run dev
-npm run build
+pnpm install
+pnpm dev
+pnpm build
 ```
 
 Build output lands in `apps/extension/dist/`.
@@ -38,8 +38,8 @@ Build output lands in `apps/extension/dist/`.
 
 Helium is Chromium-based; the flow is the same as Chrome:
 
-1. `npm install`
-2. `npm run build`
+1. `pnpm install`
+2. `pnpm build`
 3. Open Helium and navigate to `chrome://extensions`
 4. Enable `Developer mode`
 5. Click `Load unpacked`
@@ -61,8 +61,8 @@ Release install flow:
 ## Build And Package (Maintainers)
 
 ```bash
-npm install
-npm run build
+pnpm install
+pnpm build
 ```
 
 ### Zip (Unpacked Release)
@@ -76,7 +76,7 @@ zip -r ../../video-grabber-extension.zip .
 
 ```bash
 # Requires Helium installed at /Applications/Helium.app (or set HELIUM_EXECUTABLE)
-npm run pack:crx --workspace @video-grabber/extension
+pnpm --filter @video-grabber/extension pack:crx
 ```
 
 Notes:

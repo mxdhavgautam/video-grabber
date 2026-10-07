@@ -11,9 +11,9 @@ Use this runbook when extraction success drops or users report systemic failures
 ## 2) Reproduce Quickly
 
 - Run fixture checks:
-  - `npm run test:fixtures --workspace @video-grabber/extension`
+  - `pnpm --filter @video-grabber/extension test:fixtures`
 - Run build/lint:
-  - `npm run lint && npm run build`
+  - `pnpm lint && pnpm build`
 - Test representative supported URLs in extension runtime.
 
 ## 3) Mitigate

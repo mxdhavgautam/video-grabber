@@ -154,7 +154,7 @@ async function run() {
   const extensionDist = path.resolve(__dirname, "../dist");
   const distManifest = path.join(extensionDist, "manifest.json");
   if (!fs.existsSync(distManifest)) {
-    throw new Error(`Missing build output. Run: npm run build (expected ${distManifest})`);
+    throw new Error(`Missing build output. Run: pnpm build (expected ${distManifest})`);
   }
 
   const userDataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "video-grabber-dl-"));
